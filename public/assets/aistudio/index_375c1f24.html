@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ne">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0d6efd">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
+  <title>समूह बचत एप</title>
+  <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body>
+<div id="app">
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="screen active">
+      <div class="loading-content">
+        <div class="logo-big"><img src="./logo-group.png" alt="logo" width="72" height="72" style="border-radius:16px;object-fit:cover"/></div>
+        <h1>समूह बचत एप</h1>
+        <p>लोड हुँदैछ...</p>
+        <div class="spinner"></div>
+      </div>
+    </div>
+
+    <!-- Login Screen -->
+    <div id="login-screen" class="screen">
+      <div class="login-container">
+        <div class="logo-big"><img src="./logo-group.png" alt="logo" width="72" height="72" style="border-radius:16px;object-fit:cover"/></div>
+        <h1>समूह बचत एप</h1>
+        <p class="subtitle">गाउँको बचत र ऋण व्यवस्थापन</p>
+
+        <div id="login-options" class="form-card" style="padding:16px;margin-top:8px">
+          <div class="form-group">
+            <label>username / mobile</label>
+            <input type="text" id="login-id" placeholder="admin username वा सदस्य मोबाइल" autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label>password / pin</label>
+            <input type="password" id="login-secret" placeholder="password वा ४ अंक PIN" autocomplete="current-password">
+          </div>
+          <button class="btn btn-primary btn-lg btn-block" onclick="unifiedLogin()">🔓 लगइन</button>
+          <button class="btn btn-outline btn-lg hidden" id="create-account-btn" onclick="showCreateAccount()" style="display:none!important">
+            ➕ नयाँ खाता बनाउनुहोस्
+          </button>
+          <p class="text-muted" style="font-size:0.72rem;margin-top:10px;text-align:center">admin: username + password · सदस्य: mobile + pin</p>
+        </div>
+
+        <!-- Create Account Form -->
+        <div id="create-account-form" class="form-card hidden">
+          <h2>🆕 नयाँ Admin खाता</h2>
+          <div class="form-group">
+            <label>👤 पूरा नाम</label>
+            <input type="text" id="ca-name" placeholder="तपाईंको नाम">
+          </div>
+          <div class="form-group">
+            <label>🔑 Username</label>
+            <input type="text" id="ca-username" placeholder="username">
+          </div>
+          <div class="form-group">
+            <label>🔒 Password</label>
+            <input type="password" id="ca-password" placeholder="password">
+          </div>
+          <div class="form-group">
+            <label>🔒 Password Confirm</label>
+            <input type="password" id="ca-password2" placeholder="फेरि password">
+          </div>
+          <div class="form-group">
+            <label>📱 मोबाइल नम्बर</label>
+            <input type="tel" id="ca-mobile" placeholder="98xxxxxxxx">
+          </div>
+          <div class="form-group">
+            <label>🔢 PIN (४ अंक)</label>
+            <input type="password" id="ca-pin" maxlength="4" placeholder="४ अंकको PIN">
+          </div>
+          <div class="form-group">
+            <label>🔢 PIN Confirm</label>
+            <input type="password" id="ca-pin2" maxlength="4" placeholder="फेरि PIN">
+          </div>
+          <button class="btn btn-primary btn-block" onclick="createAccount()">✅ खाता बनाउनुहोस्</button>
+          <button class="btn btn-outline btn-block" onclick="backToLoginOptions()">← फर्कनुहोस्</button>
+        </div>
+
+        <!-- Admin Login Form -->
+        <div id="admin-login-form" class="form-card hidden">
+          <h2>🔐 Admin लगइन</h2>
+          <div class="form-group">
+            <label>🔑 Username</label>
+            <input type="text" id="admin-username" placeholder="username">
+          </div>
+          <div class="form-group">
+            <label>🔒 Password</label>
+            <input type="password" id="admin-password" placeholder="password">
+          </div>
+          <button class="btn btn-primary btn-block" onclick="adminLogin()">🔓 लगइन</button>
+          <button class="btn btn-outline btn-block" onclick="backToLoginOptions()">← फर्कनुहोस्</button>
+        </div>
+
+        <!-- Member Login Form -->
+        <div id="member-login-form" class="form-card hidden">
+          <h2>👤 सदस्य लगइन</h2>
+          <div class="form-group">
+            <label>📱 मोबाइल नम्बर</label>
+            <input type="tel" id="member-mobile" placeholder="98xxxxxxxx">
+          </div>
+          <div class="form-group">
+            <label>🔢 PIN</label>
+            <input type="password" id="member-pin" maxlength="4" placeholder="४ अंकको PIN">
+          </div>
+          <button class="btn btn-success btn-block" onclick="memberLogin()">🔓 लगइन</button>
+          <button class="btn btn-outline btn-block" onclick="backToLoginOptions()">← फर्कनुहोस्</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main App Screen -->
+    <div id="main-screen" class="screen">
+      <!-- Header -->
+      <header id="app-header">
+        <div class="header-top">
+          <div class="group-info">
+            <span class="group-logo" id="header-logo">💰</span>
+            <div>
+              <div class="group-name" id="header-group-name">समूह बचत</div>
+              <div class="group-meta" id="header-group-meta">स्थापना: -</div>
+            </div>
+          </div>
+          <div class="header-right">
+            <div class="nepali-datetime" id="nepali-datetime">-</div>
+            <div class="month-status" id="month-status">⚪ महिना खुल्ला छैन</div>
+            <div class="sync-status" id="sync-status" title="क्लाउड सिंक">⚪ —</div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Navigation -->
+      <nav id="main-nav">
+        <button class="nav-btn active" data-tab="home" onclick="switchTab('home')">
+          🏠<br><span>होम</span>
+        </button>
+        <button class="nav-btn" data-tab="chat" onclick="switchTab('chat')">
+          💬<br><span>च्याट</span>
+        </button>
+        <button class="nav-btn" data-tab="profile" onclick="switchTab('profile')">
+          👤<br><span>प्रोफाइल</span>
+        </button>
+        <button class="nav-btn" data-tab="vidhan" onclick="switchTab('vidhan')">
+          📜<br><span>विधान</span>
+        </button>
+        <button class="nav-btn" data-tab="settings" onclick="switchTab('settings')">
+          ⚙️<br><span>सेटिङ</span>
+        </button>
+      </nav>
+
+      <!-- Tab Contents -->
+      <main id="tab-content">
+        <!-- HOME TAB -->
+        <div id="tab-home" class="tab-pane active">
+          <div id="home-admin">
+            <div id="mig-banner" class="hidden" style="background:#d1e7dd;color:#0f5132;padding:10px 14px;border-radius:12px;margin-bottom:10px;font-size:0.85rem;font-weight:600;text-align:center"></div>
+            <!-- Compact stats row 1 -->
+            <div class="stats-row">
+              <div class="stat-box" style="border-color:#6f42c1">
+                <div class="stat-emoji">💎</div>
+                <div class="stat-label" style="color:#6f42c1">सम्पत्ति</div>
+                <div class="stat-value" id="home-assets">0</div>
+              </div>
+              <div class="stat-box" style="border-color:#fd7e14">
+                <div class="stat-emoji">🤝</div>
+                <div class="stat-label" style="color:#fd7e14">लगानी</div>
+                <div class="stat-value" id="home-loans">0</div>
+              </div>
+              <div class="stat-box" style="border-color:#198754">
+                <div class="stat-emoji">💵</div>
+                <div class="stat-label" style="color:#198754">नगद</div>
+                <div class="stat-value" id="home-cash">0</div>
+              </div>
+            </div>
+            <!-- Compact stats row 2 -->
+            <div class="stats-row">
+              <div class="stat-box" style="border-color:#0d6efd">
+                <div class="stat-emoji">👥</div>
+                <div class="stat-label" style="color:#0d6efd">सदस्य</div>
+                <div class="stat-value" id="home-member-count">0</div>
+              </div>
+              <div class="stat-box" style="border-color:#6610f2">
+                <div class="stat-emoji">🎫</div>
+                <div class="stat-label" style="color:#6610f2">कित्ता</div>
+                <div class="stat-value" id="home-kitta-count">0</div>
+              </div>
+              <div class="stat-box" style="border-color:#0dcaf0">
+                <div class="stat-emoji">💰</div>
+                <div class="stat-label" style="color:#0891b2">प्रति कित्ता</div>
+                <div class="stat-value" id="home-per-kitta">0</div>
+              </div>
+            </div>
+            <!-- Action cards like the sample image -->
+            <div class="action-cards">
+              <div class="action-card ac-teal" onclick="openCollection()">
+                <div class="ac-icon">💳</div>
+                <div class="ac-title">मासिक असुली</div>
+                <div class="ac-desc">बचत, ब्याज र सावा बुझाउने</div>
+              </div>
+              <div class="action-card ac-orange" onclick="openLoans()">
+                <div class="ac-icon">🤝</div>
+                <div class="ac-title">ऋण लगानी</div>
+                <div class="ac-desc">नयाँ ऋण र बाँकी सूची</div>
+              </div>
+              <div class="action-card ac-blue" onclick="openReports()">
+                <div class="ac-icon">📊</div>
+                <div class="ac-title">हिसाब रिपोर्ट</div>
+                <div class="ac-desc">मासिक, सारांश र वार्षिक</div>
+              </div>
+            </div>
+          </div>
+          <div id="home-member" class="hidden"></div>
+        </div>
+
+        <!-- CHAT TAB -->
+        <div id="tab-chat" class="tab-pane">
+          <div id="chat-content"></div>
+        </div>
+
+        <!-- VIDHAN TAB -->
+        <div id="tab-vidhan" class="tab-pane">
+          <div id="vidhan-content"></div>
+        </div>
+
+        <!-- PROFILE TAB -->
+        <div id="tab-profile" class="tab-pane">
+          <div id="profile-content">
+            <!-- Will be rendered by JS based on role -->
+          </div>
+        </div>
+
+        <!-- SETTINGS TAB -->
+        <div id="tab-settings" class="tab-pane">
+          <div id="settings-content">
+            <!-- Will be rendered by JS -->
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Modal Container -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+      <div class="modal" id="modal-box">
+        <div class="modal-header">
+          <h3 id="modal-title">शीर्षक</h3>
+          <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
+        <div class="modal-body" id="modal-body">
+          <!-- Dynamic content -->
+        </div>
+        <div class="modal-footer" id="modal-footer">
+          <!-- Dynamic buttons -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- PIN Modal -->
+    <div id="pin-modal" class="modal-overlay hidden">
+      <div class="modal pin-modal">
+        <div class="modal-header">
+          <h3>🔢 PIN प्रविष्ट गर्नुहोस्</h3>
+        </div>
+        <div class="modal-body">
+          <p id="pin-message">महिना बन्द गर्न PIN चाहिन्छ</p>
+          <input type="password" id="pin-input" maxlength="4" placeholder="४ अंकको PIN" class="pin-input">
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" onclick="closePinModal()">रद्द</button>
+          <button class="btn btn-primary" onclick="confirmPin()">पुष्टि</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js"></script>
+  <script>window.FIREBASE_CONFIG = window.FIREBASE_CONFIG || null;</script>
+  <script src="./firebase-config.js" onerror=""></script>
+  <script src="./js/db.js"></script>
+  <script src="./js/accounting.js"></script>
+  <script src="./js/auth.js"></script>
+  <script src="./js/ui.js"></script>
+  <script src="./js/app.js"></script>
+  <script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('./sw.js').then(function (reg) {
+        try { reg.update(); } catch (e) {}
+      }).catch(function () {});
+      navigator.serviceWorker.register('./firebase-messaging-sw.js').catch(function () {});
+    });
+  }
+  </script>
+
+  <!-- OneSignal Web Push (free) -->
+  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+  <script>
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    OneSignalDeferred.push(async function (OneSignal) {
+      await OneSignal.init({
+        appId: 'cdacef36-c9f4-411c-9d4c-6bd0ee49aa0e',
+        serviceWorkerPath: 'OneSignalSDKWorker.js',
+        serviceWorkerParam: { scope: '/' },
+        notifyButton: { enable: false },
+        allowLocalhostAsSecureOrigin: true
+      });
+      window._oneSignalReady = true;
+    });
+    async function enableOneSignalPush() {
+      try {
+        if (!window.OneSignalDeferred) {
+          alert('OneSignal लोड भएन');
+          return false;
+        }
+        return await new Promise(function (resolve) {
+          OneSignalDeferred.push(async function (OneSignal) {
+            try {
+              await OneSignal.Notifications.requestPermission();
+              var perm = OneSignal.Notifications.permissionNative || (typeof Notification !== 'undefined' ? Notification.permission : '');
+              resolve(perm === 'granted' || OneSignal.User.PushSubscription.optedIn === true);
+            } catch (e) {
+              console.error(e);
+              resolve(false);
+            }
+          });
+        });
+      } catch (e) {
+        console.error(e);
+        return false;
+      }
+    }
+    window.enableOneSignalPush = enableOneSignalPush;
+  </script>
+
+</body>
+</html>

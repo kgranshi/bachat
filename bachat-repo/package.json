@@ -1,0 +1,12 @@
+{
+  "name": "bachat",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Samuha Bachat — Cloudflare Pages + D1 + R2 + Web Push PWA",
+  "scripts": {
+    "dev": "npx wrangler pages dev public --d1=DB --r2=MEDIA",
+    "db:init:remote": "npx wrangler d1 execute bachat-db --remote --file=./schema.sql",
+    "db:init:local": "npx wrangler d1 execute bachat-db --local --file=./schema.sql",
+    "deploy": "npx wrangler pages deploy public"
+  }
+}
