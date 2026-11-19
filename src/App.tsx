@@ -426,6 +426,14 @@ export default function App() {
                     <li>
                       Build command: <em>leave blank</em>. Build output directory:{' '}
                       <code className="font-mono bg-[#f1f5f9] px-1 rounded">public</code>.
+                      <br />
+                      <span className="text-[11px] text-[#64748b]">
+                        (यदि <strong>bachat-cloudflare.zip</strong> push गर्नुभएको हो भने Root directory खाली /{' '}
+                        <code className="font-mono">/</code> राख्नुहोस्; तर यदि AI Studio को{' '}
+                        <strong>Share → GitHub Commit</strong> प्रयोग गर्नुभएको हो भने{' '}
+                        <strong>Root directory</strong> मा <code className="font-mono font-semibold">bachat-repo</code>{' '}
+                        राख्नुहोस्।)
+                      </span>
                     </li>
                     <li>
                       After first deploy, open <strong>Settings → Functions → Bindings</strong> and add:

@@ -4429,8 +4429,8 @@ async function runManualCloudSync() {
 }
 
 // ========== STANDARD WEB PUSH (VAPID) ==========
-window._fcmLastGroupId = window._fcmLastGroupId || null;
-window._fcmLastPrivSig = window._fcmLastPrivSig || {};
+window._pushLastGroupId = window._pushLastGroupId || null;
+window._pushLastPrivSig = window._pushLastPrivSig || {};
 
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -4497,7 +4497,7 @@ function checkChatNotifications(data) {
   const group = data.chat.group || [];
   if (group.length) {
     const last = group[group.length - 1];
-    if (window._fcmLastGroupId && last.id !== window._fcmLastGroupId) {
+    if (window._pushLastGroupId && last.id !== window._pushLastGroupId) {
       const me = typeof _chatSender === 'function' ? _chatSender() : {};
       if (!(last.fromId === me.id && last.fromRole === me.role)) {
         const preview = (last.text || '').slice(0, 80);
@@ -4508,7 +4508,7 @@ function checkChatNotifications(data) {
         );
       }
     }
-    window._fcmLastGroupId = last.id;
+    window._pushLastGroupId = last.id;
   }
 }
 
