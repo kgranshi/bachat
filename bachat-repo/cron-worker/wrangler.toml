@@ -6,7 +6,7 @@ compatibility_date = "2025-05-01"
 # 12:15 UTC = 18:00 (6:00 PM) Nepal Standard Time (UTC+5:45) every Friday
 crons = ["15 12 * * 5"]
 
-[[d1_databases]]
-binding = "DB"
-database_name = "bachat-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "bachat-db"
+# database_id = "YOUR_D1_DATABASE_ID"
