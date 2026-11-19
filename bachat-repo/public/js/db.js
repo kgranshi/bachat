@@ -215,10 +215,15 @@ const DB = {
       if (r.body && r.body.ok) {
         this._cloud = true;
         this._hasAdminOnServer = !!r.body.hasAdmin;
+        this._lastHealthError = '';
         return r.body;
       }
+      this._cloud = false;
+      this._lastHealthError = (r.body && r.body.error) || ('HTTP ' + r.status);
       return r.body || { ok: false };
     } catch (e) {
+      this._cloud = false;
+      this._lastHealthError = 'सर्भर (/api/health) सँग सम्पर्क भएन';
       return { ok: false, offline: true };
     }
   },

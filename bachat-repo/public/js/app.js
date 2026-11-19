@@ -80,11 +80,27 @@ function showLoginScreen() {
   document.getElementById('login-screen').classList.add('active');
 
   const firstSetupBox = document.getElementById('first-setup-box');
+  let diag = document.getElementById('cloud-diag-box');
+  if (!diag && firstSetupBox && firstSetupBox.parentNode) {
+    diag = document.createElement('div');
+    diag.id = 'cloud-diag-box';
+    diag.className = 'hidden';
+    diag.style.cssText = 'margin-top:12px;padding:10px;border-radius:10px;background:#fff3cd;color:#664d03;font-size:0.78rem;line-height:1.45;text-align:left;';
+    firstSetupBox.parentNode.insertBefore(diag, firstSetupBox);
+  }
   if (firstSetupBox) {
     if (DB._cloud && !DB._hasAdminOnServer) {
       firstSetupBox.classList.remove('hidden');
+      if (diag) diag.classList.add('hidden');
+    } else if (!DB._cloud && DB._lastHealthError) {
+      firstSetupBox.classList.add('hidden');
+      if (diag) {
+        diag.classList.remove('hidden');
+        diag.textContent = '⚠️ सर्भर जाँच (/api/health): ' + DB._lastHealthError + ' — Cloudflare Pages मा DB/MEDIA Binding र D1 टेबलहरू जाँच गर्नुहोस्।';
+      }
     } else {
       firstSetupBox.classList.add('hidden');
+      if (diag) diag.classList.add('hidden');
     }
   }
   backToLoginOptions();
