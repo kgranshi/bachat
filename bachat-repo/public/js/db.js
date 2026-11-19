@@ -11,6 +11,7 @@ const DB = {
   TOKEN_KEY: 'gs_token',
   VERSION_KEY: 'gs_server_version',
   PENDING_KEY: 'gs_pending_sync',
+  PENDING_CHAT_KEY: 'gs_pending_chat',
 
   _cache: null,
   _cloud: false,
@@ -322,7 +323,24 @@ const DB = {
       }
 
       if (res.status === 409 && res.body && res.body.conflict) {
-        // Rebase onto latest server version if non-accounting items (like feedback) changed on server
+        // Merge unseen member feedback/pinRequests from serverData so member submissions while Admin was offline are never lost
+        const srv = res.body.serverData;
+        if (srv && typeof srv === 'object') {
+          const mergeById = (localArr, srvArr) => {
+            const out = Array.isArray(localArr) ? localArr.slice() : [];
+            const seen = new Set(out.map((x) => x && x.id).filter(Boolean));
+            for (const x of srvArr || []) {
+              if (x && x.id && !seen.has(x.id)) {
+                out.push(x);
+                seen.add(x.id);
+              }
+            }
+            return out;
+          };
+          data.complaints = mergeById(data.complaints, srv.complaints);
+          data.suggestions = mergeById(data.suggestions, srv.suggestions);
+          data.pinRequests = mergeById(data.pinRequests, srv.pinRequests);
+        }
         if (res.body.serverVersion) this.setServerVersion(res.body.serverVersion);
         const retry = await this.apiFetch('/state', {
           method: 'POST',
@@ -338,6 +356,7 @@ const DB = {
         if (retry.ok && retry.body && retry.body.ok) {
           this.setPendingQueue([]);
           if (retry.body.version) this.setServerVersion(retry.body.version);
+          if (retry.body.data) this._applyServerPayload(retry.body.data, null, retry.body.version);
           this._cloud = true;
           try { if (typeof UI !== 'undefined' && UI.updateSyncStatus) UI.updateSyncStatus('saved'); } catch (e) {}
           return true;
@@ -384,6 +403,7 @@ const DB = {
       await this.flushPending();
       if (this.getPendingQueue().length > 0) return false;
     }
+    await this.flushChatQueue();
     try {
       const since = force ? -1 : this.getServerVersion();
       const res = await this.apiFetch('/state?sinceVersion=' + encodeURIComponent(since), { method: 'GET' });
@@ -431,21 +451,71 @@ const DB = {
     return health && health.ok ? 'ok' : 'offline';
   },
 
-  async pushChatMessage(msg) {
+  _getPendingChatQueue() {
+    try {
+      const raw = localStorage.getItem(this.PENDING_CHAT_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  },
+
+  _setPendingChatQueue(q) {
+    try {
+      if (!q || !q.length) localStorage.removeItem(this.PENDING_CHAT_KEY);
+      else localStorage.setItem(this.PENDING_CHAT_KEY, JSON.stringify(q.slice(-100)));
+    } catch (e) {}
+  },
+
+  _enqueueChat(msg) {
+    if (!msg || !msg.text) return;
+    const q = this._getPendingChatQueue();
+    if (msg.id && q.some((x) => x && x.id === msg.id)) return;
+    q.push(msg);
+    this._setPendingChatQueue(q);
+  },
+
+  async flushChatQueue() {
     if (!this.getToken() || !navigator.onLine) return false;
+    const q = this._getPendingChatQueue();
+    if (!q.length) return true;
+    const remaining = [];
+    for (let i = 0; i < q.length; i++) {
+      try {
+        const res = await this.apiFetch('/chat', {
+          method: 'POST',
+          body: JSON.stringify(q[i])
+        });
+        if (!res.ok || !res.body || !res.body.ok) {
+          remaining.push(q[i]);
+        }
+      } catch (e) {
+        remaining.push(q[i]);
+      }
+    }
+    this._setPendingChatQueue(remaining);
+    return remaining.length === 0;
+  },
+
+  async pushChatMessage(msg) {
+    if (!this.getToken()) return false;
+    if (!navigator.onLine) {
+      this._enqueueChat(msg);
+      return false;
+    }
     try {
       const res = await this.apiFetch('/chat', {
         method: 'POST',
         body: JSON.stringify(msg)
       });
-      return !!(res.ok && res.body && res.body.ok);
+      if (res.ok && res.body && res.body.ok) return true;
+      this._enqueueChat(msg);
+      return false;
     } catch (e) {
+      this._enqueueChat(msg);
       return false;
     }
   },
 
   async pushChatNow() {
-    if (!this.getToken() || !navigator.onLine) return false;
     const data = this.load();
     const group = (data.chat && data.chat.group) || [];
     const last = group[group.length - 1];
@@ -489,6 +559,7 @@ const DB = {
     this._onlineBound = true;
     window.addEventListener('online', () => {
       this._updatePendingIndicator();
+      this.flushChatQueue().catch(() => {});
       this.flushPending().then((ok) => {
         if (ok && typeof UI !== 'undefined' && UI.toast) {
           UI.toast('नेट आयो · हिसाब सुरक्षित सिंक भयो ✅', 'success');

@@ -942,7 +942,7 @@ export async function onRequest(context) {
       const fromRole = (type === 'auto_group' || type === 'system') ? 'system' : user.role;
       const createdAt = time || new Date().toISOString();
 
-      await env.DB
+      const runRes = await env.DB
         .prepare(
           `INSERT OR IGNORE INTO chat_messages (id, channel, from_id, from_name, from_role, text, type, bill_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -950,7 +950,8 @@ export async function onRequest(context) {
         .bind(msgId, ch, fromId, fromName, fromRole, String(text), String(type || 'text'), billId || null, createdAt)
         .run();
 
-      if (ch === 'group') {
+      const inserted = !runRes || !runRes.meta || typeof runRes.meta.changes !== 'number' || runRes.meta.changes > 0;
+      if (ch === 'group' && inserted && !body.silentPush) {
         const senderKey = user.role === 'admin' ? 'admin' : (user.memberId || null);
         await broadcastPush(
           env,
@@ -962,7 +963,7 @@ export async function onRequest(context) {
           senderKey
         );
       }
-      return json({ ok: true, id: msgId });
+      return json({ ok: true, id: msgId, inserted });
     }
 
     // 12. Member Feedback / Complaints / Suggestions / PIN Requests (appends safely without Admin write lock)
@@ -1065,7 +1066,82 @@ export async function onRequest(context) {
       return json({ ok: true, sent });
     }
 
-    // 15. Full Backup Export
+    // 15. Admin A Manual Meeting Reminder Push to ALL subscribed members (even when their app is closed)
+    if (path === '/push/remind' && method === 'POST') {
+      if (user.role !== 'admin' || !user.accountsWriter) {
+        return json({ ok: false, error: 'Admin A मात्र' }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const title = String(body.title || '🔔 बचत बैठक रिमाइन्डर');
+      const message = String(body.body || 'समूहको बचत बैठक सुरु हुँदैछ — कृपया समयमै उपस्थित हुनुहोला।');
+      const nowIso = new Date().toISOString();
+
+      await env.DB
+        .prepare(
+          `INSERT OR IGNORE INTO chat_messages (id, channel, from_id, from_name, from_role, text, type, bill_id, created_at)
+           VALUES (?, 'group', 'system', 'समूह सूचना', 'system', ?, 'auto_group', NULL, ?)`
+        )
+        .bind('rem_man_' + Date.now() + '_' + randomHex(3), title + '\n\n' + message, nowIso)
+        .run();
+
+      const vapid = await getVapidKeys(env);
+      const rows = await env.DB.prepare('SELECT sub_key, user_key, endpoint, p256dh, auth FROM push_subscriptions').all();
+      const subs = rows.results || [];
+      let sent = 0;
+      for (const s of subs) {
+        if (s.user_key === 'admin') continue;
+        try {
+          const res = await sendWebPush(s, { title, body: message, tag: 'meeting-remind' }, vapid);
+          if (res.ok) sent++;
+          if (res.gone) {
+            await env.DB.prepare('DELETE FROM push_subscriptions WHERE sub_key = ?').bind(s.sub_key).run();
+          }
+        } catch (e) {}
+      }
+      return json({ ok: true, sent, totalDevices: subs.length });
+    }
+
+    // 16. Closed Month Snapshots (D1 + R2)
+    if (path === '/snapshots' && method === 'GET') {
+      if (user.role !== 'admin' && user.role !== 'admin_ro') {
+        return json({ ok: false, error: 'Admin मात्र' }, 403);
+      }
+      const rows = await env.DB
+        .prepare('SELECT month_id, name, year_bs, month_index, r2_backup_key, closed_at FROM month_snapshots ORDER BY closed_at DESC LIMIT 36')
+        .all();
+      return json({ ok: true, snapshots: rows.results || [] });
+    }
+
+    if (path.startsWith('/snapshot/') && method === 'GET') {
+      if (user.role !== 'admin' && user.role !== 'admin_ro') {
+        return json({ ok: false, error: 'Admin मात्र' }, 403);
+      }
+      const monthId = decodeURIComponent(path.slice('/snapshot/'.length));
+      const row = await env.DB
+        .prepare('SELECT month_id, name, month_json, r2_backup_key, closed_at FROM month_snapshots WHERE month_id = ?')
+        .bind(monthId)
+        .first();
+      if (!row) return json({ ok: false, error: 'स्न्यापसट भेटिएन' }, 404);
+      let fullBackup = null;
+      if (row.r2_backup_key && env.MEDIA) {
+        try {
+          const obj = await env.MEDIA.get(row.r2_backup_key);
+          if (obj && obj.body) {
+            const txt = typeof obj.body === 'string' ? obj.body : new TextDecoder().decode(obj.body);
+            fullBackup = JSON.parse(txt);
+          }
+        } catch (e) {}
+      }
+      return json({
+        ok: true,
+        monthId: row.month_id,
+        name: row.name,
+        closedAt: row.closed_at,
+        backup: fullBackup || JSON.parse(row.month_json)
+      });
+    }
+
+    // 17. Full Backup Export
     if (path === '/export-backup' && method === 'GET') {
       if (user.role !== 'admin' && user.role !== 'admin_ro') {
         return json({ ok: false, error: 'Admin मात्र' }, 403);

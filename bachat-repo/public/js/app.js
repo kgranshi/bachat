@@ -123,8 +123,18 @@ function showMainApp() {
     }
   }, 400);
   setTimeout(function () {
-    if (typeof syncWebPushSubscription === 'function' && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      syncWebPushSubscription(true).catch(function () {});
+    if (typeof syncWebPushSubscription === 'function' && typeof Notification !== 'undefined') {
+      if (Notification.permission === 'granted') {
+        syncWebPushSubscription(true).catch(function () {});
+      } else if (Notification.permission === 'default' && 'PushManager' in window && navigator.serviceWorker) {
+        try {
+          const prompted = sessionStorage.getItem('gs_push_hint');
+          if (!prompted) {
+            sessionStorage.setItem('gs_push_hint', '1');
+            UI.toast('🔔 बचत सूचनाका लागि सेटिङ → पुश सूचना खोल्नुहोस्', '');
+          }
+        } catch (e) {}
+      }
     }
   }, 1200);
   renderProfileTab();
@@ -829,10 +839,12 @@ function _doStartNewMonth() {
   Accounting.rebuildMonthChain(data);
 
   notifyMonthStarted(data, month);
-  DB.save(data);
-  if (typeof DB.pushChatNow === 'function') {
-    try { DB.pushChatNow(); } catch (e) {}
-  }
+  DB.save(data, {
+    pushNotice: {
+      title: '📢 ' + (month.name || 'नयाँ महिना') + ' बचत सुरु भयो',
+      body: 'समूहको बचत बैठक सुरु भएको छ — कृपया समयमै सहभागी हुनुहोला।'
+    }
+  });
   UI.updateHome(data);
   UI.toast(month.name + ' सुरु · मौज्दात ' + Accounting.formatNum(month.startAssets), 'success');
   closeModal();
@@ -1414,9 +1426,6 @@ function doCloseMonth() {
         body: 'हिसाब बन्द भई डिजिटल रसिद र पासबुक अपडेट भएको छ।'
       }
     });
-    if (typeof DB.pushChatNow === 'function') {
-      try { DB.pushChatNow(); } catch (e) {}
-    }
     UI.toast(month.name + ' बन्द भयो · बिल पठाइयो', 'success');
     UI.updateHeader(data);
     UI.updateHome(data);
@@ -1734,26 +1743,44 @@ function showYearlyReport() {
 function printReportImage(elementId) {
   const el = document.getElementById(elementId);
   if (!el) return UI.toast('प्रिन्ट गर्न सकिएन', 'error');
-  const htmlDoc = `<!doctype html><html><head><meta charset="utf-8"><title>रिपोर्ट</title>
+  const baseHref = (typeof location !== 'undefined' && location.origin) ? (location.origin + '/') : './';
+  const htmlDoc = `<!doctype html><html><head><meta charset="utf-8"><base href="${baseHref}"><title>रिपोर्ट</title>
     <style>
-      body{font-family:sans-serif;padding:20px;color:#000}
+      body{font-family:sans-serif;padding:16px;color:#000;-webkit-print-color-adjust:exact;print-color-adjust:exact}
       .report-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed #ccc}
-      table{width:100%;border-collapse:collapse;font-size:12px}
-      th,td{border:1px solid #ccc;padding:4px 6px;text-align:right}
+      table{width:100%;border-collapse:collapse;font-size:11px}
+      th,td{border:1px solid #ccc;padding:4px 5px;text-align:right;vertical-align:middle}
       th{background:#eee} td:first-child,th:first-child{text-align:left}
-      h2{text-align:center} .print-meta{text-align:center;margin-bottom:16px;color:#555}
+      h2{text-align:center} .print-meta{text-align:center;margin-bottom:12px;color:#555}
+      img{max-width:110px;max-height:36px;object-fit:contain;background:#fff;vertical-align:middle}
+      button{display:none!important}
     </style></head><body>${el.innerHTML}</body></html>`;
   const iframe = document.createElement('iframe');
   iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
   iframe.srcdoc = htmlDoc;
   iframe.onload = function () {
-    try {
-      iframe.contentWindow.focus();
-      iframe.contentWindow.print();
-    } catch (e) {
-      UI.toast('प्रिन्ट डायलग खुलेन', 'error');
-    }
-    setTimeout(() => { try { iframe.remove(); } catch (e) {} }, 2500);
+    const doc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
+    const imgs = doc ? Array.from(doc.querySelectorAll('img')) : [];
+    const waitImgs = imgs.map((img) => {
+      if (img.complete) return Promise.resolve();
+      return new Promise((res) => {
+        img.addEventListener('load', res, { once: true });
+        img.addEventListener('error', res, { once: true });
+      });
+    });
+    const doPrint = () => {
+      try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      } catch (e) {
+        UI.toast('प्रिन्ट डायलग खुलेन', 'error');
+      }
+      setTimeout(() => { try { iframe.remove(); } catch (e) {} }, 3000);
+    };
+    Promise.race([
+      Promise.all(waitImgs),
+      new Promise((res) => setTimeout(res, 1500))
+    ]).then(() => setTimeout(doPrint, 80));
   };
   document.body.appendChild(iframe);
 }
@@ -2718,7 +2745,7 @@ function _ensureChat(data) {
 function escapeHtmlChat(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function postGroupMessage(text, type, data) {
+function postGroupMessage(text, type, data, opts) {
   data = _ensureChat(data || DB.load());
   const t = type || 'text';
   // अटो सन्देश दोहोरो नजाओस् (PIN दोब्बर / सिंक मर्ज)
@@ -2733,7 +2760,7 @@ function postGroupMessage(text, type, data) {
   const sender = (t === 'system' || t === 'auto_group')
     ? { id: 'system', name: 'समूह सूचना', role: 'system' }
     : _chatSender();
-  data.chat.group.push({
+  const msgObj = {
     id: _chatId(),
     fromId: sender.id,
     fromName: sender.name,
@@ -2741,8 +2768,19 @@ function postGroupMessage(text, type, data) {
     text: text,
     type: t,
     time: new Date().toISOString()
-  });
+  };
+  data.chat.group.push(msgObj);
   if (data.chat.group.length > 500) data.chat.group = data.chat.group.slice(-500);
+  if (typeof DB !== 'undefined' && DB.getToken && DB.getToken() && typeof DB.pushChatMessage === 'function') {
+    DB.pushChatMessage({
+      id: msgObj.id,
+      channel: 'group',
+      text: msgObj.text,
+      type: msgObj.type,
+      time: msgObj.time,
+      silentPush: !!(opts && opts.silentPush)
+    }).catch(function () {});
+  }
   return data;
 }
 function postPrivateMessage(memberId, text, type, data) {
@@ -2751,7 +2789,7 @@ function postPrivateMessage(memberId, text, type, data) {
   const sender = type === 'auto_private'
     ? { id: 'system', name: 'समूह सूचना', role: 'system' }
     : _chatSender();
-  data.chat.private[memberId].push({
+  const msgObj = {
     id: _chatId(),
     fromId: sender.id,
     fromName: sender.name,
@@ -2759,9 +2797,19 @@ function postPrivateMessage(memberId, text, type, data) {
     text: text,
     type: type || 'text',
     time: new Date().toISOString()
-  });
+  };
+  data.chat.private[memberId].push(msgObj);
   if (data.chat.private[memberId].length > 300) {
     data.chat.private[memberId] = data.chat.private[memberId].slice(-300);
+  }
+  if (typeof DB !== 'undefined' && DB.getToken && DB.getToken() && typeof DB.pushChatMessage === 'function') {
+    DB.pushChatMessage({
+      id: msgObj.id,
+      channel: 'private:' + memberId,
+      text: msgObj.text,
+      type: msgObj.type,
+      time: msgObj.time
+    }).catch(function () {});
   }
   return data;
 }
@@ -2773,7 +2821,7 @@ function notifyMonthStarted(data, month) {
     'समूहको बचत / कलेक्सन बैठक सुरु भइसकेको छ।\n' +
     'कृपया समयमै उपस्थित भई मासिक बचत बुझाउनुहोला।\n\n' +
     'धन्यवाद।';
-  postGroupMessage(text, 'auto_group', data);
+  postGroupMessage(text, 'auto_group', data, { silentPush: true });
 }
 
 function notifyCollectionPrivate(data, member, allocated, month) {
@@ -2791,7 +2839,7 @@ function notifyMonthClosed(data, month) {
     'यस महिनाको सहयोगका लागि सबै सदस्यलाई धन्यवाद।\n\n' +
     'पासबुक / रिपोर्ट जाँच्नुहोस्।\n' +
     'कुनै गुनासो भए लेख्नुहोस्।';
-  postGroupMessage(text, 'auto_group', data);
+  postGroupMessage(text, 'auto_group', data, { silentPush: true });
 }
 
 function renderChatTab() {
@@ -3205,7 +3253,17 @@ function renderSettingsTab() {
         </li>
         <li class="settings-item" onclick="enablePushFromSettings()">
           <div class="settings-icon" style="background:#d1e7dd">🔔</div>
-          <div class="settings-text"><div class="title">पुश सूचना (Web Push)</div><div class="desc">ब्याकग्राउन्ड सूचना अनुमति र परीक्षण</div></div>
+          <div class="settings-text"><div class="title">पुश सूचना (Web Push)</div><div class="desc">ब्याकग्राउन्ड सूचना अनुमति र बैठक रिमाइन्डर</div></div>
+          <div class="settings-arrow">›</div>
+        </li>
+        <li class="settings-item" onclick="runAccountingAuditCheck()">
+          <div class="settings-icon" style="background:#d1e7dd">🧮</div>
+          <div class="settings-text"><div class="title">हिसाब मिलान अडिट</div><div class="desc">सम्पत्ति, नगद, ऋण र सदस्य हिसाब क्रस-चेक</div></div>
+          <div class="settings-arrow">›</div>
+        </li>
+        <li class="settings-item" onclick="openSnapshotBackups()">
+          <div class="settings-icon" style="background:#e2e3ff">🗂️</div>
+          <div class="settings-text"><div class="title">बन्द महिना स्न्यापसट (R2)</div><div class="desc">प्रत्येक बन्द महिनाको सुरक्षित ब्याकअप</div></div>
           <div class="settings-arrow">›</div>
         </li>
 
@@ -4344,14 +4402,7 @@ function onCloudDataRemote(remote) {
       UI.updateHeader(remote);
       UI.updateHome(remote);
       renderHomeByRole();
-      // च्याट सधैं ताजा (ट्याब सक्रिय होस् वा नहोस् badge का लागि)
-      try {
-        if (document.getElementById('tab-chat') && document.getElementById('tab-chat').classList.contains('active')) {
-          renderChatTab();
-        } else if (typeof renderChatTab === 'function') {
-          // silent badge path — full render only if chat tab
-        }
-      } catch (e) {}
+      // च्याट सधैं ताजा (ट्याब सक्रिय भए मात्र तुरुन्त रि-रेन्डर)
       if (document.getElementById('tab-chat') && document.getElementById('tab-chat').classList.contains('active')) {
         renderChatTab();
       }
@@ -4542,9 +4593,13 @@ async function enablePushFromSettings() {
   const subOk = await syncWebPushSubscription(false);
   if (subOk) {
     UI.toast('पुश सूचना सक्रिय ✅', 'success');
+    const adminBtn = (typeof Auth !== 'undefined' && Auth.isAccountsWriter && Auth.isAccountsWriter())
+      ? '<button type="button" class="btn btn-success btn-block mt-1" onclick="sendMeetingReminderPushNow()">📢 सबै सदस्यलाई बैठक रिमाइन्डर Push पठाउनुहोस्</button>'
+      : '';
     const html = `
-      <p style="font-size:0.88rem;margin-bottom:12px">यो डिभाइसमा Cloudflare Web Push दर्ता भइसकेको छ।</p>
-      <button type="button" class="btn btn-primary btn-block" onclick="sendTestPushNow()">🔔 परीक्षण सूचना पठाउनुहोस्</button>
+      <p style="font-size:0.88rem;margin-bottom:12px">यो डिभाइसमा Cloudflare Web Push दर्ता भइसकेको छ — एप बन्द भए पनि सूचनाको घण्टी बज्छ।</p>
+      <button type="button" class="btn btn-primary btn-block" onclick="sendTestPushNow()">🔔 मेरो फोनमा परीक्षण सूचना</button>
+      ${adminBtn}
     `;
     UI.showModal('🔔 पुश सूचना सक्रिय', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
   } else {
@@ -4560,6 +4615,103 @@ async function sendTestPushNow() {
     showLocalNotification('🔔 समूह बचत परीक्षण', 'स्थानीय सूचना ठीक चलिरहेको छ!', 'local-test');
     UI.toast('स्थानीय परीक्षण सूचना देखाइयो', 'success');
   }
+}
+
+async function sendMeetingReminderPushNow() {
+  if (!(Auth.isAccountsWriter && Auth.isAccountsWriter())) return UI.toast('Admin A मात्र', 'error');
+  UI.toast('सबै सदस्यलाई सूचना पठाउँदै…', '');
+  const res = await DB.apiFetch('/push/remind', {
+    method: 'POST',
+    body: JSON.stringify({
+      title: '🔔 आज बचत बैठक छ',
+      body: 'समूहको बचत कलेक्सन बैठक सुरु हुँदैछ — कृपया समयमै उपस्थित हुनुहोला।'
+    })
+  });
+  if (res.ok && res.body && res.body.ok) {
+    UI.toast(`पठाइयो ✅ (${res.body.sent || 0} सदस्य डिभाइसमा Push + च्याट सूचना)`, 'success');
+  } else {
+    UI.toast((res.body && res.body.error) || 'पठाउन सकिएन', 'error');
+  }
+}
+
+function runAccountingAuditCheck() {
+  const data = DB.load();
+  const snap = Accounting.getSnapshot(data);
+  const active = (data.members || []).filter((m) => m && m.active !== false);
+  let sumLoans = 0, sumAdvances = 0, sumMemberAssets = 0, negIssues = [];
+  const totalKitta = Accounting.totalKitta(data);
+  const perKitta = Accounting.perKittaValue(data, snap.currentMonth || snap.prevMonth);
+
+  active.forEach((m) => {
+    const loan = Number(m.outstandingLoan) || 0;
+    const adv = Number(m.advance) || 0;
+    sumLoans += loan;
+    sumAdvances += adv;
+    sumMemberAssets += (Number(m.kitta) || 0) * perKitta;
+    if (loan < 0 || adv < 0 || (Number(m.due) || 0) < 0) {
+      negIssues.push(m.name);
+    }
+  });
+
+  const loanDiff = Math.round((snap.loans - sumLoans) * 100) / 100;
+  const equationDiff = Math.round((snap.assets - (snap.cash + snap.loans)) * 100) / 100;
+  const allOk = Math.abs(loanDiff) <= 1 && Math.abs(equationDiff) <= 1 && negIssues.length === 0;
+
+  const html = `
+    <div class="section-title">${allOk ? '✅ हिसाब १००% मिलेको छ' : '⚠️ फरक जाँच गर्नुहोस्'}</div>
+    <div class="report-card mb-2">
+      <div class="report-row"><span class="label">सक्रिय सदस्य / कुल कित्ता</span><span class="value">${active.length} जना · ${totalKitta} कित्ता</span></div>
+      <div class="report-row"><span class="label">कुल सम्पत्ति</span><span class="value">रु. ${Accounting.formatNum(snap.assets)}</span></div>
+      <div class="report-row"><span class="label">कोसमा नगद + बाँकी ऋण</span><span class="value">रु. ${Accounting.formatNum(snap.cash + snap.loans)}</span></div>
+      <div class="report-row"><span class="label">सम्पत्ति vs (नगद+ऋण) फरक</span><span class="value" style="color:${Math.abs(equationDiff)<=1?'#198754':'#dc3545'}">${equationDiff}</span></div>
+      <div class="report-row"><span class="label">सदस्य बाँकी ऋण योग</span><span class="value">रु. ${Accounting.formatNum(sumLoans)}</span></div>
+      <div class="report-row"><span class="label">ऋण मिलान फरक</span><span class="value" style="color:${Math.abs(loanDiff)<=1?'#198754':'#dc3545'}">${loanDiff}</span></div>
+      <div class="report-row"><span class="label">सदस्य कुल अग्रिम</span><span class="value">रु. ${Accounting.formatNum(sumAdvances)}</span></div>
+    </div>
+    ${negIssues.length ? `<div style="color:#dc3545;font-size:0.82rem">ऋणात्मक मान भेटियो: ${negIssues.join(', ')}</div>` : ''}
+    <p class="text-muted" style="font-size:0.78rem">यो अडिट पूर्णतः read-only हो — हिसाब वा सूत्र परिवर्तन गर्दैन।</p>
+  `;
+  UI.showModal('🧮 हिसाब मिलान अडिट', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+}
+
+async function openSnapshotBackups() {
+  UI.toast('स्न्यापसट लोड हुँदैछ…', '');
+  const res = await DB.apiFetch('/snapshots', { method: 'GET' });
+  if (!res.ok || !res.body || !res.body.ok) {
+    return UI.toast((res.body && res.body.error) || 'लोड गर्न सकिएन', 'error');
+  }
+  const list = res.body.snapshots || [];
+  let body = '';
+  if (!list.length) {
+    body = '<div class="empty-state">अहिलेसम्म बन्द महिना स्न्यापसट छैन (महिना बन्द गर्दा स्वतः बन्छ)</div>';
+  } else {
+    body = list.map((s) => `
+      <div class="section-card" style="padding:10px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div>
+          <div class="fw-bold">${s.name || s.month_id}</div>
+          <div class="text-muted" style="font-size:0.75rem">${(s.closed_at || '').slice(0, 10)} ${s.r2_backup_key ? '· R2 सुरक्षित ✅' : '· D1 मात्र'}</div>
+        </div>
+        <button type="button" class="btn btn-sm btn-primary" onclick="downloadSnapshotBackup('${s.month_id}')">⬇️ डाउनलोड</button>
+      </div>
+    `).join('');
+  }
+  UI.showModal('🗂️ बन्द महिना स्न्यापसट', body, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+}
+
+async function downloadSnapshotBackup(monthId) {
+  const res = await DB.apiFetch('/snapshot/' + encodeURIComponent(monthId), { method: 'GET' });
+  if (!res.ok || !res.body || !res.body.ok) {
+    return UI.toast('डाउनलोड असफल', 'error');
+  }
+  const blob = new Blob([JSON.stringify(res.body.backup, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `samuha-snapshot-${monthId}.json`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 400);
+  UI.toast('स्न्यापसट डाउनलोड भयो ✅', 'success');
 }
 
 
@@ -4877,12 +5029,11 @@ function maybeAutoDriveBackupHint(data) {
 function runScheduleChecks() {
   try {
     if (typeof Auth === 'undefined' || !Auth.isLoggedIn || !Auth.isLoggedIn()) return;
+    if (!Auth.isAccountsWriter || !Auth.isAccountsWriter()) return;
     const data = DB.load();
     let changed = false;
     if (sendSecondFridayReminders(data)) changed = true;
-    if (Auth.isAdmin && Auth.isAdmin()) {
-      if (maybeAutoDriveBackupHint(data)) changed = true;
-    }
+    if (maybeAutoDriveBackupHint(data)) changed = true;
     if (changed) DB.save(data);
   } catch (e) {
     console.warn('schedule', e);
