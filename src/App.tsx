@@ -83,7 +83,7 @@ export default function App() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  const [selectedFile, setSelectedFile] = useState<string>('wrangler.toml');
+  const [selectedFile, setSelectedFile] = useState<string>('schema.sql');
   const [fileData, setFileData] = useState<FileResponse | null>(null);
   const [loadingFile, setLoadingFile] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -117,7 +117,7 @@ export default function App() {
 
   useEffect(() => {
     fetchOverview();
-    fetchRepoFile('wrangler.toml');
+    fetchRepoFile('schema.sql');
   }, [fetchOverview, fetchRepoFile]);
 
   const handleResetDemoDb = async () => {
