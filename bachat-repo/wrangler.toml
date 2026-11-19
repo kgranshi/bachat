@@ -2,11 +2,15 @@ name = "bachat"
 compatibility_date = "2025-05-01"
 pages_build_output_dir = "public"
 
-[[d1_databases]]
-binding = "DB"
-database_name = "bachat-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
-
-[[r2_buckets]]
-binding = "MEDIA"
-bucket_name = "bachat-media"
+# D1 (DB) र R2 (MEDIA) Bindings Cloudflare Pages Dashboard बाटै जोडिन्छन्:
+# Pages Project -> Settings -> Functions / Bindings -> Add DB (D1) र MEDIA (R2).
+# (यदि CLI बाट wrangler pages deploy चलाउने हो भने मात्र तलको # हटाएर असली database_id राख्नुहोस्)
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "bachat-db"
+# database_id = "YOUR_D1_DATABASE_ID"
+#
+# [[r2_buckets]]
+# binding = "MEDIA"
+# bucket_name = "bachat-media"
