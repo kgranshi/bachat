@@ -393,9 +393,15 @@ function showMemberMandatoryBreakdown() {
 }
 
 function renderMemberHome(container) {
-  const data = DB.load();
+  const data = _ensureChat(DB.load());
   const member = data.members.find(m => m.id === Auth.currentUser.memberId);
   if (!member) { container.innerHTML = '<div class="empty-state">सदस्य भेटिएन</div>'; return; }
+
+  const prevInp = document.getElementById('member-home-chat-input');
+  const prevDraft = prevInp ? prevInp.value : '';
+  const hadFocus = !!(prevInp && document.activeElement === prevInp);
+  const prevList = document.getElementById('mh-chat-list');
+  const prevScroll = prevList ? prevList.scrollTop : 0;
 
   const snap = Accounting.getSnapshot(data);
   const myAssets = Accounting.memberAssets(data, member);
@@ -409,66 +415,151 @@ function renderMemberHome(container) {
     const man = Accounting.calcMandatory(member, data, refMonth);
     const label = month ? 'अनिवार्य' : 'अर्को कलेक्सन अनिवार्य';
     mandHtml =
-      '<div class="mt-2" style="cursor:pointer" onclick="event.stopPropagation();showMemberMandatoryBreakdown()">' +
-      '<span class="member-badge badge-due" style="font-size:0.9rem;padding:5px 10px">' +
+      '<div style="margin-top:5px;cursor:pointer" onclick="event.stopPropagation();showMemberMandatoryBreakdown()">' +
+      '<span class="member-badge badge-due" style="font-size:0.84rem;padding:4px 9px">' +
       label + ' रु. <strong>' + Accounting.formatNum(man.total) + '</strong> · <span style="text-decoration:underline">विवरण ▾</span>' +
       '</span></div>';
   } catch (e) {}
 
   const chatUnread = groupChatUnreadCount(data);
-  const chatBadge = chatUnread > 0 ? ' <span class="badge-unread">' + chatUnread + ' नयाँ</span>' : '';
+  const chatBadge = `<span id="mh-chat-unread-badge" class="badge-unread${chatUnread > 0 ? '' : ' hidden'}">${chatUnread} नयाँ</span>`;
   const avatarHtml = member.photo
-    ? `<img src="${member.photo}" alt="" class="member-passport-photo"/>`
-    : `<div class="member-avatar" style="width:56px;height:66px;border-radius:10px;font-size:1.4rem">${member.name.charAt(0)}</div>`;
+    ? `<img src="${member.photo}" alt="" class="member-passport-photo" style="width:50px;height:62px"/>`
+    : `<div class="member-avatar" style="width:50px;height:62px;border-radius:10px;font-size:1.35rem">${member.name.charAt(0)}</div>`;
+
+  const me = _chatSender();
+  const msgs = (data.chat && data.chat.group) || [];
+  let chatBubbles = '';
+  if (!msgs.length) {
+    chatBubbles = '<div class="text-muted text-center" style="padding:18px 8px;font-size:0.84rem">अहिलेसम्म छलफल सन्देश छैन — तल बाकस माथिबाट सुरु गर्नुहोस्</div>';
+  } else {
+    chatBubbles = msgs.slice().reverse().map(function (m) {
+      const mine = m.fromId === me.id && m.fromRole === me.role;
+      const sys = m.fromRole === 'system' || m.type === 'auto_group';
+      const time = m.time ? new Date(m.time).toLocaleString('ne-NP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      return '<div class="chat-row ' + (sys ? 'sys' : (mine ? 'mine' : 'theirs')) + '">' +
+        '<div class="chat-bubble' + (sys ? ' chat-sys' : '') + '">' +
+        (!mine && !sys ? '<div class="chat-from">' + (m.fromRole === 'admin' ? '🔐 ' : '👤 ') + escapeHtmlChat(m.fromName || '') + '</div>' : '') +
+        (sys ? '<div class="chat-from">📢 समूह सूचना</div>' : '') +
+        '<div class="chat-text">' + escapeHtmlChat(m.text || '').replace(/\n/g, '<br>') + '</div>' +
+        '<div class="chat-time">' + time + '</div></div></div>';
+    }).join('');
+  }
 
   container.innerHTML = `
-    <div class="section-card" style="padding:8px 10px;margin-bottom:8px;background:#f8faff;border:1px solid #dce7f7">
-      <div style="font-size:0.72rem;font-weight:700;color:#495057;margin-bottom:5px">🏛️ समूहको कोस (प्रत्यक्ष पारदर्शी हिसाब)</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;text-align:center">
-        <div style="background:#fff;padding:5px 3px;border-radius:8px;border:1px solid #e9ecef">
-          <div style="font-size:0.65rem;color:#6f42c1">💎 कुल कोस</div>
-          <div style="font-weight:700;font-size:0.8rem">${Accounting.formatNum(snap.assets)}</div>
+    <div class="member-home-shell">
+      <div class="section-card mh-fund-card" style="padding:7px 9px;background:#f8faff;border:1px solid #dce7f7">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px">
+          <span style="font-size:0.71rem;font-weight:700;color:#495057">🏛️ प्रत्यक्ष पारदर्शी हिसाब</span>
+          <span style="font-size:0.61rem;color:#6c757d">(कोस ${Accounting.formatNum(snap.assets)} − अग्रिम ${Accounting.formatNum(snap.totalAdvance)}) ÷ ${Accounting.formatNum(snap.kitta)}</span>
         </div>
-        <div style="background:#fff;padding:5px 3px;border-radius:8px;border:1px solid #e9ecef">
-          <div style="font-size:0.65rem;color:#198754">💵 नगद</div>
-          <div style="font-weight:700;font-size:0.8rem">${Accounting.formatNum(snap.cash)}</div>
-        </div>
-        <div style="background:#fff;padding:5px 3px;border-radius:8px;border:1px solid #e9ecef">
-          <div style="font-size:0.65rem;color:#fd7e14">🤝 ऋण</div>
-          <div style="font-weight:700;font-size:0.8rem">${Accounting.formatNum(snap.loans)}</div>
-        </div>
-        <div style="background:#fff;padding:5px 3px;border-radius:8px;border:1px solid #e9ecef">
-          <div style="font-size:0.65rem;color:#0891b2">💰 प्र.कित्ता</div>
-          <div style="font-weight:700;font-size:0.8rem">${Accounting.formatNum(snap.perKitta)}</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;text-align:center">
+          <div style="background:#fff;padding:4px 3px;border-radius:7px;border:1px solid #e9ecef">
+            <div style="font-size:0.62rem;color:#6f42c1">💎 कुल कोस</div>
+            <div style="font-weight:700;font-size:0.78rem">${Accounting.formatNum(snap.assets)}</div>
+          </div>
+          <div style="background:#fff;padding:4px 3px;border-radius:7px;border:1px solid #e9ecef">
+            <div style="font-size:0.62rem;color:#198754">💵 नगद</div>
+            <div style="font-weight:700;font-size:0.78rem">${Accounting.formatNum(snap.cash)}</div>
+          </div>
+          <div style="background:#fff;padding:4px 3px;border-radius:7px;border:1px solid #e9ecef">
+            <div style="font-size:0.62rem;color:#fd7e14">🤝 ऋण</div>
+            <div style="font-weight:700;font-size:0.78rem">${Accounting.formatNum(snap.loans)}</div>
+          </div>
+          <div style="background:#fff;padding:4px 3px;border-radius:7px;border:1px solid #e9ecef">
+            <div style="font-size:0.62rem;color:#0f5132">💚 अग्रिम</div>
+            <div style="font-weight:700;font-size:0.78rem">${Accounting.formatNum(snap.totalAdvance)}</div>
+          </div>
+          <div style="background:#fff;padding:4px 3px;border-radius:7px;border:1px solid #e9ecef">
+            <div style="font-size:0.62rem;color:#495057">🎫 जम्मा कित्ता</div>
+            <div style="font-weight:700;font-size:0.78rem">${Accounting.formatNum(snap.kitta)}</div>
+          </div>
+          <div style="background:#fff;padding:4px 3px;border-radius:7px;border:1px solid #e9ecef">
+            <div style="font-size:0.62rem;color:#0891b2">💰 प्र.कित्ता</div>
+            <div style="font-weight:700;font-size:0.78rem">${Accounting.formatNum(snap.perKitta)}</div>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="section-card" onclick="openMemberOwnProfileModal()" style="padding:12px;margin-bottom:10px;cursor:pointer" title="पूरा प्रोफाइल, पासबुक, कलेक्सन र रिपोर्ट हेर्न थिच्नुहोस्">
-      <div class="flex gap-2" style="align-items:center">
-        ${avatarHtml}
-        <div style="flex:1;min-width:0">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
-            <div class="fw-bold" style="font-size:1.08rem;line-height:1.2">${member.name}</div>
-            <span style="font-size:0.72rem;color:#0d6efd;font-weight:600;white-space:nowrap">प्रोफाइल ▸</span>
+      <div class="section-card mh-profile-card" onclick="openMemberOwnProfileModal()" style="padding:10px;cursor:pointer" title="पूरा प्रोफाइल, पासबुक, कलेक्सन र रिपोर्ट हेर्न थिच्नुहोस्">
+        <div class="flex gap-2" style="align-items:center">
+          ${avatarHtml}
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+              <div class="fw-bold" style="font-size:1.02rem;line-height:1.2">${member.name}</div>
+              <span style="font-size:0.7rem;color:#0d6efd;font-weight:600;white-space:nowrap">प्रोफाइल ▸</span>
+            </div>
+            <div class="text-muted" style="font-size:0.75rem;margin-top:1px">📱 ${member.mobile || '-'} · PIN: ${(member.hasPin || member.pin) ? '****' : 'सेट छैन'}</div>
+            <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">
+              <span class="member-badge badge-kitta">${member.kitta} कित्ता</span>
+              <span class="member-badge badge-kitta">💎 शेयर ${Accounting.formatNum(myAssets)}</span>
+              ${effLoan > 0 ? `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(effLoan)}</span>` : ''}
+              ${effAdv > 0 ? `<span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(effAdv)}</span>` : ''}
+              ${member.due > 0 ? `<span class="member-badge badge-due">बाँकी ${Accounting.formatNum(member.due)}</span>` : ''}
+            </div>
+            ${mandHtml}
           </div>
-          <div class="text-muted" style="font-size:0.78rem;margin-top:2px">📱 ${member.mobile || '-'} · PIN: ${(member.hasPin || member.pin) ? '****' : 'सेट छैन'}</div>
-          <div class="mt-1">
-            <span class="member-badge badge-kitta">${member.kitta} कित्ता</span>
-            <span class="member-badge badge-kitta">💎 शेयर ${Accounting.formatNum(myAssets)}</span>
-          </div>
-          <div class="mt-1">
-            ${effLoan > 0 ? `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(effLoan)}</span> ` : ''}
-            ${effAdv > 0 ? `<span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(effAdv)}</span> ` : ''}
-            ${member.due > 0 ? `<span class="member-badge badge-due">बाँकी ${Accounting.formatNum(member.due)}</span>` : ''}
-          </div>
-          ${mandHtml}
         </div>
       </div>
-    </div>
 
-    <button class="btn btn-success btn-lg btn-block" onclick="openGroupChatFromHome()">💬 छलफल चौतारी${chatBadge}</button>
+      <div class="section-card mh-chat-card" onclick="ackMemberHomeChatRead()">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-shrink:0">
+          <div style="font-weight:700;font-size:0.92rem">💬 छलफल चौतारी ${chatBadge}</div>
+          <button type="button" class="btn btn-light btn-sm" style="padding:3px 8px;font-size:0.72rem" onclick="event.stopPropagation();openGroupChatFromHome()">ठूलो ↗</button>
+        </div>
+        <div class="mh-chat-compose" onclick="event.stopPropagation();ackMemberHomeChatRead()">
+          <input type="text" id="member-home-chat-input" placeholder="नयाँ सन्देश लेख्नुहोस्..." onkeydown="if(event.key==='Enter')sendMemberHomeChat()">
+          <button type="button" class="btn btn-success btn-sm" style="padding:7px 12px" onclick="sendMemberHomeChat()">पठाउ</button>
+        </div>
+        <div id="mh-chat-list" class="mh-chat-list" onscroll="ackMemberHomeChatRead()">${chatBubbles}</div>
+      </div>
+    </div>
   `;
+
+  if (prevDraft) {
+    const newInp = document.getElementById('member-home-chat-input');
+    if (newInp) newInp.value = prevDraft;
+  }
+  if (hadFocus) {
+    const newInp = document.getElementById('member-home-chat-input');
+    if (newInp) {
+      newInp.focus();
+      try { newInp.setSelectionRange(newInp.value.length, newInp.value.length); } catch (e) {}
+    }
+  }
+  const newList = document.getElementById('mh-chat-list');
+  if (newList && prevScroll > 0) newList.scrollTop = prevScroll;
+}
+
+function ackMemberHomeChatRead() {
+  const badge = document.getElementById('mh-chat-unread-badge');
+  const hadBadge = badge && !badge.classList.contains('hidden');
+  if (!hadBadge) return;
+  try {
+    const data = _ensureChat(DB.load());
+    markGroupChatRead(data.chat.group || []);
+    badge.classList.add('hidden');
+  } catch (e) {}
+}
+
+function sendMemberHomeChat() {
+  const input = document.getElementById('member-home-chat-input');
+  const text = (input && input.value || '').trim();
+  if (!text) return UI.toast('सन्देश लेख्नुहोस्', 'error');
+  let data = DB.load();
+  postGroupMessage(text, 'text', data);
+  markGroupChatRead((data.chat && data.chat.group) || []);
+  DB.save(data);
+  if (input) input.value = '';
+  if (typeof DB.pushChatNow === 'function') {
+    try { DB.pushChatNow(); } catch (e) {}
+  }
+  const memberHome = document.getElementById('home-member');
+  if (memberHome) {
+    renderMemberHome(memberHome);
+    const list = document.getElementById('mh-chat-list');
+    if (list) list.scrollTop = 0;
+  }
 }
 
 function openMemberOwnProfileModal(options = {}) {

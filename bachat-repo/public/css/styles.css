@@ -239,7 +239,7 @@ html, body {
 /* ===== Tab Content ===== */
 #tab-content {
   flex: 1;
-  padding: 10px 12px 24px;
+  padding: 8px 10px 12px;
   overflow-y: auto;
 }
 .tab-pane { display: none; }
@@ -850,4 +850,63 @@ tr:active { background: #f0f7ff; }
   font-size: 0.85rem;
   color: #334;
   line-height: 1.55;
+}
+
+/* सदस्य होम — बिना scroll पूरा स्क्रिन + भित्र छलफल चौतारी बाकस */
+.member-home-shell {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 108px);
+  height: calc(100dvh - 108px);
+  min-height: 420px;
+  gap: 8px;
+}
+.mh-fund-card,
+.mh-profile-card {
+  flex-shrink: 0;
+  margin-bottom: 0 !important;
+}
+.mh-chat-card {
+  flex: 1 1 0;
+  min-height: 155px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  margin-bottom: 0 !important;
+  padding: 10px !important;
+}
+.mh-chat-compose {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+.mh-chat-compose input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1.5px solid #ced4da;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  outline: none;
+}
+.mh-chat-compose input:focus {
+  border-color: var(--primary);
+}
+.mh-chat-list {
+  flex: 1 1 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 2px 2px;
+  -webkit-overflow-scrolling: touch;
+}
+.mh-chat-card .chat-bubble {
+  max-width: 88%;
+  padding: 7px 10px;
+  font-size: 0.84rem;
+}
+.mh-chat-card .chat-sys {
+  max-width: 98%;
 }
