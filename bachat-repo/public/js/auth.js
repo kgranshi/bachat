@@ -158,11 +158,14 @@ const Auth = {
       if (!res.ok || !res.body || !res.body.ok) {
         return { ok: false, msg: (res.body && res.body.error) || 'लगइन मिलेन' };
       }
-      const { token, user, pinVerifier, version, data, chat } = res.body;
+      const { token, user, pinVerifier, version, data, chat, readState } = res.body;
       DB.setToken(token);
       this.currentUser = user;
       this.setPinVerifier(pinVerifier || '');
       this.saveSession();
+      if (typeof DB.applyUserReadState === 'function') {
+        DB.applyUserReadState(readState || {}, user);
+      }
       DB._applyServerPayload(data, chat, version);
       return { ok: true };
     } catch (e) {
@@ -236,6 +239,9 @@ const Auth = {
     if (res.body.token) DB.setToken(res.body.token);
     if (res.body.user) this.currentUser = res.body.user;
     if (res.body.pinVerifier) this.setPinVerifier(res.body.pinVerifier);
+    if (res.body.version && typeof DB.setServerVersion === 'function') {
+      DB.setServerVersion(res.body.version);
+    }
     this.saveSession();
     try {
       const data = DB.load();

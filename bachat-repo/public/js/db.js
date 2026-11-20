@@ -410,13 +410,18 @@ const DB = {
       if (!res.ok || !res.body || !res.body.ok) return false;
       this._cloud = true;
       const local = this.load();
-      const prevChatLen = ((local.chat && local.chat.group) || []).length;
+      const prevGroup = (local.chat && local.chat.group) || [];
       const nextChat = res.body.chat || local.chat;
-      const nextChatLen = ((nextChat && nextChat.group) || []).length;
+      const nextGroup = (nextChat && nextChat.group) || [];
+      const chatChanged = JSON.stringify(prevGroup) !== JSON.stringify(nextGroup);
+
+      if (res.body.readState) {
+        this.applyUserReadState(res.body.readState);
+      }
 
       if (!res.body.unchanged && res.body.data) {
         this._applyServerPayload(res.body.data, nextChat, res.body.version);
-      } else if (nextChat && nextChatLen !== prevChatLen) {
+      } else if (nextChat && chatChanged) {
         local.chat = nextChat;
         this._applyingRemote = true;
         try {
@@ -432,6 +437,73 @@ const DB = {
     } catch (e) {
       return false;
     }
+  },
+
+  getUserReadKey(userObj) {
+    let u = userObj || (typeof Auth !== 'undefined' ? Auth.currentUser : null);
+    if (!u) {
+      try {
+        const s = localStorage.getItem('gs_session');
+        if (s) u = JSON.parse(s);
+      } catch (e) {}
+    }
+    if (!u) return '';
+    if (u.role === 'member' && u.memberId) return 'mem:' + String(u.memberId);
+    if (u.role === 'admin_ro' && u.username) return 'sec:' + String(u.username);
+    return 'admin:' + String(u.username || 'admin');
+  },
+
+  getUserReadState(userObj) {
+    const key = this.getUserReadKey(userObj);
+    if (!key) return {};
+    try {
+      const raw = localStorage.getItem('gs_read_state_' + key);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  },
+
+  applyUserReadState(serverState, userObj) {
+    const key = this.getUserReadKey(userObj);
+    if (!key) return {};
+    const prev = this.getUserReadState(userObj);
+    const srv = (serverState && typeof serverState === 'object') ? serverState : {};
+    const next = Object.assign({}, prev);
+    if (srv.chatReadAt && (!next.chatReadAt || srv.chatReadAt > next.chatReadAt)) next.chatReadAt = String(srv.chatReadAt);
+    if (srv.chatReadId && !next.chatReadId) next.chatReadId = String(srv.chatReadId);
+    if (srv.chatReadAt && srv.chatReadId && (!prev.chatReadAt || srv.chatReadAt >= prev.chatReadAt)) next.chatReadId = String(srv.chatReadId);
+    if (srv.activityReadAt && (!next.activityReadAt || srv.activityReadAt > next.activityReadAt)) next.activityReadAt = String(srv.activityReadAt);
+    if (srv.fbReadAt && (!next.fbReadAt || srv.fbReadAt > next.fbReadAt)) next.fbReadAt = String(srv.fbReadAt);
+    const mergedMonths = Array.from(new Set([
+      ...(Array.isArray(prev.csReadMonths) ? prev.csReadMonths : []),
+      ...(Array.isArray(srv.csReadMonths) ? srv.csReadMonths : [])
+    ].map(String)));
+    if (mergedMonths.length) next.csReadMonths = mergedMonths.slice(-120);
+    try { localStorage.setItem('gs_read_state_' + key, JSON.stringify(next)); } catch (e) {}
+    return next;
+  },
+
+  async saveUserReadState(patch) {
+    const key = this.getUserReadKey();
+    if (!key || !patch || typeof patch !== 'object') return {};
+    const merged = this.applyUserReadState(patch);
+    if (patch.chatReadId && patch.chatReadAt) {
+      merged.chatReadId = String(patch.chatReadId);
+      try { localStorage.setItem('gs_read_state_' + key, JSON.stringify(merged)); } catch (e) {}
+    }
+    if (this.getToken() && navigator.onLine) {
+      try {
+        const res = await this.apiFetch('/user/read-state', {
+          method: 'POST',
+          body: JSON.stringify(patch)
+        });
+        if (res.ok && res.body && res.body.readState) {
+          return this.applyUserReadState(res.body.readState);
+        }
+      } catch (e) {}
+    }
+    return merged;
   },
 
   async initCloud(onRemoteChange) {
@@ -560,11 +632,61 @@ const DB = {
         const mem = (cur.members || []).find(m => m.id === memberId);
         if (mem) {
           mem.photo = res.body.url;
+          if (res.body.photoLocked !== undefined) mem.photoLocked = !!res.body.photoLocked;
           this.save(cur, { localOnly: true });
         }
-        return { ok: true, url: res.body.url, version: res.body.version };
+        return { ok: true, url: res.body.url, photoLocked: !!res.body.photoLocked, version: res.body.version };
       }
       return { ok: false, error: (res.body && res.body.error) || 'फोटो अपलोड असफल' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
+  },
+
+  async resetMemberPhoto(memberId, clearPhoto) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'फोटो रिसेट गर्न इन्टरनेट चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/admin/reset-member-photo', {
+        method: 'POST',
+        body: JSON.stringify({ memberId, clearPhoto: !!clearPhoto })
+      });
+      if (res.ok && res.body && res.body.ok) {
+        if (res.body.version) this.setServerVersion(res.body.version);
+        const cur = this.load();
+        const mem = (cur.members || []).find(m => m.id === memberId);
+        if (mem) {
+          mem.photoLocked = false;
+          if (clearPhoto) mem.photo = null;
+          this.save(cur, { localOnly: true });
+        }
+        return { ok: true, version: res.body.version };
+      }
+      return { ok: false, error: (res.body && res.body.error) || 'फोटो रिसेट असफल' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
+  },
+
+  async deleteChatMessage(msgId) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'सन्देश मेट्न इन्टरनेट चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/chat/delete', {
+        method: 'POST',
+        body: JSON.stringify({ id: msgId })
+      });
+      if (res.ok && res.body && res.body.ok) {
+        const cur = this.load();
+        if (cur.chat && Array.isArray(cur.chat.group)) {
+          cur.chat.group = cur.chat.group.filter(m => m && m.id !== msgId);
+          this.save(cur, { localOnly: true });
+        }
+        return { ok: true };
+      }
+      return { ok: false, error: (res.body && res.body.error) || 'सन्देश मेट्न सकिएन' };
     } catch (e) {
       return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
     }

@@ -141,8 +141,18 @@ function stripSecretsFromState(data) {
   return clean;
 }
 
-function sanitizeStateForRole(state, user) {
+function sanitizeStateForRole(state, user, pinFlags) {
   const out = stripSecretsFromState(state);
+  if (pinFlags && Array.isArray(out.members)) {
+    out.members = out.members.map((m) => {
+      if (!m || !m.id) return m;
+      const flag = !!pinFlags[String(m.id)];
+      if (m.mustChangePin !== flag) {
+        return Object.assign({}, m, { mustChangePin: flag });
+      }
+      return m;
+    });
+  }
   if (user.role === 'member') {
     out.pinRequests = (out.pinRequests || []).filter((r) => r.memberId === user.memberId);
     out.complaints = (out.complaints || []).filter((c) => c.memberId === user.memberId);
@@ -256,6 +266,54 @@ async function setPinResetFlag(db, memberId, mustChange) {
     )
     .bind(JSON.stringify(flags), new Date().toISOString())
     .run();
+}
+
+function userReadKey(user) {
+  if (!user) return '';
+  if (user.role === 'member' && user.memberId) return 'mem:' + String(user.memberId);
+  if (user.role === 'admin_ro' && user.username) return 'sec:' + String(user.username);
+  return 'admin:' + String(user.username || 'admin');
+}
+
+async function getAllReadStates(db) {
+  try {
+    const row = await db.prepare("SELECT value FROM system_secrets WHERE key = 'user_read_states'").first();
+    return row && row.value ? JSON.parse(row.value) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function getUserReadState(db, user) {
+  const key = userReadKey(user);
+  if (!key) return {};
+  const all = await getAllReadStates(db);
+  return all[key] || {};
+}
+
+async function saveUserReadState(db, user, patch) {
+  const key = userReadKey(user);
+  if (!key || !patch || typeof patch !== 'object') return {};
+  const all = await getAllReadStates(db);
+  const prev = all[key] || {};
+  const next = Object.assign({}, prev);
+  if (patch.chatReadAt && (!prev.chatReadAt || patch.chatReadAt > prev.chatReadAt)) next.chatReadAt = String(patch.chatReadAt);
+  if (patch.chatReadId) next.chatReadId = String(patch.chatReadId);
+  if (patch.activityReadAt && (!prev.activityReadAt || patch.activityReadAt > prev.activityReadAt)) next.activityReadAt = String(patch.activityReadAt);
+  if (patch.fbReadAt && (!prev.fbReadAt || patch.fbReadAt > prev.fbReadAt)) next.fbReadAt = String(patch.fbReadAt);
+  if (Array.isArray(patch.csReadMonths)) {
+    const merged = Array.from(new Set([...(Array.isArray(prev.csReadMonths) ? prev.csReadMonths : []), ...patch.csReadMonths.map(String)]));
+    next.csReadMonths = merged.slice(-120);
+  }
+  all[key] = next;
+  await db
+    .prepare(
+      `INSERT INTO system_secrets (key, value, created_at) VALUES ('user_read_states', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, created_at=excluded.created_at`
+    )
+    .bind(JSON.stringify(all), new Date().toISOString())
+    .run();
+  return next;
 }
 
 async function loadChatFromDb(db, user) {
@@ -568,7 +626,7 @@ export async function onRequest(context) {
       await env.DB.prepare('DELETE FROM login_attempts WHERE ip_key = ?').bind(attemptKey).run();
 
       const jwtSecret = await getJwtSecret(env);
-      const pinFlags = matched.role === 'member' ? await getPinResetFlags(env.DB) : {};
+      const pinFlags = await getPinResetFlags(env.DB);
       const mustChangePin = !!(matched.role === 'member' && matched.member_id && pinFlags[String(matched.member_id)]);
       const userObj = {
         role: matched.role,
@@ -582,6 +640,7 @@ export async function onRequest(context) {
       const token = await signJwt(userObj, jwtSecret);
       const stateRow = await loadStateRow(env.DB);
       const chat = await loadChatFromDb(env.DB, userObj);
+      const readState = await getUserReadState(env.DB, userObj);
 
       return json({
         ok: true,
@@ -589,8 +648,9 @@ export async function onRequest(context) {
         user: userObj,
         pinVerifier: matched.pin_hash || null,
         version: stateRow.version,
-        data: sanitizeStateForRole(stateRow.data, userObj),
-        chat
+        data: sanitizeStateForRole(stateRow.data, userObj, pinFlags),
+        chat,
+        readState
       });
     }
 
@@ -742,15 +802,18 @@ export async function onRequest(context) {
       const sinceVersion = Number(url.searchParams.get('sinceVersion') || -1);
       const stateRow = await loadStateRow(env.DB);
       const chat = await loadChatFromDb(env.DB, user);
+      const readState = await getUserReadState(env.DB, user);
       if (sinceVersion === stateRow.version) {
-        return json({ ok: true, unchanged: true, version: stateRow.version, chat });
+        return json({ ok: true, unchanged: true, version: stateRow.version, chat, readState });
       }
+      const pinFlags = await getPinResetFlags(env.DB);
       return json({
         ok: true,
         unchanged: false,
         version: stateRow.version,
-        data: sanitizeStateForRole(stateRow.data, user),
-        chat
+        data: sanitizeStateForRole(stateRow.data, user, pinFlags),
+        chat,
+        readState
       });
     }
 
@@ -796,6 +859,12 @@ export async function onRequest(context) {
         prepared = protectClosedMonths(cur.data, prepared);
       }
       await offloadHeavyMediaToR2(env, prepared);
+      const pinFlags = await getPinResetFlags(env.DB);
+      if (Array.isArray(prepared.members)) {
+        prepared.members = prepared.members.map((m) =>
+          m && m.id ? Object.assign({}, m, { mustChangePin: !!pinFlags[String(m.id)] }) : m
+        );
+      }
       const cleanState = stripSecretsFromState(prepared);
 
       const nextVersion = (cur.version || 0) + 1;
@@ -910,6 +979,19 @@ export async function onRequest(context) {
           .bind('mem:' + memberId, mob, memberId, name || memberId, pinHash, pinHash, now)
           .run();
         await setPinResetFlag(env.DB, memberId, !!isTemp);
+        const curState = await loadStateRow(env.DB);
+        if (curState && curState.data && Array.isArray(curState.data.members)) {
+          const stMem = curState.data.members.find((m) => m && m.id === memberId);
+          if (stMem) {
+            stMem.hasPin = true;
+            stMem.mustChangePin = !!isTemp;
+            const nxtVer = (curState.version || 0) + 1;
+            await env.DB
+              .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+              .bind(nxtVer, JSON.stringify(stripSecretsFromState(curState.data)), now)
+              .run();
+          }
+        }
         return json({ ok: true, isTemp: !!isTemp });
       }
 
@@ -977,10 +1059,25 @@ export async function onRequest(context) {
         .bind(newHash, newHash, now, 'mem:' + user.memberId)
         .run();
       await setPinResetFlag(env.DB, user.memberId, false);
+      let nextStateVersion = null;
+      const curState = await loadStateRow(env.DB);
+      if (curState && curState.data && Array.isArray(curState.data.members)) {
+        const stMem = curState.data.members.find((m) => m && m.id === user.memberId);
+        if (stMem) {
+          stMem.hasPin = true;
+          stMem.mustChangePin = false;
+          stMem.pinChangedAt = now;
+          nextStateVersion = (curState.version || 0) + 1;
+          await env.DB
+            .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+            .bind(nextStateVersion, JSON.stringify(stripSecretsFromState(curState.data)), now)
+            .run();
+        }
+      }
       const jwtSecret = await getJwtSecret(env);
       const updatedUser = Object.assign({}, user, { mustChangePin: false });
       const token = await signJwt(updatedUser, jwtSecret);
-      return json({ ok: true, token, user: updatedUser, pinVerifier: newHash });
+      return json({ ok: true, token, user: updatedUser, pinVerifier: newHash, version: nextStateVersion });
     }
 
     // 11. Chat GET & POST
@@ -1027,6 +1124,25 @@ export async function onRequest(context) {
         );
       }
       return json({ ok: true, id: msgId, inserted });
+    }
+
+    // 11b. Admin Delete Chat Message
+    if (path === '/chat/delete' && method === 'POST') {
+      if (user.role !== 'admin' || !user.accountsWriter) {
+        return json({ ok: false, error: 'Admin A ले मात्र सन्देश मेट्न मिल्छ' }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const msgId = String((body && body.id) || '').trim();
+      if (!msgId) return json({ ok: false, error: 'सन्देश ID चाहिन्छ' }, 400);
+      await env.DB.prepare('DELETE FROM chat_messages WHERE id = ?').bind(msgId).run();
+      return json({ ok: true, id: msgId });
+    }
+
+    // 11c. Persistent Per-User Read State (survives logout/login and cross-device)
+    if (path === '/user/read-state' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const saved = await saveUserReadState(env.DB, user, body || {});
+      return json({ ok: true, readState: saved });
     }
 
     // 12. Member Feedback / Complaints / Suggestions / PIN Requests (appends safely without Admin write lock)
@@ -1106,14 +1222,21 @@ export async function onRequest(context) {
         return json({ ok: false, error: 'सदस्य ID भेटिएन' }, 400);
       }
 
-      const urlOut = await uploadDataUrlToR2(env, 'members', `${targetMemberId}-photo-${Date.now()}`, dataUrl);
       const cur = await loadStateRow(env.DB);
       const state = cur.data || defaultState();
       const idx = (state.members || []).findIndex(m => m && m.id === targetMemberId);
       if (idx < 0) {
         return json({ ok: false, error: 'सदस्य भेटिएन' }, 404);
       }
+      if (user.role === 'member' && state.members[idx].photo && state.members[idx].photoLocked !== false) {
+        return json({ ok: false, error: 'तपाईंले प्रोफाइल फोटो एक पटक राखिसक्नुभएको छ। बदल्नुपरे Admin बाट रिसेट गराउनुहोस्।' }, 403);
+      }
+
+      const urlOut = await uploadDataUrlToR2(env, 'members', `${targetMemberId}-photo-${Date.now()}`, dataUrl);
       state.members[idx].photo = urlOut;
+      if (user.role === 'member') {
+        state.members[idx].photoLocked = true;
+      }
       const now = new Date().toISOString();
       const nextVersion = (cur.version || 0) + 1;
       await env.DB
@@ -1121,7 +1244,31 @@ export async function onRequest(context) {
         .bind(nextVersion, JSON.stringify(stripSecretsFromState(state)), now)
         .run();
 
-      return json({ ok: true, url: urlOut, version: nextVersion });
+      return json({ ok: true, url: urlOut, photoLocked: !!state.members[idx].photoLocked, version: nextVersion });
+    }
+
+    // 13c. Admin Reset Member Photo Lock (allows member to re-upload photo once)
+    if (path === '/admin/reset-member-photo' && method === 'POST') {
+      if (user.role !== 'admin' || !user.accountsWriter) {
+        return json({ ok: false, error: 'Admin A मात्र' }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const memberId = String((body && body.memberId) || '').trim();
+      const clearPhoto = !!(body && body.clearPhoto);
+      if (!memberId) return json({ ok: false, error: 'सदस्य ID चाहिन्छ' }, 400);
+      const cur = await loadStateRow(env.DB);
+      const state = cur.data || defaultState();
+      const idx = (state.members || []).findIndex(m => m && m.id === memberId);
+      if (idx < 0) return json({ ok: false, error: 'सदस्य भेटिएन' }, 404);
+      state.members[idx].photoLocked = false;
+      if (clearPhoto) state.members[idx].photo = null;
+      const now = new Date().toISOString();
+      const nextVersion = (cur.version || 0) + 1;
+      await env.DB
+        .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+        .bind(nextVersion, JSON.stringify(stripSecretsFromState(state)), now)
+        .run();
+      return json({ ok: true, version: nextVersion, photoLocked: false, photo: state.members[idx].photo || null });
     }
 
     // 14. Web Push Subscription Management
