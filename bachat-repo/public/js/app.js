@@ -333,7 +333,7 @@ function renderHomeByRole() {
   if (Auth.isAdmin()) {
     adminHome.classList.remove('hidden');
     memberHome.classList.add('hidden');
-    // Admin खुला महिना प्रगति बक्स
+    // Admin खुला महिना प्रगति बक्स (छोटो)
     const data = DB.load();
     const cur = Accounting.getCurrentMonth(data);
     let progEl = document.getElementById('admin-open-progress');
@@ -349,18 +349,97 @@ function renderHomeByRole() {
         const activeCount = (data.members || []).filter(m => m.active).length;
         const paidCount = Object.values(cur.collections || {}).filter(c => (Number(c.totalPaid) || 0) > 0).length;
         const cashCollected = Object.values(cur.collections || {}).reduce((s, c) => s + (Number(c.totalPaid) || 0), 0);
-        progEl.innerHTML = `<div class="section-card" onclick="openCollection()" style="cursor:pointer;padding:10px 14px;margin-bottom:10px;background:#f0f7ff;border:1px solid #b6d4fe;display:flex;justify-content:space-between;align-items:center;gap:8px">
-          <div style="font-size:0.84rem">📥 <strong>${cur.name}:</strong> ${paidCount}/${activeCount} सदस्य असुली</div>
-          <div style="font-size:0.84rem;font-weight:700;color:#0a58ca">रु. ${Accounting.formatNum(cashCollected)} ▸</div>
+        progEl.innerHTML = `<div class="section-card" onclick="openCollection()" style="cursor:pointer;padding:6px 10px;margin-bottom:0;background:#f0f7ff;border:1px solid #b6d4fe;border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:6px">
+          <div style="font-size:0.78rem">📥 <strong>${cur.name}:</strong> ${paidCount}/${activeCount} सदस्य असुली</div>
+          <div style="font-size:0.78rem;font-weight:700;color:#0a58ca">रु. ${Accounting.formatNum(cashCollected)} ▸</div>
         </div>`;
       } else {
         progEl.innerHTML = '';
       }
     }
+    renderAdminHomeChat();
   } else {
     adminHome.classList.add('hidden');
     memberHome.classList.remove('hidden');
     renderMemberHome(memberHome);
+  }
+}
+
+function renderAdminHomeChat(options = {}) {
+  const listEl = document.getElementById('ah-chat-list');
+  if (!listEl) return;
+  const data = _ensureChat(DB.load());
+  const me = _chatSender();
+  const canDelete = Auth.isAccountsWriter && Auth.isAccountsWriter();
+  const msgs = (data.chat && data.chat.group) || [];
+
+  const wasLoaded = listEl.dataset.loaded === '1';
+  const prevScrollTop = listEl.scrollTop;
+  const wasAtBottom = !wasLoaded || (listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 40);
+  const prevCount = Number(listEl.dataset.count || 0);
+  const hasNewMsg = msgs.length > prevCount;
+
+  const badge = document.getElementById('ah-chat-unread-badge');
+  const unread = groupChatUnreadCount(data);
+  if (badge) {
+    badge.textContent = unread + ' नयाँ';
+    badge.classList.toggle('hidden', unread <= 0);
+  }
+
+  if (!msgs.length) {
+    listEl.innerHTML = '<div class="text-muted text-center" style="padding:18px 8px;font-size:0.83rem">अहिलेसम्म छलफल सन्देश छैन — तल बाकसबाट सुरु गर्नुहोस्</div>';
+  } else {
+    listEl.innerHTML = msgs.map(function (m) {
+      const mine = me.role !== 'system' && m.fromId === me.id && m.fromRole === me.role;
+      const sys = m.fromRole === 'system' || m.type === 'auto_group';
+      const time = m.time ? new Date(m.time).toLocaleString('ne-NP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      const delBtn = canDelete && m.id
+        ? '<button type="button" onclick="event.stopPropagation();deleteGroupChatMessage(\'' + escapeHtmlChat(m.id) + '\', false)" style="border:none;background:none;color:#dc3545;cursor:pointer;font-size:0.74rem;margin-left:6px;padding:0" title="मेटाउनुहोस्">🗑️</button>'
+        : '';
+      return '<div class="chat-row ' + (sys ? 'sys' : (mine ? 'mine' : 'theirs')) + '">' +
+        '<div class="chat-bubble' + (sys ? ' chat-sys' : '') + '">' +
+        (!mine && !sys ? '<div class="chat-from">' + (m.fromRole === 'admin' ? '🔐 ' : '👤 ') + escapeHtmlChat(m.fromName || '') + '</div>' : '') +
+        (sys ? '<div class="chat-from">📢 समूह सूचना</div>' : '') +
+        '<div class="chat-text">' + escapeHtmlChat(m.text || '').replace(/\n/g, '<br>') + '</div>' +
+        '<div class="chat-time">' + time + delBtn + '</div></div></div>';
+    }).join('');
+  }
+
+  listEl.dataset.loaded = '1';
+  listEl.dataset.count = String(msgs.length);
+
+  if (options.scrollToBottom || wasAtBottom || hasNewMsg) {
+    listEl.scrollTop = listEl.scrollHeight;
+  } else {
+    listEl.scrollTop = prevScrollTop;
+  }
+}
+
+function ackAdminHomeChatRead() {
+  const badge = document.getElementById('ah-chat-unread-badge');
+  const hadBadge = badge && !badge.classList.contains('hidden');
+  if (!hadBadge) return;
+  try {
+    const data = _ensureChat(DB.load());
+    markGroupChatRead(data.chat.group || []);
+    badge.classList.add('hidden');
+  } catch (e) {}
+}
+
+function sendAdminHomeChat() {
+  const input = document.getElementById('admin-home-chat-input');
+  const text = (input && input.value || '').trim();
+  if (!text) return UI.toast('सन्देश लेख्नुहोस्', 'error');
+  const sender = _chatSender();
+  if (sender.role === 'system') return UI.toast('लगइन आवश्यक', 'error');
+  let data = DB.load();
+  postGroupMessage(text, 'text', data);
+  markGroupChatRead((data.chat && data.chat.group) || []);
+  DB.save(data);
+  if (input) input.value = '';
+  renderAdminHomeChat({ scrollToBottom: true });
+  if (typeof DB.pushChatNow === 'function') {
+    try { DB.pushChatNow(); } catch (e) {}
   }
 }
 
@@ -1110,7 +1189,8 @@ async function unifiedLogin() {
 
 // ========== TABS ==========
 function switchTab(tab) {
-  if (Auth.isMember && Auth.isMember() && (tab === 'profile' || tab === 'chat')) {
+  if (tab === 'chat') tab = 'home';
+  if (Auth.isMember && Auth.isMember() && tab === 'profile') {
     tab = 'home';
   }
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
@@ -2400,14 +2480,6 @@ function renderAdminProfile(container) {
 
   container.innerHTML = `
     <div class="section-card">
-      <div class="section-title">👤 Admin प्रोफाइल</div>
-      <div class="report-row"><span class="label">नाम</span><span class="value">${data.admin.name}</span></div>
-      <div class="report-row"><span class="label">Username</span><span class="value">${data.admin.username}</span></div>
-      <div class="report-row"><span class="label">मोबाइल</span><span class="value">${data.admin.mobile}</span></div>
-      <button class="btn btn-light btn-sm mt-1" onclick="editAdminProfile()">✏️ परिवर्तन</button>
-    </div>
-
-    <div class="section-card">
       <div class="section-title">👥 सदस्य व्यवस्थापन (${activeMembers.length} जना)</div>
       <button class="btn btn-success btn-block mb-1" onclick="showNewMemberForm()">➕ नयाँ सदस्य प्रवेश</button>
       <div class="search-box">
@@ -3684,7 +3756,7 @@ async function confirmDeleteGroupChatMessage(msgId, fromModal) {
   closeModal();
   if (fromModal) {
     openGroupChatFromHome({ replace: true });
-  } else {
+  } else if (document.getElementById('tab-chat') && document.getElementById('tab-chat').classList.contains('active')) {
     renderChatTab();
   }
   renderHomeByRole();
@@ -3933,7 +4005,9 @@ async function saveAdminProfile() {
   DB.save(data);
   UI.toast('सेभ भयो', 'success');
   closeModal();
-  renderProfileTab();
+  UI.updateHeader(data);
+  renderSettingsTab();
+  renderHomeByRole();
 }
 
 // ========== SETTINGS ==========
@@ -3963,6 +4037,11 @@ function renderSettingsTab() {
     <div class="section-card">
       <div class="section-title">⚙️ सेटिङ</div>
       <ul class="settings-list">
+        <li class="settings-item" onclick="editAdminProfile()">
+          <div class="settings-icon" style="background:#e7f1ff">👤</div>
+          <div class="settings-text"><div class="title">Admin प्रोफाइल</div><div class="desc">${escapeHtmlChat((data.admin && data.admin.name) || 'Admin')} (${escapeHtmlChat((data.admin && data.admin.username) || '')}) · Password र PIN</div></div>
+          <div class="settings-arrow">›</div>
+        </li>
         <li class="settings-item" onclick="editAccountsWriter()">
           <div class="settings-icon" style="background:#fff3cd">✍️</div>
           <div class="settings-text"><div class="title">हिसाब सिंक (Admin A)</div><div class="desc">कुन Admin ले क्लाउडमा लेख्ने</div></div>

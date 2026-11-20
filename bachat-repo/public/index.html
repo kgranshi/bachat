@@ -122,9 +122,6 @@
           <button type="button" class="nav-btn active" data-tab="home" onclick="switchTab('home')">
             🏠<span>होम</span>
           </button>
-          <button type="button" class="nav-btn" data-tab="chat" onclick="switchTab('chat')">
-            💬<span>च्याट</span>
-          </button>
           <button type="button" class="nav-btn" data-tab="profile" onclick="switchTab('profile')">
             👤<span>प्रोफाइल</span>
           </button>
@@ -141,60 +138,73 @@
       <main id="tab-content">
         <!-- HOME TAB -->
         <div id="tab-home" class="tab-pane active">
-          <div id="home-admin">
-            <div id="mig-banner" class="hidden" style="background:#d1e7dd;color:#0f5132;padding:10px 14px;border-radius:12px;margin-bottom:10px;font-size:0.85rem;font-weight:600;text-align:center"></div>
-            <!-- Compact stats row 1 -->
-            <div class="stats-row">
-              <div class="stat-box" style="border-color:#6f42c1">
-                <div class="stat-emoji">💎</div>
-                <div class="stat-label" style="color:#6f42c1">सम्पत्ति</div>
-                <div class="stat-value" id="home-assets">0</div>
+          <div id="home-admin" class="admin-home-shell">
+            <div id="mig-banner" class="hidden" style="background:#d1e7dd;color:#0f5132;padding:6px 10px;border-radius:10px;font-size:0.78rem;font-weight:600;text-align:center;flex-shrink:0"></div>
+            <div class="ah-stats-wrap">
+              <!-- Compact stats row 1 -->
+              <div class="stats-row">
+                <div class="stat-box" style="border-color:#6f42c1" onclick="showAssetsDetail()">
+                  <div class="stat-head"><span class="stat-emoji">💎</span><span class="stat-label" style="color:#6f42c1">सम्पत्ति</span></div>
+                  <div class="stat-value" id="home-assets">0</div>
+                </div>
+                <div class="stat-box" style="border-color:#fd7e14" onclick="showAssetsDetail()">
+                  <div class="stat-head"><span class="stat-emoji">🤝</span><span class="stat-label" style="color:#fd7e14">लगानी</span></div>
+                  <div class="stat-value" id="home-loans">0</div>
+                </div>
+                <div class="stat-box" style="border-color:#198754" onclick="showAssetsDetail()">
+                  <div class="stat-head"><span class="stat-emoji">💵</span><span class="stat-label" style="color:#198754">नगद</span></div>
+                  <div class="stat-value" id="home-cash">0</div>
+                </div>
               </div>
-              <div class="stat-box" style="border-color:#fd7e14">
-                <div class="stat-emoji">🤝</div>
-                <div class="stat-label" style="color:#fd7e14">लगानी</div>
-                <div class="stat-value" id="home-loans">0</div>
-              </div>
-              <div class="stat-box" style="border-color:#198754">
-                <div class="stat-emoji">💵</div>
-                <div class="stat-label" style="color:#198754">नगद</div>
-                <div class="stat-value" id="home-cash">0</div>
-              </div>
-            </div>
-            <!-- Compact stats row 2 -->
-            <div class="stats-row">
-              <div class="stat-box" style="border-color:#0d6efd">
-                <div class="stat-emoji">👥</div>
-                <div class="stat-label" style="color:#0d6efd">सदस्य</div>
-                <div class="stat-value" id="home-member-count">0</div>
-              </div>
-              <div class="stat-box" style="border-color:#6610f2">
-                <div class="stat-emoji">🎫</div>
-                <div class="stat-label" style="color:#6610f2">कित्ता</div>
-                <div class="stat-value" id="home-kitta-count">0</div>
-              </div>
-              <div class="stat-box" style="border-color:#0dcaf0">
-                <div class="stat-emoji">💰</div>
-                <div class="stat-label" style="color:#0891b2">प्रति कित्ता</div>
-                <div class="stat-value" id="home-per-kitta">0</div>
+              <!-- Compact stats row 2 -->
+              <div class="stats-row">
+                <div class="stat-box" style="border-color:#0d6efd" onclick="showMembersSummary()">
+                  <div class="stat-head"><span class="stat-emoji">👥</span><span class="stat-label" style="color:#0d6efd">सदस्य</span></div>
+                  <div class="stat-value" id="home-member-count">0</div>
+                </div>
+                <div class="stat-box" style="border-color:#6610f2" onclick="showMembersSummary()">
+                  <div class="stat-head"><span class="stat-emoji">🎫</span><span class="stat-label" style="color:#6610f2">कित्ता</span></div>
+                  <div class="stat-value" id="home-kitta-count">0</div>
+                </div>
+                <div class="stat-box" style="border-color:#0dcaf0" onclick="showMembersSummary()">
+                  <div class="stat-head"><span class="stat-emoji">💰</span><span class="stat-label" style="color:#0891b2">प्रति कित्ता</span></div>
+                  <div class="stat-value" id="home-per-kitta">0</div>
+                </div>
               </div>
             </div>
-            <!-- Action cards -->
+            <div id="admin-open-progress"></div>
+            <!-- Action cards in 1 row -->
             <div class="action-cards">
               <div class="action-card ac-teal" onclick="openCollection()">
                 <div class="ac-icon">💳</div>
                 <div class="ac-title">मासिक असुली</div>
-                <div class="ac-desc">बचत, ब्याज र सावा बुझाउने</div>
+                <div class="ac-desc">बचत · ब्याज · सावा</div>
               </div>
               <div class="action-card ac-orange" onclick="openLoans()">
                 <div class="ac-icon">🤝</div>
                 <div class="ac-title">ऋण लगानी</div>
-                <div class="ac-desc">नयाँ ऋण र बाँकी सूची</div>
+                <div class="ac-desc">नयाँ ऋण · सूची</div>
               </div>
               <div class="action-card ac-blue" onclick="openReports()">
                 <div class="ac-icon">📊</div>
                 <div class="ac-title">हिसाब रिपोर्ट</div>
-                <div class="ac-desc">मासिक, सारांश र वार्षिक</div>
+                <div class="ac-desc">मासिक · वार्षिक</div>
+              </div>
+            </div>
+            <!-- Inline group chat box -->
+            <div id="admin-home-chat-card" class="section-card ah-chat-card" onclick="ackAdminHomeChatRead()">
+              <div class="ah-chat-head">
+                <div style="font-weight:700;font-size:0.88rem">💬 छलफल चौतारी <span id="ah-chat-unread-badge" class="badge-unread hidden">0</span></div>
+              </div>
+              <div id="ah-chat-list" class="ah-chat-list" onscroll="ackAdminHomeChatRead()"></div>
+              <div class="ah-chat-compose" onclick="event.stopPropagation();ackAdminHomeChatRead()">
+                <input type="text" id="admin-home-chat-input" placeholder="सन्देश लेख्नुहोस्..." onkeydown="if(event.key==='Enter')sendAdminHomeChat()">
+                <button type="button" class="chat-send-icon-btn" onclick="sendAdminHomeChat()" aria-label="पठाउनुहोस्" title="पठाउनुहोस्">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
