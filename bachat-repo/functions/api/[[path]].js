@@ -114,7 +114,7 @@ function stripSecretsFromState(data) {
       name: clean.admin.name || 'Admin',
       username: clean.admin.username || '',
       mobile: clean.admin.mobile || '',
-      memberId: clean.admin.memberId || 'm1',
+      memberId: null,
       hasPin: !!(clean.admin.pin || clean.admin.hasPin)
     };
   }
@@ -378,7 +378,7 @@ async function syncCredentialsFromBackup(db, rawData) {
         .bind(
           rawData.admin.username,
           normalizeMobile(rawData.admin.mobile),
-          rawData.admin.memberId || 'm1',
+          null,
           rawData.admin.name || 'Admin',
           passHash,
           pinHash,
@@ -580,10 +580,10 @@ export async function onRequest(context) {
         return json({ ok: false, error: 'सबै फिल्ड भर्नुहोस्' }, 400);
       }
       const state = initialState || defaultState();
-      state.admin = { name, username, password, mobile, pin, memberId: 'm1' };
+      state.admin = { name, username, password, mobile, pin, memberId: null };
       state.settings = Object.assign({}, defaultState().settings, state.settings || {}, {
-        closePin: pin,
-        accountsWriterUsername: username
+        closePin: '',
+        accountsWriterUsername: ''
       });
       await syncCredentialsFromBackup(env.DB, state);
       const clean = stripSecretsFromState(state);
@@ -622,7 +622,7 @@ export async function onRequest(context) {
         .prepare(
           `SELECT * FROM auth_credentials
            WHERE active = 1 AND (username = ? OR mobile = ? OR mobile = ?)
-           LIMIT 5`
+           LIMIT 10`
         )
         .bind(id, digits, id)
         .all();
@@ -1075,7 +1075,7 @@ export async function onRequest(context) {
         const nextPinHash = body.pin ? await hashSecret(body.pin) : row.pin_hash;
         await env.DB
           .prepare(
-            `UPDATE auth_credentials SET username=?, name=?, mobile=?, secret_hash=?, pin_hash=?, accounts_writer=0, updated_at=? WHERE id='admin'`
+            `UPDATE auth_credentials SET username=?, name=?, mobile=?, member_id=NULL, secret_hash=?, pin_hash=?, accounts_writer=0, updated_at=? WHERE id='admin'`
           )
           .bind(nextUser, nextName, nextMob, nextPassHash, nextPinHash, now)
           .run();
@@ -1086,7 +1086,7 @@ export async function onRequest(context) {
           name: nextName,
           username: nextUser,
           mobile: nextMob,
-          memberId: (stData.admin && stData.admin.memberId) || 'm1',
+          memberId: null,
           hasPin: !!nextPinHash
         });
         const nextVer = (curState.version || 0) + 1;
@@ -1096,7 +1096,7 @@ export async function onRequest(context) {
           .run();
 
         const jwtSecret = await getJwtSecret(env);
-        const newUser = Object.assign({}, user, { accountsWriter: false, username: nextUser, name: nextName, mobile: nextMob });
+        const newUser = Object.assign({}, user, { accountsWriter: false, memberId: null, username: nextUser, name: nextName, mobile: nextMob });
         const token = await signJwt(newUser, jwtSecret);
         return json({ ok: true, token, user: newUser, pinVerifier: nextPinHash, version: nextVer });
       }
@@ -1288,9 +1288,9 @@ export async function onRequest(context) {
         return json({ ok: false, error: 'अनुमति छैन' }, 403);
       }
       const msgId = String(id || 'm' + Date.now() + '_' + randomHex(3));
-      const fromId = (user.role === 'admin' || user.role === 'treasurer')
-        ? (user.memberId || user.username || user.role)
-        : (user.memberId || user.username || 'user');
+      const fromId = user.role === 'admin'
+        ? (user.username || 'admin')
+        : (user.memberId || user.username || user.role || 'user');
       const fromName = (type === 'auto_group' || type === 'system') ? 'समूह सूचना' : (user.name || 'सदस्य');
       const fromRole = (type === 'auto_group' || type === 'system') ? 'system' : user.role;
       const createdAt = time || new Date().toISOString();

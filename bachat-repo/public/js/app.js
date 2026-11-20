@@ -3155,7 +3155,7 @@ function saveMemberEdit(memberId) {
   const mobile = document.getElementById('em-mobile').value.trim();
   if (!name) return UI.toast('नाम चाहिन्छ', 'error');
   if (mobile && Auth.isMobileConflictWithAdmin && Auth.isMobileConflictWithAdmin(mobile, memberId)) {
-    return UI.toast('यो मोबाइल/username Admin वा अर्को सदस्यसँग बाझिन्छ — अर्को नम्बर हाल्नुहोस्', 'error');
+    return UI.toast('यो मोबाइल नम्बर अर्को सदस्य वा username सँग बाझिन्छ — अर्को नम्बर हाल्नुहोस्', 'error');
   }
   const data = DB.load();
   const m = data.members.find(x => x.id === memberId);
@@ -3928,7 +3928,7 @@ function _chatSender() {
     if (typeof Auth !== 'undefined' && Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) {
       const d = DB.load();
       const name = (d.admin && d.admin.name) || (Auth.currentUser && Auth.currentUser.name) || 'Admin';
-      const id = (d.admin && d.admin.memberId) || (Auth.currentUser && Auth.currentUser.username) || 'admin';
+      const id = (Auth.currentUser && Auth.currentUser.username) || (d.admin && d.admin.username) || 'admin';
       return { id: String(id), name: String(name), role: 'admin' };
     }
     if (typeof Auth !== 'undefined' && Auth.isAdmin && Auth.isAdmin() && Auth.currentUser) {
@@ -4458,14 +4458,13 @@ async function saveAdminProfile() {
   data.admin.name = nextName;
   data.admin.username = nextUser;
   data.admin.mobile = nextMobile;
+  data.admin.memberId = null;
   if (pin) data.admin.hasPin = true;
   delete data.admin.password;
   delete data.admin.pin;
   if (data.settings) {
     data.settings.closePin = '';
   }
-  const m = data.members.find(x => x.id === data.admin.memberId);
-  if (m) { m.name = nextName; m.mobile = nextMobile; }
   DB.save(data, { localOnly: true });
   UI.toast('सेभ भयो', 'success');
   closeModal();

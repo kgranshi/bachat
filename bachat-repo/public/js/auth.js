@@ -137,8 +137,6 @@ const Auth = {
       return { ok: false, msg: 'PIN ठीक ४ अंकको हुनुपर्छ' };
     }
     const members = Accounting.createDefaultMembers();
-    members[0].name = name;
-    members[0].mobile = mobile;
     const initialState = DB.getDefault();
     initialState.members = members;
 
@@ -183,16 +181,13 @@ const Auth = {
 
   isMobileConflictWithAdmin(mobile, excludeMemberId) {
     const data = DB.load();
-    if (!data.admin) return false;
     const m = String(mobile || '').trim();
-    const au = String(data.admin.username || '').trim();
-    const am = String(data.admin.mobile || '').trim();
-    const tu = String((data.treasurer && data.treasurer.username) || '').trim();
     if (!m) return false;
-    if (m === au || m === am || (tu && m === tu)) return true;
+    const au = String((data.admin && data.admin.username) || '').trim();
+    const tu = String((data.treasurer && data.treasurer.username) || '').trim();
+    if ((au && m === au) || (tu && m === tu)) return true;
     const md = m.replace(/\D/g, '');
-    const amd = am.replace(/\D/g, '');
-    if (md && (md === au || (tu && md === tu) || (amd && md === amd))) return true;
+    if (md && ((au && md === au) || (tu && md === tu))) return true;
     const other = (data.members || []).find((x) =>
       x.active && x.id !== excludeMemberId &&
       (x.mobile === m || (md && String(x.mobile || '').replace(/\D/g, '') === md))
