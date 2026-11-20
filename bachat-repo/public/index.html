@@ -96,42 +96,46 @@
 
     <!-- Main App Screen -->
     <div id="main-screen" class="screen">
-      <!-- Header -->
-      <header id="app-header">
-        <div class="header-top">
-          <div class="group-info">
-            <span class="group-logo" id="header-logo">💰</span>
-            <div>
-              <div class="group-name" id="header-group-name">समूह बचत</div>
-              <div class="group-meta" id="header-group-meta">स्थापना: -</div>
+      <!-- Sticky Top Chrome (Slim Header + Compact Nav) -->
+      <div id="top-chrome">
+        <header id="app-header">
+          <div class="header-top">
+            <div class="group-info">
+              <span class="group-logo" id="header-logo">💰</span>
+              <div>
+                <div class="group-name" id="header-group-name">समूह बचत</div>
+                <div class="group-meta" id="header-group-meta">स्थापना: -</div>
+              </div>
+            </div>
+            <div class="header-right">
+              <div class="nepali-datetime" id="nepali-datetime">-</div>
+              <div class="header-badges">
+                <div class="month-status" id="month-status">⚪ महिना खुल्ला छैन</div>
+                <div class="sync-status" id="sync-status" title="क्लाउड सिंक अवस्था">⚪</div>
+              </div>
             </div>
           </div>
-          <div class="header-right">
-            <div class="nepali-datetime" id="nepali-datetime">-</div>
-            <div class="month-status" id="month-status">⚪ महिना खुल्ला छैन</div>
-            <div class="sync-status" id="sync-status" title="क्लाउड सिंक">⚪ —</div>
-          </div>
-        </div>
-      </header>
+        </header>
 
-      <!-- Navigation -->
-      <nav id="main-nav">
-        <button type="button" class="nav-btn active" data-tab="home" onclick="switchTab('home')">
-          🏠<br><span>होम</span>
-        </button>
-        <button type="button" class="nav-btn" data-tab="chat" onclick="switchTab('chat')">
-          💬<br><span>च्याट</span>
-        </button>
-        <button type="button" class="nav-btn" data-tab="profile" onclick="switchTab('profile')">
-          👤<br><span>प्रोफाइल</span>
-        </button>
-        <button type="button" class="nav-btn" data-tab="vidhan" onclick="switchTab('vidhan')">
-          📜<br><span>विधान</span>
-        </button>
-        <button type="button" class="nav-btn" data-tab="settings" onclick="switchTab('settings')">
-          ⚙️<br><span>सेटिङ</span>
-        </button>
-      </nav>
+        <!-- Navigation -->
+        <nav id="main-nav">
+          <button type="button" class="nav-btn active" data-tab="home" onclick="switchTab('home')">
+            🏠<span>होम</span>
+          </button>
+          <button type="button" class="nav-btn" data-tab="chat" onclick="switchTab('chat')">
+            💬<span>च्याट</span>
+          </button>
+          <button type="button" class="nav-btn" data-tab="profile" onclick="switchTab('profile')">
+            👤<span>प्रोफाइल</span>
+          </button>
+          <button type="button" class="nav-btn" data-tab="vidhan" onclick="switchTab('vidhan')">
+            📜<span>विधान</span>
+          </button>
+          <button type="button" class="nav-btn" data-tab="settings" onclick="switchTab('settings')">
+            ⚙️<span>सेटिङ</span>
+          </button>
+        </nav>
+      </div>
 
       <!-- Tab Contents -->
       <main id="tab-content">

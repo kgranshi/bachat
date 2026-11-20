@@ -162,17 +162,17 @@ const UI = {
     const el = document.getElementById('sync-status');
     if (!el) return;
     const map = {
-      offline: { t: '📴 अफलाइन', c: 'sync-status sync-offline' },
-      pending: { t: '⏳ पठाउन बाँकी', c: 'sync-status sync-pending' },
-      saving: { t: '☁️ सिंक हुँदै…', c: 'sync-status sync-saving' },
-      saved: { t: '✅ सुरक्षित सिंक', c: 'sync-status sync-saved' },
-      error: { t: '⚠️ सिंक त्रुटि', c: 'sync-status sync-error' },
-      idle: { t: '⚪ —', c: 'sync-status' }
+      offline: { t: '📴 अफलाइन', d: 'अफलाइन · नेट आएपछि स्वतः सिंक हुन्छ', c: 'sync-status sync-offline' },
+      pending: { t: '🟡 बाँकी', d: 'सिंक हुन बाँकी', c: 'sync-status sync-pending' },
+      saving: { t: '🔵 सिंक…', d: 'क्लाउडमा सिंक हुँदैछ…', c: 'sync-status sync-saving' },
+      saved: { t: '🟢 सिंक', d: 'क्लाउडमा सुरक्षित सिंक छ', c: 'sync-status sync-saved' },
+      error: { t: '🔴 त्रुटि', d: 'सिंक त्रुटि', c: 'sync-status sync-error' },
+      idle: { t: '⚪', d: 'सिंक अवस्था', c: 'sync-status' }
     };
     const m = map[state] || map.idle;
-    el.textContent = detail && state === 'offline' ? ('📴 ' + detail) : m.t;
+    el.textContent = m.t;
     el.className = m.c;
-    if (detail) el.title = detail;
+    el.title = detail || m.d;
   },
 
   updateHeader(data) {
@@ -180,9 +180,9 @@ const UI = {
     const logoEl = document.getElementById('header-logo');
     if (logoEl) {
       if (data.group && data.group.logoImage) {
-        logoEl.innerHTML = '<img src="' + data.group.logoImage + '" alt="" style="width:36px;height:36px;border-radius:8px;object-fit:cover"/>';
+        logoEl.innerHTML = '<img src="' + data.group.logoImage + '" alt="" style="width:30px;height:30px;border-radius:7px;object-fit:cover"/>';
       } else {
-        logoEl.innerHTML = '<img src="./logo-group.png" alt="" width="36" height="36" style="border-radius:8px;object-fit:cover"/>';
+        logoEl.innerHTML = '<img src="./logo-group.png" alt="" width="30" height="30" style="border-radius:7px;object-fit:cover"/>';
       }
     }
     const meta = [];
@@ -264,9 +264,12 @@ const UI = {
         if (m.due > 0) badges += `<span class="member-badge badge-due">बाँकी ${Accounting.formatNum(m.due)}</span> `;
       }
       const initial = (m.name || '?').charAt(0);
+      const avatar = m.photo
+        ? `<img src="${m.photo}" alt="" class="member-avatar" style="object-fit:cover;object-position:top center"/>`
+        : `<div class="member-avatar">${initial}</div>`;
       return `
         <div class="member-item" onclick="${onClickFnName}('${m.id}')">
-          <div class="member-avatar">${initial}</div>
+          ${avatar}
           <div class="member-info">
             <div class="member-name">${m.name}</div>
             <div class="member-meta">${m.mobile || 'मोबाइल नभएको'} ${badges}</div>

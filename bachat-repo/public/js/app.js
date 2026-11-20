@@ -288,15 +288,15 @@ function showMemberGuideTour(step, force) {
   const steps = [
     {
       title: '🏠 १/४ · होम र मेरो हिसाब',
-      body: 'होमको माथि <strong>समूहको कुल कोस</strong> (सम्पत्ति, नगद, ऋण, प्रति कित्ता) देखिन्छ। त्यसको तल तपाईंको <strong>आफ्नै कित्ता, सम्पत्ति र ऋण</strong> कार्ड छ। रातो/पहेँलो <strong>अनिवार्य रकम</strong> मा थिच्दा बचत/ब्याज/जरिवाना कति हो पूरा विवरण खुल्छ।'
+      body: 'होमको माथि <strong>समूहको कुल कोस</strong> (सम्पत्ति, नगद, ऋण, प्रति कित्ता) र तल तपाईंको <strong>सदस्य कार्ड</strong> देखिन्छ। रातो/पहेँलो <strong>अनिवार्य रकम</strong> मा थिच्दा बचत/ब्याज/जरिवाना पूरा विवरण खुल्छ।'
     },
     {
-      title: '📖 २/४ · पासबुक र डिजिटल रसिद',
-      body: '<strong>मेरो पासबुक</strong> भित्र तपाईंको सम्पत्ति र ऋण इतिहास साथै प्रत्येक महिना तिरेको <strong>बचत, ब्याज, सावा तालिका</strong> हुन्छ। कुनै महिनामा थिच्दा डिजिटल बिल तुरुन्तै खुल्छ र प्रिन्ट/सेभ गर्न मिल्छ।'
+      title: '👤 २/४ · प्रोफाइल, फोटो र पासबुक',
+      body: 'माथिको <strong>👤 प्रोफाइल</strong> ट्याब भित्र तपाईंको <strong>पासपोर्ट फोटो अपलोड/क्रप</strong> गर्ने र <strong>मेरो पासबुक, कलेक्सन सारांश, र समूह रिपोर्ट</strong> हेर्ने सबै बटन सफासँग राखिएको छ।'
     },
     {
-      title: '💬 ३/४ · समूह कुराकानी र गुनासो',
-      body: 'बैठक सुरु वा बन्द हुँदा <strong>सामुहिक कुराकानी</strong> मा अटो सूचना आउँछ। हिसाबमा कुनै शंका लागे <strong>सुझाव तथा गुनासो</strong> बाट सिधै Admin लाई पठाउन र जवाफ हेर्न मिल्छ।'
+      title: '💬 ३/४ · छलफल चौतारी र गुनासो',
+      body: 'होमको <strong>💬 छलफल चौतारी</strong> मा बैठक सूचना र समूह कुराकानी हुन्छ। हिसाबमा शंका लागे पासबुक बन्द गर्दा वा <strong>⚙️ सेटिङ → सुझाव तथा गुनासो</strong> बाट Admin लाई पठाउन मिल्छ।'
     },
     {
       title: '📱 ४/४ · एप सेभ र PIN सुरक्षा',
@@ -413,50 +413,41 @@ function renderMemberHome(container) {
       '</span></div>';
   } catch (e) {}
 
-  // पछिल्लो डिजिटल रसिद छिटो हेर्न
-  let latestBillId = null;
-  const closedMonths = Accounting.getClosedMonthsSorted(data);
-  for (let i = closedMonths.length - 1; i >= 0; i--) {
-    const bid = closedMonths[i].memberBills && closedMonths[i].memberBills[member.id];
-    if (bid && data.bills && data.bills[bid]) { latestBillId = bid; break; }
-  }
-
-  const csUnread = memberCollectionSummaryUnreadCount(member.id, data);
   const chatUnread = groupChatUnreadCount(data);
-  const csBadge = csUnread > 0 ? ' <span class="badge-unread">' + csUnread + ' नयाँ</span>' : '';
   const chatBadge = chatUnread > 0 ? ' <span class="badge-unread">' + chatUnread + ' नयाँ</span>' : '';
-  const fbN = memberFeedbackUnread(member.id, data);
-  const fbBadge = fbN > 0 ? ' <span class="badge-unread">' + fbN + ' जवाफ</span>' : '';
+  const avatarHtml = member.photo
+    ? `<img src="${member.photo}" alt="" class="member-passport-photo" onclick="switchTab('profile')" style="cursor:pointer" title="प्रोफाइल र फोटो"/>`
+    : `<div class="member-avatar" style="width:56px;height:66px;border-radius:10px;font-size:1.4rem;cursor:pointer" onclick="switchTab('profile')" title="प्रोफाइल र फोटो">${member.name.charAt(0)}</div>`;
 
   container.innerHTML = `
-    <div class="section-card" style="padding:10px 12px;margin-bottom:10px;background:#f8faff;border:1px solid #dce7f7">
-      <div style="font-size:0.76rem;font-weight:700;color:#495057;margin-bottom:6px">🏛️ समूहको कोस (प्रत्यक्ष पारदर्शी हिसाब)</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center">
-        <div style="background:#fff;padding:6px 4px;border-radius:8px;border:1px solid #e9ecef">
-          <div style="font-size:0.68rem;color:#6f42c1">💎 कुल कोस</div>
-          <div style="font-weight:700;font-size:0.82rem">${Accounting.formatNum(snap.assets)}</div>
+    <div class="section-card" style="padding:8px 10px;margin-bottom:8px;background:#f8faff;border:1px solid #dce7f7">
+      <div style="font-size:0.72rem;font-weight:700;color:#495057;margin-bottom:5px">🏛️ समूहको कोस (प्रत्यक्ष पारदर्शी हिसाब)</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;text-align:center">
+        <div style="background:#fff;padding:5px 3px;border-radius:8px;border:1px solid #e9ecef">
+          <div style="font-size:0.65rem;color:#6f42c1">💎 कुल कोस</div>
+          <div style="font-weight:700;font-size:0.8rem">${Accounting.formatNum(snap.assets)}</div>
         </div>
-        <div style="background:#fff;padding:6px 4px;border-radius:8px;border:1px solid #e9ecef">
-          <div style="font-size:0.68rem;color:#198754">💵 नगद</div>
-          <div style="font-weight:700;font-size:0.82rem">${Accounting.formatNum(snap.cash)}</div>
+        <div style="background:#fff;padding:5px 3px;border-radius:8px;border:1px solid #e9ecef">
+          <div style="font-size:0.65rem;color:#198754">💵 नगद</div>
+          <div style="font-weight:700;font-size:0.8rem">${Accounting.formatNum(snap.cash)}</div>
         </div>
-        <div style="background:#fff;padding:6px 4px;border-radius:8px;border:1px solid #e9ecef">
-          <div style="font-size:0.68rem;color:#fd7e14">🤝 ऋण</div>
-          <div style="font-weight:700;font-size:0.82rem">${Accounting.formatNum(snap.loans)}</div>
+        <div style="background:#fff;padding:5px 3px;border-radius:8px;border:1px solid #e9ecef">
+          <div style="font-size:0.65rem;color:#fd7e14">🤝 ऋण</div>
+          <div style="font-weight:700;font-size:0.8rem">${Accounting.formatNum(snap.loans)}</div>
         </div>
-        <div style="background:#fff;padding:6px 4px;border-radius:8px;border:1px solid #e9ecef">
-          <div style="font-size:0.68rem;color:#0891b2">💰 प्र.कित्ता</div>
-          <div style="font-weight:700;font-size:0.82rem">${Accounting.formatNum(snap.perKitta)}</div>
+        <div style="background:#fff;padding:5px 3px;border-radius:8px;border:1px solid #e9ecef">
+          <div style="font-size:0.65rem;color:#0891b2">💰 प्र.कित्ता</div>
+          <div style="font-weight:700;font-size:0.8rem">${Accounting.formatNum(snap.perKitta)}</div>
         </div>
       </div>
     </div>
 
-    <div class="section-card">
+    <div class="section-card" style="padding:12px;margin-bottom:10px">
       <div class="flex gap-2" style="align-items:center">
-        <div class="member-avatar" style="width:60px;height:60px;font-size:1.5rem">${member.name.charAt(0)}</div>
-        <div style="flex:1">
-          <div class="fw-bold" style="font-size:1.15rem">${member.name}</div>
-          <div class="text-muted">📱 ${member.mobile || '-'} · PIN: ${(member.hasPin || member.pin) ? '****' : 'सेट छैन'}</div>
+        ${avatarHtml}
+        <div style="flex:1;min-width:0">
+          <div class="fw-bold" style="font-size:1.08rem;line-height:1.2">${member.name}</div>
+          <div class="text-muted" style="font-size:0.78rem;margin-top:2px">📱 ${member.mobile || '-'} · PIN: ${(member.hasPin || member.pin) ? '****' : 'सेट छैन'}</div>
           <div class="mt-1">
             <span class="member-badge badge-kitta">${member.kitta} कित्ता</span>
             <span class="member-badge badge-kitta">💎 शेयर ${Accounting.formatNum(myAssets)}</span>
@@ -470,13 +461,8 @@ function renderMemberHome(container) {
         </div>
       </div>
     </div>
-    ${latestBillId ? `<button class="btn btn-primary btn-block mb-1" onclick="viewBill('${latestBillId}')">🧾 मेरो पछिल्लो डिजिटल रसिद (${latestBillId})</button>` : ''}
-    <button class="btn btn-purple btn-block mb-1" onclick="showPassbook('${member.id}')">📖 मेरो पासबुक (पूर्ण विवरण)</button>
-    <button class="btn btn-info btn-block mb-1" onclick="showMemberOwnCollectionSummary()">📋 मेरो कलेक्सन सारांश${csBadge}</button>
-    <button class="btn btn-primary btn-block mb-1" onclick="openMemberReports()">📊 समूह मासिक / वार्षिक रिपोर्ट</button>
-    <button class="btn btn-success btn-block mb-1" onclick="openGroupChatFromHome()">👥 सामुहिक कुराकानी${chatBadge}</button>
-    <button class="btn btn-warning btn-block mb-1" onclick="openMemberFeedbackHub()">📢 सुझाव तथा गुनासो${fbBadge}</button>
-    <button class="btn btn-outline btn-block mb-1" onclick="showMemberGuideTour(0, true)">❓ एप कसरी हेर्ने (गाइड)</button>
+
+    <button class="btn btn-success btn-lg btn-block" onclick="openGroupChatFromHome()">💬 छलफल चौतारी${chatBadge}</button>
   `;
 }
 
@@ -730,7 +716,7 @@ function openGroupChatFromHome() {
   const html = '<div id="group-chat-box" style="max-height:50vh;overflow-y:auto;padding:8px">' + bubbles + '</div>' +
     (canSend ? '<div class="flex gap-1 mt-2"><input type="text" id="home-chat-input" placeholder="सन्देश..." style="flex:1" onkeydown="if(event.key===\'Enter\')sendGroupChatFromHome()">' +
       '<button class="btn btn-primary" onclick="sendGroupChatFromHome()">पठाउनुहोस्</button></div>' : '');
-  UI.showModal('👥 सामुहिक कुराकानी', html, '<button class="btn btn-outline" onclick="closeModal();renderHomeByRole()">बन्द</button>');
+  UI.showModal('💬 छलफल चौतारी', html, '<button class="btn btn-outline" onclick="closeModal();renderHomeByRole()">बन्द</button>');
   setTimeout(function () {
     const box = document.getElementById('group-chat-box');
     if (box) box.scrollTop = box.scrollHeight;
@@ -883,11 +869,6 @@ async function unifiedLogin() {
 
 // ========== TABS ==========
 function switchTab(tab) {
-  // सदस्यलाई प्रोफाइल ट्याब नचाहिने — होममै प्रोफाइल बाकस
-  if (tab === 'profile' && Auth.isMember && Auth.isMember()) {
-    tab = 'home';
-  }
-
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   const btn = document.querySelector(`.nav-btn[data-tab="${tab}"]`);
   if (btn) btn.classList.add('active');
@@ -907,15 +888,14 @@ function switchTab(tab) {
   }
 }
 
-/** सदस्य लगइनमा प्रोफाइल मेनु लुकाउने */
+/** सदस्य लगइनमा च्याट ट्याब लुकाउने (होममै छलफल चौतारी छ) — प्रोफाइल ट्याब खुल्ला राख्ने */
 function updateNavForRole() {
   const profileBtn = document.querySelector('.nav-btn[data-tab="profile"]');
   const chatBtn = document.querySelector('.nav-btn[data-tab="chat"]');
+  if (profileBtn) profileBtn.style.display = '';
   if (Auth.isMember && Auth.isMember()) {
-    if (profileBtn) profileBtn.style.display = 'none';
     if (chatBtn) chatBtn.style.display = 'none';
   } else {
-    if (profileBtn) profileBtn.style.display = '';
     if (chatBtn) chatBtn.style.display = '';
   }
 }
@@ -2129,9 +2109,28 @@ function renderMemberOwnProfile(container) {
   }
 
   const myAssets = Accounting.memberAssets(data, member);
+  const month = Accounting.getCurrentMonth(data);
+  const effLoan = Accounting.getEffectiveMemberLoan(data, member, month);
+  const effAdv = Accounting.getEffectiveMemberAdvance(data, member, month);
+  const refMonth = month || Accounting.getPreviousMonth(data) || { status: 'open' };
+  let mandLine = '';
+  try {
+    const man = Accounting.calcMandatory(member, data, refMonth);
+    const label = month ? 'अनिवार्य' : 'अर्को कलेक्सन अनिवार्य';
+    mandLine = `<div class="mt-1" style="cursor:pointer" onclick="showMemberMandatoryBreakdown()">
+      <span class="member-badge badge-due">${label} रु. <strong>${Accounting.formatNum(man.total)}</strong> · <span style="text-decoration:underline">विवरण ▾</span></span>
+    </div>`;
+  } catch (e) {}
+
+  const csUnread = memberCollectionSummaryUnreadCount(member.id, data);
+  const csBadge = csUnread > 0 ? ' <span class="badge-unread">' + csUnread + ' नयाँ</span>' : '';
+
+  const avatarHtml = member.photo
+    ? `<img src="${member.photo}" alt="" class="member-passport-photo" style="width:68px;height:85px"/>`
+    : `<div class="member-avatar" style="width:68px;height:85px;border-radius:10px;font-size:1.6rem">${member.name.charAt(0)}</div>`;
 
   // Own complaints with replies
-  const myComplaints = (data.complaints || []).filter(c => c.memberId === member.id);
+  const myComplaints = (data.complaints || []).filter(c => c.memberId === member.id && !c.auto);
   let complaintHtml = '';
   if (myComplaints.length) {
     complaintHtml = myComplaints.slice().reverse().map(c => {
@@ -2149,24 +2148,34 @@ function renderMemberOwnProfile(container) {
   container.innerHTML = `
     <div class="section-card">
       <div class="flex gap-2" style="align-items:center">
-        <div class="member-avatar" style="width:60px;height:60px;font-size:1.5rem">${member.name.charAt(0)}</div>
-        <div>
+        ${avatarHtml}
+        <div style="flex:1;min-width:0">
           <div class="fw-bold" style="font-size:1.15rem">${member.name}</div>
-          <div class="text-muted">📱 ${member.mobile || '-'} · PIN: ${(member.hasPin || member.pin) ? '****' : 'सेट छैन'}</div>
+          <div class="text-muted" style="font-size:0.82rem">📱 ${member.mobile || '-'} · PIN: ${(member.hasPin || member.pin) ? '****' : 'सेट छैन'}</div>
+          ${member.address ? `<div class="text-muted" style="font-size:0.78rem">🏠 ${member.address}</div>` : ''}
           <div class="mt-1">
             <span class="member-badge badge-kitta">${member.kitta} कित्ता</span>
-            <span class="member-badge badge-kitta">सम्पत्ति ${Accounting.formatNum(myAssets)}</span>
+            <span class="member-badge badge-kitta">💎 शेयर ${Accounting.formatNum(myAssets)}</span>
           </div>
           <div class="mt-1">
-            ${member.outstandingLoan > 0 ? `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(member.outstandingLoan)}</span> ` : ''}
-            ${member.advance > 0 ? `<span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(member.advance)}</span> ` : ''}
+            ${effLoan > 0 ? `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(effLoan)}</span> ` : ''}
+            ${effAdv > 0 ? `<span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(effAdv)}</span> ` : ''}
             ${member.due > 0 ? `<span class="member-badge badge-due">बाँकी ${Accounting.formatNum(member.due)}</span>` : ''}
           </div>
+          ${mandLine}
         </div>
       </div>
+      <button type="button" class="btn btn-light btn-sm btn-block mt-2" onclick="openPassportPhotoUpload('${member.id}')">📷 पासपोर्ट साइज फोटो अपलोड / बदल्नुहोस्</button>
     </div>
-    <button class="btn btn-primary btn-block mb-1" onclick="showPassbook('${member.id}')">📖 मेरो पासबुक</button>
-    ${complaintHtml ? '<div class="section-title mt-2">मेरा गुनासो / जवाफ</div>' + complaintHtml : ''}
+
+    <div class="section-card" style="padding:12px">
+      <div class="section-title" style="margin-bottom:8px">📂 मेरो हिसाब र रिपोर्टहरू</div>
+      <button type="button" class="btn btn-purple btn-block mb-1" onclick="showPassbook('${member.id}')">📖 मेरो पासबुक (पूर्ण विवरण)</button>
+      <button type="button" class="btn btn-info btn-block mb-1" onclick="showMemberOwnCollectionSummary()">📋 मेरो कलेक्सन सारांश${csBadge}</button>
+      <button type="button" class="btn btn-primary btn-block" onclick="openMemberReports()">📊 समूह मासिक / वार्षिक रिपोर्ट</button>
+    </div>
+
+    ${complaintHtml ? '<div class="section-title mt-2">📢 मेरा गुनासो / जवाफ</div>' + complaintHtml : ''}
   `;
 }
 
@@ -2284,9 +2293,12 @@ function renderProfileMemberListHtml(members, data) {
     const loanTag = effLoan > 0 ? `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(effLoan)}</span> ` : '';
     const dueTag = (Number(m.due) || 0) > 0 ? `<span class="member-badge badge-due">बाँकी ${Accounting.formatNum(m.due)}</span> ` : '';
     const initial = (m.name || '?').charAt(0);
+    const avatarHtml = m.photo
+      ? '<img src="' + m.photo + '" alt="" class="member-avatar" style="object-fit:cover;object-position:top center"/>'
+      : '<div class="member-avatar">' + initial + '</div>';
     return (
       '<div class="member-item" onclick="openMemberDetail(\'' + m.id + '\')">' +
-        '<div class="member-avatar">' + initial + '</div>' +
+        avatarHtml +
         '<div class="member-info">' +
           '<div class="member-name">' + m.name + ' ' + badge + '</div>' +
           '<div class="member-meta">' + (m.mobile || 'मोबाइल छैन') + ' · ' + (m.kitta || 0) + ' कित्ता ' + loanTag + dueTag + pinTag + '</div>' +
@@ -2394,7 +2406,7 @@ function openMemberDetail(memberId) {
   const effAdv = Accounting.getEffectiveMemberAdvance(data, member);
   const pinLabel = member.mustChangePin ? '⏳ Temp PIN (फेर्न बाँकी)' : ((member.hasPin || member.pin) ? '✅ सेट छ' : '❌ सेट छैन');
 
-  const photo = member.photo ? `<img src="${member.photo}" style="width:72px;height:72px;border-radius:50%;object-fit:cover;margin-bottom:8px"/>` : '';
+  const photo = member.photo ? `<img src="${member.photo}" class="member-passport-photo" style="width:68px;height:85px;margin-bottom:8px"/>` : '';
   const idCard = member.idCardPhoto ? `<img src="${member.idCardPhoto}" style="max-width:100%;max-height:120px;border-radius:8px;margin-top:6px"/>` : '';
   let html = `
     <div class="section-title">${member.name}</div>
@@ -2459,10 +2471,14 @@ function editMember(memberId) {
     <div class="form-group"><label>मोबाइल</label><input type="tel" id="em-mobile" value="${m.mobile||''}"></div>
     <div class="form-group"><label>🏠 ठेगाना</label><input type="text" id="em-address" value="${m.address||''}"></div>
     <div class="form-group"><label>📝 परिचय / अन्य</label><textarea id="em-bio" rows="3">${m.bio||''}</textarea></div>
-    <div class="form-group"><label>📷 प्रोफाइल फोटो</label><input type="file" id="em-photo" accept="image/*">
-      ${m.photo ? '<img src="'+m.photo+'" style="width:56px;height:56px;border-radius:50%;object-fit:cover;margin-top:6px"/>' : ''}
+    <div class="form-group"><label>📷 प्रोफाइल फोटो (पासपोर्ट क्रप &lt; 85 KB)</label>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        ${m.photo ? '<img src="'+m.photo+'" class="member-passport-photo"/>' : ''}
+        <button type="button" class="btn btn-light btn-sm" onclick="openPassportPhotoUpload('${memberId}')">✂️ पासपोर्ट क्रप अपलोड</button>
+      </div>
+      <input type="file" id="em-photo" accept="image/*">
     </div>
-    <div class="form-group"><label>🪪 परिचय पत्र फोटो</label><input type="file" id="em-idcard" accept="image/*">
+    <div class="form-group"><label>🪪 परिचय पत्र फोटो (स्वतः कम्प्रेस)</label><input type="file" id="em-idcard" accept="image/*">
       ${m.idCardPhoto ? '<img src="'+m.idCardPhoto+'" style="max-height:60px;margin-top:6px;border-radius:6px"/>' : ''}
     </div>
     <button class="btn btn-primary btn-block" onclick="saveMemberEdit('${memberId}')">💾 सेभ</button>
@@ -2511,11 +2527,17 @@ function saveMemberEdit(memberId) {
   }
   if (pf) {
     pending++;
-    readFileAsDataURL(pf, 400000, function (url) { if (url) m.photo = url; one(); });
+    compressImageFile(pf, { targetBytes: 85000, maxW: 360, maxH: 450, passport: true }, function (url) {
+      if (url) m.photo = url;
+      one();
+    });
   }
   if (idf) {
     pending++;
-    readFileAsDataURL(idf, 500000, function (url) { if (url) m.idCardPhoto = url; one(); });
+    compressImageFile(idf, { targetBytes: 95000, maxW: 800, maxH: 600, passport: false }, function (url) {
+      if (url) m.idCardPhoto = url;
+      one();
+    });
   }
   if (pending === 0) finish();
 }
@@ -3685,10 +3707,14 @@ function renderSettingsTab() {
   const container = document.getElementById('settings-content');
   if (!Auth.isAdmin()) {
     const dataM = DB.load();
+    const myId = (Auth.currentUser && Auth.currentUser.memberId) || '';
+    const fbN = myId ? memberFeedbackUnread(myId, dataM) : 0;
+    const fbBadge = fbN > 0 ? ' <span class="badge-unread">' + fbN + ' जवाफ</span>' : '';
     container.innerHTML = `
       <div class="section-card">
         <div class="section-title">⚙️ सेटिङ</div>
         <button class="btn btn-primary btn-block mb-1" onclick="showChangeOwnPinModal()">🔐 मेरो PIN परिवर्तन गर्नुहोस्</button>
+        <button class="btn btn-warning btn-block mb-1" onclick="openMemberFeedbackHub()">📢 सुझाव तथा गुनासो${fbBadge}</button>
         <button class="btn btn-success btn-block mb-1" onclick="enablePushFromSettings()">🔔 पुश सूचना (Notification)</button>
         <button class="btn btn-outline btn-block mb-1" onclick="showMemberGuideTour(0, true)">❓ एप चलाउने गाइड</button>
         <button class="btn btn-danger btn-block mb-2" onclick="doLogout()">🚪 लगआउट</button>
@@ -4019,6 +4045,262 @@ function clearWelcomeVideo() {
   DB.save(data);
   UI.toast('भिडियो हटाइयो', 'success');
   editGroupProfile();
+}
+
+function dataUrlByteSize(dataUrl) {
+  if (!dataUrl) return 0;
+  const i = dataUrl.indexOf(',');
+  const b64 = i >= 0 ? dataUrl.slice(i + 1) : dataUrl;
+  return Math.floor((b64.length * 3) / 4);
+}
+
+function encodeCanvasUnderLimit(srcDrawFn, initW, initH, targetBytes) {
+  let w = initW, h = initH;
+  const qualities = [0.82, 0.72, 0.62, 0.52, 0.42, 0.34];
+  let best = '';
+  for (let step = 0; step < 3; step++) {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    srcDrawFn(ctx, w, h);
+    for (let qi = 0; qi < qualities.length; qi++) {
+      const url = c.toDataURL('image/jpeg', qualities[qi]);
+      best = url;
+      if (dataUrlByteSize(url) <= targetBytes) return url;
+    }
+    w = Math.round(w * 0.78);
+    h = Math.round(h * 0.78);
+  }
+  return best;
+}
+
+function compressImageFile(file, opts, cb) {
+  if (!file) return cb(null);
+  const targetBytes = (opts && opts.targetBytes) || 85000;
+  const maxW = (opts && opts.maxW) || 360;
+  const maxH = (opts && opts.maxH) || 450;
+  const passport = !!(opts && opts.passport);
+  const objUrl = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = function () {
+    URL.revokeObjectURL(objUrl);
+    let outW = maxW, outH = maxH;
+    if (!passport) {
+      const sc = Math.min(1, maxW / img.width, maxH / img.height);
+      outW = Math.max(120, Math.round(img.width * sc));
+      outH = Math.max(120, Math.round(img.height * sc));
+    }
+    const out = encodeCanvasUnderLimit(function (ctx, w, h) {
+      if (passport) {
+        const aspect = w / h;
+        let sx = 0, sy = 0, sw = img.width, sh = img.height;
+        if (img.width / img.height > aspect) {
+          sw = img.height * aspect;
+          sx = (img.width - sw) / 2;
+        } else {
+          sh = img.width / aspect;
+          sy = Math.max(0, (img.height - sh) * 0.25);
+        }
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+      } else {
+        ctx.drawImage(img, 0, 0, w, h);
+      }
+    }, outW, outH, targetBytes);
+    cb(out);
+  };
+  img.onerror = function () {
+    URL.revokeObjectURL(objUrl);
+    cb(null);
+  };
+  img.src = objUrl;
+}
+
+function openPassportPhotoUpload(memberId) {
+  let inp = document.getElementById('passport-photo-picker');
+  if (!inp) {
+    inp = document.createElement('input');
+    inp.type = 'file';
+    inp.id = 'passport-photo-picker';
+    inp.accept = 'image/*';
+    inp.className = 'hidden';
+    document.body.appendChild(inp);
+  }
+  inp.value = '';
+  inp.onchange = function (ev) {
+    const file = ev.target && ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const objUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = function () {
+      URL.revokeObjectURL(objUrl);
+      showPassportCropModal(memberId, img);
+    };
+    img.onerror = function () {
+      URL.revokeObjectURL(objUrl);
+      UI.toast('यो फोटो पढ्न सकिएन', 'error');
+    };
+    img.src = objUrl;
+  };
+  inp.click();
+}
+
+function showPassportCropModal(memberId, img) {
+  const cw = 240, ch = 300; // 4:5 passport preview
+  const baseScale = Math.max(cw / img.width, ch / img.height);
+  const state = {
+    img,
+    memberId,
+    cw,
+    ch,
+    baseScale,
+    zoom: 1,
+    offX: (cw - img.width * baseScale) / 2,
+    offY: Math.max(cw * -0.5, Math.min(0, (ch - img.height * baseScale) * 0.28))
+  };
+  window._ppCrop = state;
+
+  const html = `
+    <p class="text-muted text-center" style="font-size:0.8rem;margin-bottom:8px">
+      औंलाले फोटो तानेर अनुहार फ्रेमभित्र मिलाउनुहोस् — पासपोर्ट साइज (&lt; 85 KB) मा स्वतः सानो भएर सेभ हुन्छ।
+    </p>
+    <div style="display:flex;justify-content:center;margin-bottom:10px">
+      <canvas id="pp-crop-canvas" width="${cw}" height="${ch}" style="border-radius:12px;border:2px solid #0d6efd;touch-action:none;cursor:grab;background:#f8f9fa"></canvas>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="font-size:0.82rem">🔍 जुम</span>
+      <input type="range" id="pp-zoom-range" min="1" max="3" step="0.05" value="1" style="flex:1" oninput="updatePassportZoom(this.value)">
+      <button type="button" class="btn btn-light btn-sm" onclick="resetPassportCrop()">रिसेट</button>
+    </div>
+    <button type="button" id="pp-save-btn" class="btn btn-success btn-block" onclick="saveCroppedPassportPhoto()">✅ क्रप गरी सेभ गर्नुहोस्</button>
+  `;
+  UI.showModal('📷 पासपोर्ट फोटो क्रप', html, '<button type="button" class="btn btn-outline" onclick="closeModal()">रद्द</button>');
+
+  const canvas = document.getElementById('pp-crop-canvas');
+  if (!canvas) return;
+  let dragging = false, lx = 0, ly = 0;
+  function ptr(e) {
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX, y: t.clientY };
+  }
+  function down(e) { e.preventDefault(); dragging = true; const p = ptr(e); lx = p.x; ly = p.y; }
+  function move(e) {
+    if (!dragging) return;
+    e.preventDefault();
+    const p = ptr(e);
+    state.offX += (p.x - lx);
+    state.offY += (p.y - ly);
+    lx = p.x; ly = p.y;
+    clampPassportCrop(state);
+    drawPassportPreview();
+  }
+  function up() { dragging = false; }
+  canvas.addEventListener('mousedown', down);
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  canvas.addEventListener('touchstart', down, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', up);
+  clampPassportCrop(state);
+  drawPassportPreview();
+}
+
+function clampPassportCrop(st) {
+  const sc = st.baseScale * st.zoom;
+  const dw = st.img.width * sc;
+  const dh = st.img.height * sc;
+  if (dw <= st.cw) st.offX = (st.cw - dw) / 2;
+  else st.offX = Math.min(0, Math.max(st.cw - dw, st.offX));
+  if (dh <= st.ch) st.offY = (st.ch - dh) / 2;
+  else st.offY = Math.min(0, Math.max(st.ch - dh, st.offY));
+}
+
+function drawPassportPreview() {
+  const st = window._ppCrop;
+  const canvas = document.getElementById('pp-crop-canvas');
+  if (!st || !canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, st.cw, st.ch);
+  const sc = st.baseScale * st.zoom;
+  ctx.drawImage(st.img, st.offX, st.offY, st.img.width * sc, st.img.height * sc);
+
+  // Subtle dashed passport head/frame guide (preview only)
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.ellipse(st.cw / 2, st.ch * 0.42, st.cw * 0.27, st.ch * 0.25, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function updatePassportZoom(val) {
+  const st = window._ppCrop;
+  if (!st) return;
+  const newZ = Math.max(1, Math.min(3, parseFloat(val) || 1));
+  const oldSc = st.baseScale * st.zoom;
+  const newSc = st.baseScale * newZ;
+  const cx = st.cw / 2, cy = st.ch / 2;
+  st.offX = cx - ((cx - st.offX) / oldSc) * newSc;
+  st.offY = cy - ((cy - st.offY) / oldSc) * newSc;
+  st.zoom = newZ;
+  clampPassportCrop(st);
+  drawPassportPreview();
+}
+
+function resetPassportCrop() {
+  const st = window._ppCrop;
+  if (!st) return;
+  st.zoom = 1;
+  const zr = document.getElementById('pp-zoom-range');
+  if (zr) zr.value = '1';
+  st.offX = (st.cw - st.img.width * st.baseScale) / 2;
+  st.offY = (st.ch - st.img.height * st.baseScale) * 0.28;
+  clampPassportCrop(st);
+  drawPassportPreview();
+}
+
+async function saveCroppedPassportPhoto() {
+  const st = window._ppCrop;
+  if (!st) return;
+  const btn = document.getElementById('pp-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ कम्प्रेस र अपलोड हुँदैछ...'; }
+
+  const outDataUrl = encodeCanvasUnderLimit(function (ctx, w, h) {
+    const ratio = w / st.cw;
+    const sc = st.baseScale * st.zoom * ratio;
+    ctx.drawImage(st.img, st.offX * ratio, st.offY * ratio, st.img.width * sc, st.img.height * sc);
+  }, 320, 400, 82000);
+
+  const kb = Math.max(1, Math.round(dataUrlByteSize(outDataUrl) / 1024));
+  const data = DB.load();
+  const m = (data.members || []).find(x => x.id === st.memberId);
+  if (!m) return;
+
+  if (DB.isCloudEnabled && DB.isCloudEnabled() && navigator.onLine) {
+    const up = await DB.uploadMemberPhoto(st.memberId, outDataUrl);
+    if (!up || !up.ok) {
+      if (btn) { btn.disabled = false; btn.textContent = '✅ क्रप गरी सेभ गर्नुहोस्'; }
+      return UI.toast((up && up.error) || 'फोटो सेभ भएन', 'error');
+    }
+  } else if (Auth.isAccountsWriter()) {
+    m.photo = outDataUrl;
+    DB.save(data);
+  } else {
+    if (btn) { btn.disabled = false; btn.textContent = '✅ क्रप गरी सेभ गर्नुहोस्'; }
+    return UI.toast('फोटो पठाउन इन्टरनेट चाहिन्छ', 'error');
+  }
+
+  UI.toast('पासपोर्ट फोटो सेभ भयो (' + kb + ' KB) ✅', 'success');
+  closeModal();
+  renderHomeByRole();
+  renderProfileTab();
 }
 
 function readFileAsDataURL(file, maxBytes, cb) {

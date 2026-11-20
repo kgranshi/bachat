@@ -545,6 +545,31 @@ const DB = {
     }
   },
 
+  async uploadMemberPhoto(memberId, dataUrl) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'फोटो अपलोड गर्न इन्टरनेट जडान आवश्यक छ' };
+    }
+    try {
+      const res = await this.apiFetch('/member/photo', {
+        method: 'POST',
+        body: JSON.stringify({ memberId, dataUrl })
+      });
+      if (res.ok && res.body && res.body.ok && res.body.url) {
+        if (res.body.version) this.setServerVersion(res.body.version);
+        const cur = this.load();
+        const mem = (cur.members || []).find(m => m.id === memberId);
+        if (mem) {
+          mem.photo = res.body.url;
+          this.save(cur, { localOnly: true });
+        }
+        return { ok: true, url: res.body.url, version: res.body.version };
+      }
+      return { ok: false, error: (res.body && res.body.error) || 'फोटो अपलोड असफल' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
+  },
+
   async syncCredentialChange(payload) {
     if (!this.getToken() || !navigator.onLine) return { ok: false, offline: true };
     const res = await this.apiFetch('/admin/credentials', {

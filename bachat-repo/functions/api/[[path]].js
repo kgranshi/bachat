@@ -1084,6 +1084,46 @@ export async function onRequest(context) {
       return json({ ok: true, url: urlOut });
     }
 
+    // 13b. Member Self-Service Passport Photo Upload (or Admin A updating a member) -> R2 + D1
+    if (path === '/member/photo' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const dataUrl = String((body && body.dataUrl) || '');
+      if (!dataUrl.startsWith('data:image/')) {
+        return json({ ok: false, error: 'अमान्य फोटो फर्म्याट' }, 400);
+      }
+      if (dataUrl.length > 260 * 1024) {
+        return json({ ok: false, error: 'फोटो साइज धेरै ठूलो भयो (१०० KB भित्र हुनुपर्छ)' }, 400);
+      }
+      let targetMemberId = '';
+      if (user.role === 'member') {
+        targetMemberId = user.memberId || '';
+      } else if (user.role === 'admin' && user.accountsWriter) {
+        targetMemberId = String((body && body.memberId) || '');
+      } else {
+        return json({ ok: false, error: 'फोटो अपलोड अनुमति छैन' }, 403);
+      }
+      if (!targetMemberId) {
+        return json({ ok: false, error: 'सदस्य ID भेटिएन' }, 400);
+      }
+
+      const urlOut = await uploadDataUrlToR2(env, 'members', `${targetMemberId}-photo-${Date.now()}`, dataUrl);
+      const cur = await loadStateRow(env.DB);
+      const state = cur.data || defaultState();
+      const idx = (state.members || []).findIndex(m => m && m.id === targetMemberId);
+      if (idx < 0) {
+        return json({ ok: false, error: 'सदस्य भेटिएन' }, 404);
+      }
+      state.members[idx].photo = urlOut;
+      const now = new Date().toISOString();
+      const nextVersion = (cur.version || 0) + 1;
+      await env.DB
+        .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+        .bind(nextVersion, JSON.stringify(stripSecretsFromState(state)), now)
+        .run();
+
+      return json({ ok: true, url: urlOut, version: nextVersion });
+    }
+
     // 14. Web Push Subscription Management
     if (path === '/push/subscribe' && method === 'POST') {
       const sub = await request.json();
