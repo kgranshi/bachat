@@ -188,7 +188,7 @@ const Auth = {
     return !!other;
   },
 
-  async setMemberPin(memberId, pin) {
+  async setMemberPin(memberId, pin, opts) {
     if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
       return { ok: false, msg: 'PIN ठीक ४ अंकको हुनुपर्छ' };
     }
@@ -197,22 +197,55 @@ const Auth = {
     if (!member) return { ok: false, msg: 'सदस्य भेटिएन' };
     if (!member.mobile) return { ok: false, msg: 'पहिले सदस्यको मोबाइल नम्बर सेट गर्नुहोस्' };
 
+    const isTemp = !!(opts && opts.isTemp);
     const credRes = await DB.syncCredentialChange({
       type: 'member_pin',
       memberId: member.id,
       pin,
       mobile: member.mobile,
-      name: member.name
+      name: member.name,
+      isTemp
     });
     if (!credRes || !credRes.ok) {
       return { ok: false, msg: (credRes && credRes.error) || 'PIN सेभ असफल (नेट जाँच्नुहोस्)' };
     }
 
     member.hasPin = true;
+    member.mustChangePin = isTemp;
     (data.pinRequests || []).forEach((r) => {
       if (r.memberId === memberId && r.status === 'pending') r.status = 'approved';
     });
     DB.save(data);
-    return { ok: true, msg: 'PIN सुरक्षित सेट भयो' };
+    return { ok: true, msg: isTemp ? 'Temp PIN सुरक्षित सेट भयो' : 'PIN सुरक्षित सेट भयो', pin, isTemp };
+  },
+
+  async changeOwnPin(currentPin, newPin) {
+    if (!this.isMember()) return { ok: false, msg: 'सदस्य लगइन आवश्यक छ' };
+    if (!currentPin || !newPin) return { ok: false, msg: 'पुरानो र नयाँ दुवै PIN हाल्नुहोस्' };
+    if (!/^\d{4}$/.test(newPin)) return { ok: false, msg: 'नयाँ PIN ठीक ४ अंकको हुनुपर्छ' };
+    if (currentPin === newPin) return { ok: false, msg: 'नयाँ PIN पुरानो भन्दा फरक हुनुपर्छ' };
+    if (!navigator.onLine) return { ok: false, msg: 'PIN परिवर्तन गर्न इन्टरनेट चाहिन्छ' };
+
+    const res = await DB.apiFetch('/member/change-pin', {
+      method: 'POST',
+      body: JSON.stringify({ currentPin: String(currentPin), newPin: String(newPin) })
+    });
+    if (!res.ok || !res.body || !res.body.ok) {
+      return { ok: false, msg: (res.body && res.body.error) || 'PIN परिवर्तन असफल' };
+    }
+    if (res.body.token) DB.setToken(res.body.token);
+    if (res.body.user) this.currentUser = res.body.user;
+    if (res.body.pinVerifier) this.setPinVerifier(res.body.pinVerifier);
+    this.saveSession();
+    try {
+      const data = DB.load();
+      const m = (data.members || []).find((x) => x.id === (this.currentUser && this.currentUser.memberId));
+      if (m) {
+        m.hasPin = true;
+        m.mustChangePin = false;
+        DB.save(data, { localOnly: true });
+      }
+    } catch (e) {}
+    return { ok: true, msg: 'नयाँ PIN सुरक्षित परिवर्तन भयो ✅' };
   }
 };

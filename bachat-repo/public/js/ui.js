@@ -46,10 +46,14 @@ const UI = {
     document.getElementById('modal-title').textContent = title;
     document.getElementById('modal-body').innerHTML = bodyHtml;
     document.getElementById('modal-footer').innerHTML = footerHtml;
+    const closeBtn = overlay.querySelector('.modal-close');
+    this._noClose = !!options.noClose;
+    if (closeBtn) closeBtn.style.display = this._noClose ? 'none' : '';
     overlay.classList.remove('hidden');
   },
 
   closeModal() {
+    if (this._noClose) return;
     if (typeof _askComplaintOnClose !== 'undefined' && _askComplaintOnClose &&
         typeof Auth !== 'undefined' && Auth.isMember && Auth.isMember()) {
       const info = _askComplaintOnClose;
@@ -247,10 +251,16 @@ const UI = {
       let badges = '';
       if (showBadges) {
         const assets = Accounting.memberAssets(data, m);
+        const effLoan = typeof Accounting.getEffectiveMemberLoan === 'function'
+          ? Accounting.getEffectiveMemberLoan(data, m)
+          : (m.outstandingLoan || 0);
+        const effAdv = typeof Accounting.getEffectiveMemberAdvance === 'function'
+          ? Accounting.getEffectiveMemberAdvance(data, m)
+          : (m.advance || 0);
         if (m.kitta > 0) badges += `<span class="member-badge badge-kitta">${m.kitta} कित्ता</span> `;
         if (assets > 0) badges += `<span class="member-badge badge-kitta">💎 ${Accounting.formatNum(assets)}</span> `;
-        if (m.outstandingLoan > 0) badges += `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(m.outstandingLoan)}</span> `;
-        if (m.advance > 0) badges += `<span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(m.advance)}</span> `;
+        if (effLoan > 0) badges += `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(effLoan)}</span> `;
+        if (effAdv > 0) badges += `<span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(effAdv)}</span> `;
         if (m.due > 0) badges += `<span class="member-badge badge-due">बाँकी ${Accounting.formatNum(m.due)}</span> `;
       }
       const initial = (m.name || '?').charAt(0);

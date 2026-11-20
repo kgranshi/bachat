@@ -89,11 +89,51 @@ const Accounting = {
    * kitta  = total shares
    * perKitta = assets / kitta
    */
+  // Real-time effective member loan: during open collection, principal paid reduces displayed loan immediately
+  getEffectiveMemberLoan(data, member, month) {
+    if (!member) return 0;
+    const base = Number(member.outstandingLoan) || 0;
+    const m = month !== undefined ? month : this.getCurrentMonth(data);
+    if (m && m.status === 'open' && m.collections && m.collections[member.id]) {
+      const paidPrincipal = Number(m.collections[member.id].principal) || 0;
+      return Math.max(0, base - paidPrincipal);
+    }
+    return base;
+  },
+
+  // Real-time effective member advance during open collection
+  getEffectiveMemberAdvance(data, member, month) {
+    if (!member) return 0;
+    const base = Number(member.advance) || 0;
+    const m = month !== undefined ? month : this.getCurrentMonth(data);
+    if (m && m.status === 'open' && m.collections && m.collections[member.id]) {
+      const c = m.collections[member.id];
+      return Math.max(0, base - (Number(c.fromAdvance) || 0)) + (Number(c.advance) || 0);
+    }
+    return base;
+  },
+
+  totalAdvance(data, month) {
+    if (month && month.status === 'closed') {
+      if (typeof month.totalAdvances === 'number' && !isNaN(month.totalAdvances)) {
+        return month.totalAdvances;
+      }
+      if (month.memberSnapshots && Object.keys(month.memberSnapshots).length) {
+        return Object.values(month.memberSnapshots)
+          .reduce((s, snap) => s + (Number(snap && snap.advance) || 0), 0);
+      }
+    }
+    return (data.members || [])
+      .filter(m => m.active)
+      .reduce((s, m) => s + this.getEffectiveMemberAdvance(data, m, month), 0);
+  },
+
   /**
    * HOME = latest group position only
-   * assets = current/last month finalAssets
-   * loans  = live sum of member outstanding (आजको सत्य)
+   * assets = current/last month finalAssets (total fund = cash + loans)
+   * loans  = live sum of effective member outstanding loans (today's reality)
    * cash   = assets - loans
+   * netShareAssets = assets - totalAdvance (member equity excluding advance deposits)
    */
   getSnapshot(data) {
     if (data.migrationDone) this.syncOpenMonthFromMigration(data);
@@ -110,31 +150,32 @@ const Accounting = {
     let assets = 0;
 
     if (month) {
-      // Open month: income may change; keep startAssets, refresh final
       this.recalcMonth(month, data);
       assets = Number(month.finalAssets) || 0;
     } else if (prev) {
-      // No open month — last closed final (do not recalc with live loans)
       assets = Number(prev.finalAssets) || 0;
     } else if (data.migrationDone) {
       assets = migCash + migLoans;
     }
 
-    // Home always uses live member loans (current reality)
-    const loans = data.members.filter(m => m.active)
-      .reduce((s, m) => s + (Number(m.outstandingLoan) || 0), 0);
+    const loans = (data.members || []).filter(m => m.active)
+      .reduce((s, m) => s + this.getEffectiveMemberLoan(data, m, month), 0);
     const cash = assets - loans;
-    const perKitta = kitta > 0 ? Math.round(assets / kitta) : 0;
+    const totalAdvance = this.totalAdvance(data, month || prev);
+    const netShareAssets = Math.max(0, assets - totalAdvance);
+    const perKitta = kitta > 0 ? Math.round(netShareAssets / kitta) : 0;
 
-    return { assets, loans, cash, kitta, members, perKitta, month, prev, migCash, migLoans };
+    return { assets, loans, cash, totalAdvance, netShareAssets, kitta, members, perKitta, month, prev, migCash, migLoans };
   },
 
-  // Per kitta value — works even without open month (uses migration/previous)
+  // Per kitta value — deducts member advances from fund assets so advances don't inflate share value
   perKittaValue(data, month) {
     const snap = this.getSnapshot(data);
-    if (month && month.finalAssets && (month.totalKitta || snap.kitta) > 0) {
+    if (month && month.finalAssets != null && (month.totalKitta || snap.kitta) > 0) {
       const k = month.totalKitta || snap.kitta;
-      return Math.round((month.finalAssets || 0) / k);
+      const adv = this.totalAdvance(data, month);
+      const netShare = Math.max(0, (Number(month.finalAssets) || 0) - adv);
+      return Math.round(netShare / k);
     }
     return snap.perKitta;
   },
@@ -323,21 +364,22 @@ const Accounting = {
     month.finalAssets = (Number(month.startAssets) || 0) + month.netIncome;
 
     if (month.status === 'closed') {
-      // FROZEN: prefer snapshot sum, else keep stored outstandingLoans
       if (month.memberSnapshots && Object.keys(month.memberSnapshots).length) {
         month.outstandingLoans = Object.values(month.memberSnapshots)
           .reduce((s, snap) => s + (Number(snap.outstandingLoan) || 0), 0);
       }
-      // else leave month.outstandingLoans as already stored at close
+      month.totalAdvances = this.totalAdvance(data, month);
     } else {
-      const liveOutstanding = data.members
+      const liveOutstanding = (data.members || [])
         .filter(m => m.active)
-        .reduce((s, m) => s + (Number(m.outstandingLoan) || 0), 0);
+        .reduce((s, m) => s + this.getEffectiveMemberLoan(data, m, month), 0);
       const prevOut = this.getStartOutstanding(data, month);
       const calcOutstanding = Math.max(0, prevOut - principal + newLoans);
       month.outstandingLoans = liveOutstanding > 0 ? liveOutstanding : calcOutstanding;
+      month.totalAdvances = this.totalAdvance(data, month);
     }
 
+    month.netShareAssets = Math.max(0, (Number(month.finalAssets) || 0) - (Number(month.totalAdvances) || 0));
     month.cashInHand = (Number(month.finalAssets) || 0) - (Number(month.outstandingLoans) || 0);
     month.totalMembers = this.totalMembers(data);
     month.totalKitta = this.totalKitta(data);
@@ -509,7 +551,15 @@ const Accounting = {
     month.outstandingLoans = liveOut;
     month.cashInHand = (Number(month.finalAssets) || 0) - liveOut;
 
+    month.status = 'collection_closed';
+    month.totalAdvances = (data.members || []).filter(m => m.active)
+      .reduce((s, m) => s + (Number(m.advance) || 0), 0);
+    month.netShareAssets = Math.max(0, (Number(month.finalAssets) || 0) - month.totalAdvances);
+
+    month.memberSnapshots = month.memberSnapshots || {};
     data.members.filter(m => m.active).forEach(m => {
+      m.assetHistory = Array.isArray(m.assetHistory) ? m.assetHistory : [];
+      m.loanHistory = Array.isArray(m.loanHistory) ? m.loanHistory : [];
       month.memberSnapshots[m.id] = {
         kitta: m.kitta,
         outstandingLoan: m.outstandingLoan || 0,
@@ -533,7 +583,7 @@ const Accounting = {
 
       const prevLoan = m.loanHistory.length
         ? m.loanHistory[m.loanHistory.length - 1].balance
-        : (data.migration.loans[m.id] || 0);
+        : ((data.migration && data.migration.loans && data.migration.loans[m.id]) || 0);
       const taken = (month.loansGiven || [])
         .filter(l => l.memberId === m.id)
         .reduce((s, l) => s + l.amount, 0);
@@ -599,5 +649,68 @@ const Accounting = {
       }
       this.recalcMonth(m, data);
     }
+  },
+
+  /**
+   * Reconcile closed-month snapshots & member assetHistory so Advance liabilities
+   * are cleanly separated from member equity across historical snapshots too.
+   */
+  reconcileAdvanceSnapshots(data) {
+    this.rebuildMonthChain(data);
+    const closed = this.getClosedMonthsSorted(data);
+
+    // Seed base assetHistory from migration if present
+    if (data.migrationDone && data.migration) {
+      const migLoans = Object.values(data.migration.loans || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+      const migCash = Number(data.migration.cash || 0);
+      const migAdv = Object.values(data.migration.advances || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+      const migNet = Math.max(0, (migCash + migLoans) - migAdv);
+      const migKitta = (data.members || []).filter(m => m.active)
+        .reduce((s, m) => s + (Number((data.migration.kittas && data.migration.kittas[m.id] !== undefined) ? data.migration.kittas[m.id] : m.kitta) || 0), 0);
+      const migPerKitta = migKitta > 0 ? Math.round(migNet / migKitta) : 0;
+
+      (data.members || []).forEach((m) => {
+        if (!Array.isArray(m.assetHistory)) return;
+        const idx = m.assetHistory.findIndex((h) => h && h.monthId === 'migration');
+        if (idx >= 0) {
+          const mk = Number((data.migration.kittas && data.migration.kittas[m.id] !== undefined) ? data.migration.kittas[m.id] : m.kitta) || 0;
+          const aVal = migPerKitta * mk;
+          m.assetHistory[idx].prev = 0;
+          m.assetHistory[idx].added = aVal;
+          m.assetHistory[idx].total = aVal;
+        }
+      });
+    }
+
+    closed.forEach((m) => {
+      if (m.memberSnapshots && Object.keys(m.memberSnapshots).length) {
+        m.totalAdvances = Object.values(m.memberSnapshots)
+          .reduce((s, snap) => s + (Number(snap && snap.advance) || 0), 0);
+      } else {
+        m.totalAdvances = Number(m.totalAdvances) || 0;
+      }
+      m.netShareAssets = Math.max(0, (Number(m.finalAssets) || 0) - m.totalAdvances);
+      const k = m.totalKitta || this.totalKitta(data);
+      const perK = k > 0 ? Math.round(m.netShareAssets / k) : 0;
+
+      (data.members || []).forEach((mem) => {
+        const snap = m.memberSnapshots && m.memberSnapshots[mem.id];
+        if (snap) {
+          snap.assets = perK * (Number(snap.kitta) || 0);
+        }
+        if (Array.isArray(mem.assetHistory)) {
+          const row = mem.assetHistory.find((h) => h && h.monthId === m.id);
+          if (row && snap) {
+            const idx = mem.assetHistory.indexOf(row);
+            const prevTotal = idx > 0 ? (Number(mem.assetHistory[idx - 1].total) || 0) : 0;
+            row.prev = prevTotal;
+            row.total = snap.assets;
+            row.added = row.total - prevTotal;
+          }
+        }
+      });
+    });
+
+    return closed.length;
   }
 };

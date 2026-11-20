@@ -235,6 +235,29 @@ async function loadStateRow(db) {
   };
 }
 
+async function getPinResetFlags(db) {
+  try {
+    const row = await db.prepare("SELECT value FROM system_secrets WHERE key = 'pin_reset_flags'").first();
+    return row && row.value ? JSON.parse(row.value) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function setPinResetFlag(db, memberId, mustChange) {
+  if (!memberId) return;
+  const flags = await getPinResetFlags(db);
+  if (mustChange) flags[String(memberId)] = true;
+  else delete flags[String(memberId)];
+  await db
+    .prepare(
+      `INSERT INTO system_secrets (key, value, created_at) VALUES ('pin_reset_flags', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, created_at=excluded.created_at`
+    )
+    .bind(JSON.stringify(flags), new Date().toISOString())
+    .run();
+}
+
 async function loadChatFromDb(db, user) {
   const rows = await db
     .prepare('SELECT id, channel, from_id, from_name, from_role, text, type, bill_id, created_at FROM chat_messages ORDER BY created_at ASC LIMIT 800')
@@ -545,13 +568,16 @@ export async function onRequest(context) {
       await env.DB.prepare('DELETE FROM login_attempts WHERE ip_key = ?').bind(attemptKey).run();
 
       const jwtSecret = await getJwtSecret(env);
+      const pinFlags = matched.role === 'member' ? await getPinResetFlags(env.DB) : {};
+      const mustChangePin = !!(matched.role === 'member' && matched.member_id && pinFlags[String(matched.member_id)]);
       const userObj = {
         role: matched.role,
         accountsWriter: matched.accounts_writer === 1,
         memberId: matched.member_id || null,
         name: matched.name || matched.username || 'User',
         username: matched.username || null,
-        mobile: matched.mobile || null
+        mobile: matched.mobile || null,
+        mustChangePin
       };
       const token = await signJwt(userObj, jwtSecret);
       const stateRow = await loadStateRow(env.DB);
@@ -870,7 +896,7 @@ export async function onRequest(context) {
       }
 
       if (body.type === 'member_pin') {
-        const { memberId, pin, mobile, name } = body;
+        const { memberId, pin, mobile, name, isTemp } = body;
         if (!memberId || !pin) return json({ ok: false, error: 'memberId र PIN चाहिन्छ' }, 400);
         const mob = normalizeMobile(mobile);
         const pinHash = await hashSecret(pin);
@@ -883,7 +909,8 @@ export async function onRequest(context) {
           )
           .bind('mem:' + memberId, mob, memberId, name || memberId, pinHash, pinHash, now)
           .run();
-        return json({ ok: true });
+        await setPinResetFlag(env.DB, memberId, !!isTemp);
+        return json({ ok: true, isTemp: !!isTemp });
       }
 
       if (body.type === 'member_meta') {
@@ -918,6 +945,42 @@ export async function onRequest(context) {
       }
 
       return json({ ok: false, error: 'Unknown credential type' }, 400);
+    }
+
+    // 10b. Member Self-Service Change PIN (works both for mandatory Temp PIN change and anytime from Settings)
+    if (path === '/member/change-pin' && method === 'POST') {
+      if (user.role !== 'member' || !user.memberId) {
+        return json({ ok: false, error: 'सदस्य लगइन आवश्यक छ' }, 403);
+      }
+      const body = await request.json();
+      const currentPin = String((body && body.currentPin) || '').trim();
+      const newPin = String((body && body.newPin) || '').trim();
+      if (!currentPin || !newPin) {
+        return json({ ok: false, error: 'पुरानो र नयाँ दुवै PIN हाल्नुहोस्' }, 400);
+      }
+      if (!/^\d{4}$/.test(newPin)) {
+        return json({ ok: false, error: 'नयाँ PIN ठीक ४ अंकको हुनुपर्छ' }, 400);
+      }
+      if (currentPin === newPin) {
+        return json({ ok: false, error: 'नयाँ PIN पुरानो भन्दा फरक हुनुपर्छ' }, 400);
+      }
+      const row = await env.DB.prepare('SELECT * FROM auth_credentials WHERE id = ? AND active = 1').bind('mem:' + user.memberId).first();
+      if (!row) return json({ ok: false, error: 'सदस्य खाता फेला परेन' }, 404);
+      const valid = await verifySecret(currentPin, row.secret_hash);
+      if (!valid) {
+        return json({ ok: false, error: 'पुरानो PIN मिलेन' }, 401);
+      }
+      const newHash = await hashSecret(newPin);
+      const now = new Date().toISOString();
+      await env.DB
+        .prepare('UPDATE auth_credentials SET secret_hash=?, pin_hash=?, updated_at=? WHERE id=?')
+        .bind(newHash, newHash, now, 'mem:' + user.memberId)
+        .run();
+      await setPinResetFlag(env.DB, user.memberId, false);
+      const jwtSecret = await getJwtSecret(env);
+      const updatedUser = Object.assign({}, user, { mustChangePin: false });
+      const token = await signJwt(updatedUser, jwtSecret);
+      return json({ ok: true, token, user: updatedUser, pinVerifier: newHash });
     }
 
     // 11. Chat GET & POST

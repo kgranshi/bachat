@@ -123,7 +123,9 @@ function showMainApp() {
     }
   }, 400);
   setTimeout(function () {
-    if (typeof syncWebPushSubscription === 'function' && typeof Notification !== 'undefined') {
+    if (Auth.isMember && Auth.isMember()) {
+      runMemberOnboardingGate();
+    } else if (typeof syncWebPushSubscription === 'function' && typeof Notification !== 'undefined') {
       if (Notification.permission === 'granted') {
         syncWebPushSubscription(true).catch(function () {});
       } else if (Notification.permission === 'default' && 'PushManager' in window && navigator.serviceWorker) {
@@ -136,7 +138,7 @@ function showMainApp() {
         } catch (e) {}
       }
     }
-  }, 1200);
+  }, 900);
   renderProfileTab();
   renderSettingsTab();
   renderVidhanTab();
@@ -150,12 +152,209 @@ function showMainApp() {
   }
 }
 
+// ===== सदस्य अनबोर्डिङ (१. अनिवार्य Temp PIN परिवर्तन → २. अनिवार्य Push अनुमति/चेतावनी → ३. Skip मिल्ने गाइड) =====
+function runMemberOnboardingGate() {
+  if (!Auth.isMember || !Auth.isMember() || !Auth.currentUser) return;
+  const mid = Auth.currentUser.memberId || 'm';
+  // १. अस्थायी PIN अनिवार्य परिवर्तन
+  if (Auth.currentUser.mustChangePin) {
+    showMandatoryPinChangeModal();
+    return;
+  }
+  // २. पुश नोटिफिकेसन अनुमति गेट
+  const pushAckKey = 'gs_push_gate_done_' + mid;
+  const perm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+  if (perm === 'granted') {
+    try { localStorage.setItem(pushAckKey, 'granted'); } catch (e) {}
+    if (typeof syncWebPushSubscription === 'function') syncWebPushSubscription(true).catch(function () {});
+  } else if (!localStorage.getItem(pushAckKey)) {
+    showPushPermissionGateModal();
+    return;
+  }
+  // ३. पहिलो पटक सदस्य एप गाइड (Skip गर्न मिल्ने)
+  const tourKey = 'gs_member_tour_done_' + mid;
+  if (!localStorage.getItem(tourKey)) {
+    showMemberGuideTour(0, false);
+  }
+}
+
+function showMandatoryPinChangeModal() {
+  const html = `
+    <div style="background:#fff3cd;border-left:4px solid #fd7e14;padding:10px 12px;border-radius:8px;font-size:0.84rem;margin-bottom:12px">
+      🔐 <strong>सुरक्षा सूचना:</strong> Admin ले तपाईंलाई अस्थायी (Temp) PIN दिनुभएको छ। अगाडि बढ्नुअघि तुरुन्तै आफ्नो गोप्य ४ अंकको नयाँ PIN बनाउनुहोस्।
+    </div>
+    <div class="form-group"><label>अहिलेको अस्थायी (Temp) PIN</label>
+      <input type="password" id="ob-cur-pin" maxlength="4" inputmode="numeric" placeholder="Admin ले पठाएको ४ अंक">
+    </div>
+    <div class="form-group"><label>नयाँ ४ अंकको गोप्य PIN</label>
+      <input type="password" id="ob-new-pin" maxlength="4" inputmode="numeric" placeholder="आफैँ सम्झिने ४ अंक">
+    </div>
+    <div class="form-group"><label>नयाँ PIN फेरि लेख्नुहोस्</label>
+      <input type="password" id="ob-new-pin2" maxlength="4" inputmode="numeric" placeholder="फेरि त्यही ४ अंक">
+    </div>
+    <button type="button" class="btn btn-primary btn-block" onclick="submitMandatoryPinChange()">✅ नयाँ PIN सेभ गरी अगाडि बढ्नुहोस्</button>
+    <button type="button" class="btn btn-outline btn-block mt-1" onclick="UI._noClose=false;doLogout()">🚪 लगआउट</button>
+  `;
+  UI.showModal('🔐 पहिलो लगइन: PIN परिवर्तन अनिवार्य', html, '', { root: true, noClose: true });
+}
+
+async function submitMandatoryPinChange() {
+  const cur = (document.getElementById('ob-cur-pin').value || '').trim();
+  const np1 = (document.getElementById('ob-new-pin').value || '').trim();
+  const np2 = (document.getElementById('ob-new-pin2').value || '').trim();
+  if (np1 !== np2) return UI.toast('नयाँ PIN दुवै ठाउँमा मिलेन', 'error');
+  const res = await Auth.changeOwnPin(cur, np1);
+  if (!res.ok) return UI.toast(res.msg, 'error');
+  UI.toast(res.msg, 'success');
+  UI._noClose = false;
+  closeModal();
+  setTimeout(runMemberOnboardingGate, 200);
+}
+
+function diagnosePushUnavailableReason() {
+  const ua = (navigator && navigator.userAgent) || '';
+  const isIOS = /iPad|iPhone|iPod/.test(ua);
+  const isStandalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const isInApp = /FBAN|FBAV|Messenger|Instagram|Line|MicroMessenger/i.test(ua);
+  if (isInApp) {
+    return 'तपाईं Facebook/Messenger भित्रको इन-एप ब्राउजरबाट खोल्नुभएको रहेछ — यहाँ सूचना (Notification) चल्दैन। कृपया माथि ⋮ थिचेर <strong>"Open in Chrome / Browser"</strong> बाट खोल्नुहोस्।';
+  }
+  if (isIOS && !isStandalone) {
+    return 'iPhone/iPad मा सिधै Safari भित्र Notification चल्दैन। पहिले तलको <strong>Share (⬆️) → Add to Home Screen</strong> गर्नुहोस्, र होम स्क्रिनको आइकनबाट खोलेर Allow गर्नुहोस्।';
+  }
+  if (typeof Notification === 'undefined' || !('PushManager' in window)) {
+    return 'यो ब्राउजर वा डिभाइसमा Web Push सुविधा उपलब्ध छैन। Chrome वा Safari (Home Screen) बाट खोल्नुहोस्।';
+  }
+  if (Notification.permission === 'denied') {
+    return 'तपाईंको ब्राउजरमा सूचना <strong>Block</strong> गरिएको छ। ठेगाना बारको छेउमा भएको 🔒 / सेटिङ आइकन → Permissions → <strong>Notifications = Allow</strong> गर्नुहोस्।';
+  }
+  return 'अहिले सूचना अनुमति प्राप्त भएन। पछि Settings → पुश सूचना बाट चालु गर्न सक्नुहुन्छ।';
+}
+
+function showPushPermissionGateModal() {
+  const perm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+  const unsupported = perm === 'denied' || perm === 'unsupported' || !('PushManager' in window);
+  const reasonBox = unsupported
+    ? `<div style="background:#f8d7da;color:#842029;padding:10px;border-radius:8px;font-size:0.82rem;margin:10px 0">⚠️ <strong>किन मिलेन / कसरी गर्ने:</strong><br>${diagnosePushUnavailableReason()}</div>`
+    : '';
+  const html = `
+    <div style="font-size:0.88rem;line-height:1.5;margin-bottom:10px">
+      🔔 <strong>बचत बैठक र रसिदको घण्टी ("टिङ-टिङ") सुन्न</strong> सूचना अनुमति अनिवार्य छ — यसो गर्दा एप बन्द भए पनि बैठकको दिन र बचत खुल्दा तुरुन्तै खबर आउँछ।
+    </div>
+    ${reasonBox}
+    <div id="push-gate-warn" class="hidden" style="background:#fff3cd;color:#664d03;padding:10px;border-radius:8px;font-size:0.82rem;margin:10px 0"></div>
+    ${!unsupported ? `<button type="button" class="btn btn-success btn-block" onclick="attemptPushGateAllow()">🔔 सूचना (Notification) Allow गर्नुहोस्</button>` : ''}
+    <button type="button" id="push-gate-skip-btn" class="btn btn-warning btn-block mt-1 ${unsupported ? '' : 'hidden'}" onclick="acknowledgePushWarningAndEnter()">⚠️ सूचना बिना चेतावनी बुझेर भित्र जानुहोस्</button>
+  `;
+  UI.showModal('🔔 अनिवार्य सूचना अनुमति', html, '', { root: true, noClose: true });
+}
+
+async function attemptPushGateAllow() {
+  let granted = false;
+  try {
+    granted = await ensureNotificationPermission();
+  } catch (e) {
+    granted = false;
+  }
+  if (granted) {
+    const subOk = await syncWebPushSubscription(false);
+    const mid = (Auth.currentUser && Auth.currentUser.memberId) || 'm';
+    try { localStorage.setItem('gs_push_gate_done_' + mid, 'granted'); } catch (e) {}
+    UI.toast(subOk ? 'पुश सूचना सक्रिय भयो ✅' : 'सूचना अनुमति सक्रिय ✅', 'success');
+    UI._noClose = false;
+    closeModal();
+    setTimeout(runMemberOnboardingGate, 200);
+    return;
+  }
+  const warn = document.getElementById('push-gate-warn');
+  const skipBtn = document.getElementById('push-gate-skip-btn');
+  if (warn) {
+    warn.classList.remove('hidden');
+    warn.innerHTML = '⚠️ <strong>सावधान! सूचना Allow भएन:</strong> ' + diagnosePushUnavailableReason() +
+      '<br><br>सूचना नखोलेसम्म बैठकको अटो "टिङ-टिङ" घण्टी आउने छैन।';
+  }
+  if (skipBtn) skipBtn.classList.remove('hidden');
+}
+
+function acknowledgePushWarningAndEnter() {
+  const mid = (Auth.currentUser && Auth.currentUser.memberId) || 'm';
+  try { localStorage.setItem('gs_push_gate_done_' + mid, 'warned'); } catch (e) {}
+  UI._noClose = false;
+  closeModal();
+  setTimeout(runMemberOnboardingGate, 200);
+}
+
+function showMemberGuideTour(step, force) {
+  const steps = [
+    {
+      title: '🏠 १/४ · होम र मेरो हिसाब',
+      body: 'होमको माथि <strong>समूहको कुल कोस</strong> (सम्पत्ति, नगद, ऋण, प्रति कित्ता) देखिन्छ। त्यसको तल तपाईंको <strong>आफ्नै कित्ता, सम्पत्ति र ऋण</strong> कार्ड छ। रातो/पहेँलो <strong>अनिवार्य रकम</strong> मा थिच्दा बचत/ब्याज/जरिवाना कति हो पूरा विवरण खुल्छ।'
+    },
+    {
+      title: '📖 २/४ · पासबुक र डिजिटल रसिद',
+      body: '<strong>मेरो पासबुक</strong> भित्र तपाईंको सम्पत्ति र ऋण इतिहास साथै प्रत्येक महिना तिरेको <strong>बचत, ब्याज, सावा तालिका</strong> हुन्छ। कुनै महिनामा थिच्दा डिजिटल बिल तुरुन्तै खुल्छ र प्रिन्ट/सेभ गर्न मिल्छ।'
+    },
+    {
+      title: '💬 ३/४ · समूह कुराकानी र गुनासो',
+      body: 'बैठक सुरु वा बन्द हुँदा <strong>सामुहिक कुराकानी</strong> मा अटो सूचना आउँछ। हिसाबमा कुनै शंका लागे <strong>सुझाव तथा गुनासो</strong> बाट सिधै Admin लाई पठाउन र जवाफ हेर्न मिल्छ।'
+    },
+    {
+      title: '📱 ४/४ · एप सेभ र PIN सुरक्षा',
+      body: 'सजिलै खोल्न Chrome को माथि <strong>⋮ → Add to Home screen</strong> (वा ★ Bookmark) गर्नुहोस्। तलको <strong>⚙️ सेटिङ</strong> बाट तपाईंले जुनसुकै बेला आफ्नो PIN फेर्न र सूचना जाँच गर्न सक्नुहुन्छ।'
+    }
+  ];
+  const idx = Math.max(0, Math.min(steps.length - 1, Number(step) || 0));
+  const cur = steps[idx];
+  const mid = (Auth.currentUser && Auth.currentUser.memberId) || 'm';
+  const markDone = () => {
+    try { localStorage.setItem('gs_member_tour_done_' + mid, '1'); } catch (e) {}
+    closeModal();
+  };
+  window._finishMemberTour = markDone;
+  const html = `
+    <div style="background:#f0f7ff;border:1px solid #cfe2ff;border-radius:12px;padding:14px;line-height:1.55;font-size:0.9rem;margin-bottom:12px">
+      <div class="fw-bold mb-1" style="color:#0a58ca;font-size:1rem">${cur.title}</div>
+      <div>${cur.body}</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      ${idx > 0 ? `<button type="button" class="btn btn-outline" style="flex:1" onclick="showMemberGuideTour(${idx - 1}, true)">← अघिल्लो</button>` : `<button type="button" class="btn btn-light" style="flex:1" onclick="window._finishMemberTour()">⏭️ Skip (छोड्नुहोस्)</button>`}
+      ${idx < steps.length - 1 ? `<button type="button" class="btn btn-primary" style="flex:1" onclick="showMemberGuideTour(${idx + 1}, true)">अर्को →</button>` : `<button type="button" class="btn btn-success" style="flex:1" onclick="window._finishMemberTour()">✅ बुझेँ, सुरु गरौँ</button>`}
+    </div>
+    ${idx > 0 ? `<button type="button" class="btn btn-light btn-sm btn-block mt-1" onclick="window._finishMemberTour()">⏭️ गाइड बन्द गर्नुहोस् (Skip)</button>` : ''}
+  `;
+  UI.showModal('🎓 एप चलाउने सरल तरिका', html, '', { replace: true });
+}
+
 function renderHomeByRole() {
   const adminHome = document.getElementById('home-admin');
   const memberHome = document.getElementById('home-member');
   if (Auth.isAdmin()) {
     adminHome.classList.remove('hidden');
     memberHome.classList.add('hidden');
+    // Admin खुला महिना प्रगति बक्स
+    const data = DB.load();
+    const cur = Accounting.getCurrentMonth(data);
+    let progEl = document.getElementById('admin-open-progress');
+    if (!progEl && adminHome) {
+      progEl = document.createElement('div');
+      progEl.id = 'admin-open-progress';
+      const actionCards = adminHome.querySelector('.action-cards');
+      if (actionCards) adminHome.insertBefore(progEl, actionCards);
+      else adminHome.appendChild(progEl);
+    }
+    if (progEl) {
+      if (cur && (cur.status === 'open' || cur.status === 'collection_closed')) {
+        const activeCount = (data.members || []).filter(m => m.active).length;
+        const paidCount = Object.values(cur.collections || {}).filter(c => (Number(c.totalPaid) || 0) > 0).length;
+        const cashCollected = Object.values(cur.collections || {}).reduce((s, c) => s + (Number(c.totalPaid) || 0), 0);
+        progEl.innerHTML = `<div class="section-card" onclick="openCollection()" style="cursor:pointer;padding:10px 14px;margin-bottom:10px;background:#f0f7ff;border:1px solid #b6d4fe;display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <div style="font-size:0.84rem">📥 <strong>${cur.name}:</strong> ${paidCount}/${activeCount} सदस्य असुली</div>
+          <div style="font-size:0.84rem;font-weight:700;color:#0a58ca">रु. ${Accounting.formatNum(cashCollected)} ▸</div>
+        </div>`;
+      } else {
+        progEl.innerHTML = '';
+      }
+    }
   } else {
     adminHome.classList.add('hidden');
     memberHome.classList.remove('hidden');
@@ -163,24 +362,64 @@ function renderHomeByRole() {
   }
 }
 
+function showMemberMandatoryBreakdown() {
+  const data = DB.load();
+  const member = data.members.find(m => m.id === (Auth.currentUser && Auth.currentUser.memberId));
+  if (!member) return;
+  const month = Accounting.getCurrentMonth(data);
+  const refMonth = month || Accounting.getPreviousMonth(data) || { status: 'open' };
+  const man = Accounting.calcMandatory(member, data, refMonth);
+  const effLoan = Accounting.getEffectiveMemberLoan(data, member, month);
+  const effAdv = Accounting.getEffectiveMemberAdvance(data, member, month);
+  const html = `
+    <div class="report-card mb-2">
+      <div class="report-row"><span class="label">💾 मासिक बचत (${member.kitta} कित्ता)</span><span class="value">रु. ${Accounting.formatNum(man.saving)}</span></div>
+      <div class="report-row"><span class="label">📈 ऋण ब्याज (${(data.settings && data.settings.interestRate) || 0}%)</span><span class="value">रु. ${Accounting.formatNum(man.interest)}</span></div>
+      <div class="report-row"><span class="label">⚠️ जरिवाना</span><span class="value">रु. ${Accounting.formatNum(man.fine)}</span></div>
+      <div class="report-row"><span class="label">📉 अघिल्लो बाँकी (Due)</span><span class="value" style="color:${man.previousDue>0?'#dc3545':''}">रु. ${Accounting.formatNum(man.previousDue)}</span></div>
+      <div class="report-row"><span class="label fw-bold">कुल अनिवार्य (अग्रिम अघि)</span><span class="value fw-bold">रु. ${Accounting.formatNum(man.totalGross)}</span></div>
+      <div class="report-row"><span class="label">💚 अग्रिमबाट कट्टा</span><span class="value" style="color:#0d6efd">− रु. ${Accounting.formatNum(man.advanceCover)}</span></div>
+      <div class="report-row highlight"><span class="label">💵 नगद तिर्नुपर्ने जम्मा</span><span class="value fw-bold" style="color:#0d6efd">रु. ${Accounting.formatNum(man.total)}</span></div>
+    </div>
+    <div class="report-card">
+      <div class="report-row"><span class="label">🤝 हाल बाँकी ऋण</span><span class="value" style="color:${effLoan>0?'#dc3545':''}">रु. ${Accounting.formatNum(effLoan)}</span></div>
+      <div class="report-row"><span class="label">💚 हाल बाँकी अग्रिम</span><span class="value" style="color:#0d6efd">रु. ${Accounting.formatNum(effAdv)}</span></div>
+    </div>
+    <p class="text-muted mt-2" style="font-size:0.78rem">यो हिसाब तपाईंको कित्ता, अघिल्लो महिनाको ऋण र नियमअनुसार स्वतः गणना गरिएको हो।</p>
+  `;
+  UI.showModal('🧾 अनिवार्य रकमको पूरा विवरण', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+}
+
 function renderMemberHome(container) {
   const data = DB.load();
   const member = data.members.find(m => m.id === Auth.currentUser.memberId);
   if (!member) { container.innerHTML = '<div class="empty-state">सदस्य भेटिएन</div>'; return; }
 
+  const snap = Accounting.getSnapshot(data);
   const myAssets = Accounting.memberAssets(data, member);
-  // कलेक्सनमा अनिवार्य तिर्नुपर्ने जम्मा (नगद) — clear
+  const month = Accounting.getCurrentMonth(data);
+  const effLoan = Accounting.getEffectiveMemberLoan(data, member, month);
+  const effAdv = Accounting.getEffectiveMemberAdvance(data, member, month);
+
   let mandHtml = '';
   try {
-    let month = Accounting.getCurrentMonth(data);
-    // खुला महिना नभए पनि calcMandatory: ब्याज अघिल्लो बन्द महिनाबाट
     const refMonth = month || Accounting.getPreviousMonth(data) || { status: 'open' };
     const man = Accounting.calcMandatory(member, data, refMonth);
     const label = month ? 'अनिवार्य' : 'अर्को कलेक्सन अनिवार्य';
     mandHtml =
-      '<div class="mt-1"><span class="member-badge badge-due" style="font-size:0.88rem">' +
-      label + ' रु. <strong>' + Accounting.formatNum(man.total) + '</strong></span></div>';
+      '<div class="mt-2" style="cursor:pointer" onclick="showMemberMandatoryBreakdown()">' +
+      '<span class="member-badge badge-due" style="font-size:0.9rem;padding:5px 10px">' +
+      label + ' रु. <strong>' + Accounting.formatNum(man.total) + '</strong> · <span style="text-decoration:underline">विवरण ▾</span>' +
+      '</span></div>';
   } catch (e) {}
+
+  // पछिल्लो डिजिटल रसिद छिटो हेर्न
+  let latestBillId = null;
+  const closedMonths = Accounting.getClosedMonthsSorted(data);
+  for (let i = closedMonths.length - 1; i >= 0; i--) {
+    const bid = closedMonths[i].memberBills && closedMonths[i].memberBills[member.id];
+    if (bid && data.bills && data.bills[bid]) { latestBillId = bid; break; }
+  }
 
   const csUnread = memberCollectionSummaryUnreadCount(member.id, data);
   const chatUnread = groupChatUnreadCount(data);
@@ -190,30 +429,54 @@ function renderMemberHome(container) {
   const fbBadge = fbN > 0 ? ' <span class="badge-unread">' + fbN + ' जवाफ</span>' : '';
 
   container.innerHTML = `
+    <div class="section-card" style="padding:10px 12px;margin-bottom:10px;background:#f8faff;border:1px solid #dce7f7">
+      <div style="font-size:0.76rem;font-weight:700;color:#495057;margin-bottom:6px">🏛️ समूहको कोस (प्रत्यक्ष पारदर्शी हिसाब)</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center">
+        <div style="background:#fff;padding:6px 4px;border-radius:8px;border:1px solid #e9ecef">
+          <div style="font-size:0.68rem;color:#6f42c1">💎 कुल कोस</div>
+          <div style="font-weight:700;font-size:0.82rem">${Accounting.formatNum(snap.assets)}</div>
+        </div>
+        <div style="background:#fff;padding:6px 4px;border-radius:8px;border:1px solid #e9ecef">
+          <div style="font-size:0.68rem;color:#198754">💵 नगद</div>
+          <div style="font-weight:700;font-size:0.82rem">${Accounting.formatNum(snap.cash)}</div>
+        </div>
+        <div style="background:#fff;padding:6px 4px;border-radius:8px;border:1px solid #e9ecef">
+          <div style="font-size:0.68rem;color:#fd7e14">🤝 ऋण</div>
+          <div style="font-weight:700;font-size:0.82rem">${Accounting.formatNum(snap.loans)}</div>
+        </div>
+        <div style="background:#fff;padding:6px 4px;border-radius:8px;border:1px solid #e9ecef">
+          <div style="font-size:0.68rem;color:#0891b2">💰 प्र.कित्ता</div>
+          <div style="font-weight:700;font-size:0.82rem">${Accounting.formatNum(snap.perKitta)}</div>
+        </div>
+      </div>
+    </div>
+
     <div class="section-card">
       <div class="flex gap-2" style="align-items:center">
         <div class="member-avatar" style="width:60px;height:60px;font-size:1.5rem">${member.name.charAt(0)}</div>
-        <div>
+        <div style="flex:1">
           <div class="fw-bold" style="font-size:1.15rem">${member.name}</div>
           <div class="text-muted">📱 ${member.mobile || '-'} · PIN: ${(member.hasPin || member.pin) ? '****' : 'सेट छैन'}</div>
           <div class="mt-1">
             <span class="member-badge badge-kitta">${member.kitta} कित्ता</span>
-            <span class="member-badge badge-kitta">सम्पत्ति ${Accounting.formatNum(myAssets)}</span>
+            <span class="member-badge badge-kitta">💎 शेयर ${Accounting.formatNum(myAssets)}</span>
           </div>
           <div class="mt-1">
-            ${member.outstandingLoan > 0 ? `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(member.outstandingLoan)}</span> ` : ''}
-            ${member.advance > 0 ? `<span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(member.advance)}</span> ` : ''}
+            ${effLoan > 0 ? `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(effLoan)}</span> ` : ''}
+            ${effAdv > 0 ? `<span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(effAdv)}</span> ` : ''}
             ${member.due > 0 ? `<span class="member-badge badge-due">बाँकी ${Accounting.formatNum(member.due)}</span>` : ''}
           </div>
           ${mandHtml}
         </div>
       </div>
     </div>
-    <button class="btn btn-primary btn-block mb-1" onclick="openMemberReports()">📊 मासिक / वार्षिक रिपोर्ट</button>
-    <button class="btn btn-purple btn-block mb-1" onclick="showPassbook('${member.id}')">📖 मेरो पासबुक</button>
+    ${latestBillId ? `<button class="btn btn-primary btn-block mb-1" onclick="viewBill('${latestBillId}')">🧾 मेरो पछिल्लो डिजिटल रसिद (${latestBillId})</button>` : ''}
+    <button class="btn btn-purple btn-block mb-1" onclick="showPassbook('${member.id}')">📖 मेरो पासबुक (पूर्ण विवरण)</button>
     <button class="btn btn-info btn-block mb-1" onclick="showMemberOwnCollectionSummary()">📋 मेरो कलेक्सन सारांश${csBadge}</button>
+    <button class="btn btn-primary btn-block mb-1" onclick="openMemberReports()">📊 समूह मासिक / वार्षिक रिपोर्ट</button>
     <button class="btn btn-success btn-block mb-1" onclick="openGroupChatFromHome()">👥 सामुहिक कुराकानी${chatBadge}</button>
     <button class="btn btn-warning btn-block mb-1" onclick="openMemberFeedbackHub()">📢 सुझाव तथा गुनासो${fbBadge}</button>
+    <button class="btn btn-outline btn-block mb-1" onclick="showMemberGuideTour(0, true)">❓ एप कसरी हेर्ने (गाइड)</button>
   `;
 }
 
@@ -771,9 +1034,55 @@ function openCollection() {
         <button class="btn btn-orange btn-block mb-1" onclick="closeModal(); openLoans();">🤝 ऋण लगानीमा जानुहोस्</button>
         <button class="btn btn-danger btn-block mb-1" onclick="doCloseMonth()">🔒 महिना बन्द गर्नुहोस्</button>`;
     }
+    html += `<button class="btn btn-outline btn-block mt-1" onclick="openCashTallyModal()">💵 नगद गन्ने / मिलान (Cash Tally)</button>`;
   }
 
   UI.showModal('📥 मासिक कलेक्सन', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>', { root: true });
+}
+
+function openCashTallyModal() {
+  const data = DB.load();
+  const snap = Accounting.getSnapshot(data);
+  const denoms = [1000, 500, 100, 50, 20, 10, 5, 1];
+  const rows = denoms.map(d => `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <div style="flex:0 0 85px;font-weight:600">रु. ${d} ×</div>
+      <input type="number" min="0" inputmode="numeric" class="tally-inp" data-denom="${d}" value="0" oninput="recalcCashTally(${snap.cash})" style="flex:1;padding:6px 10px;border:1px solid #ced4da;border-radius:8px">
+      <div id="tally-sub-${d}" style="flex:0 0 80px;text-align:right;font-size:0.85rem">0</div>
+    </div>
+  `).join('');
+  const html = `
+    <div class="report-card mb-2">
+      <div class="report-row highlight"><span class="label">💻 सिस्टम अनुसार कोसमा नगद</span><span class="value fw-bold">रु. ${Accounting.formatNum(snap.cash)}</span></div>
+    </div>
+    ${rows}
+    <div class="report-card mt-2" id="tally-result-box">
+      <div class="report-row"><span class="label">✋ गनिएको कुल नगद</span><span class="value fw-bold" id="tally-total">रु. 0</span></div>
+      <div class="report-row"><span class="label">फरक (गनिएको − सिस्टम)</span><span class="value fw-bold" id="tally-diff">${-Math.round(snap.cash)}</span></div>
+    </div>
+  `;
+  UI.showModal('💵 नगद गन्ने / मिलान', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+  recalcCashTally(snap.cash);
+}
+
+function recalcCashTally(expectedCash) {
+  let total = 0;
+  document.querySelectorAll('.tally-inp').forEach(inp => {
+    const d = Number(inp.getAttribute('data-denom')) || 0;
+    const q = Math.max(0, Number(inp.value) || 0);
+    const sub = d * q;
+    total += sub;
+    const subEl = document.getElementById('tally-sub-' + d);
+    if (subEl) subEl.textContent = Accounting.formatNum(sub);
+  });
+  const totEl = document.getElementById('tally-total');
+  const diffEl = document.getElementById('tally-diff');
+  const diff = Math.round(total - (Number(expectedCash) || 0));
+  if (totEl) totEl.textContent = 'रु. ' + Accounting.formatNum(total);
+  if (diffEl) {
+    diffEl.textContent = diff === 0 ? '✅ ठ्याक्कै मिल्यो (0)' : (diff > 0 ? `+${diff} (बढी)` : `${diff} (कम)`);
+    diffEl.style.color = diff === 0 ? '#198754' : '#dc3545';
+  }
 }
 
 function confirmReopenMonth() {
@@ -1198,9 +1507,10 @@ function openLoans() {
     html += '<div class="section-title mt-2">यस महिना दिइएका ऋण</div>';
     month.loansGiven.forEach(l => {
       const m = data.members.find(x => x.id === l.memberId);
+      const noteLine = l.note ? `<div class="member-meta">📝 ${l.note}</div>` : '';
       html += `<div class="member-item">
         <div class="member-info"><div class="member-name">${m ? m.name : l.memberId}</div>
-        <div class="member-meta">${new Date(l.time).toLocaleString('ne-NP')}</div></div>
+        <div class="member-meta">${new Date(l.time).toLocaleString('ne-NP')}</div>${noteLine}</div>
         <div class="fw-bold">${Accounting.formatNum(l.amount)}</div>
       </div>`;
     });
@@ -1243,6 +1553,10 @@ function selectLoanMember(memberId) {
     <div class="form-group">
       <label>💵 ऋण रकम</label>
       <input type="number" id="loan-amount" placeholder="रकम">
+    </div>
+    <div class="form-group">
+      <label>📝 उद्देश्य / म्याद / साक्षी (वैकल्पिक)</label>
+      <input type="text" id="loan-note" placeholder="जस्तै: पसल/खेती · ६ महिना · साक्षी ...">
     </div>
     <div class="form-group">
       <label>✍️ सदस्यको सहि (अनिवार्य)</label>
@@ -1393,6 +1707,7 @@ function saveLoan(memberId) {
   if (amount <= 0) return UI.toast('रकम लेख्नुहोस्', 'error');
   if (!sigPad || !sigPad.hasDrawn) return UI.toast('सहि अनिवार्य छ', 'error');
 
+  const note = (document.getElementById('loan-note') && document.getElementById('loan-note').value || '').trim();
   const signature = compressSignatureFromPad(sigPad);
   UI.showPinModal('⚠️ ऋण लगानी गर्न PIN चाहिन्छ। रकम: ' + amount, () => {
     const data = DB.load();
@@ -1402,7 +1717,9 @@ function saveLoan(memberId) {
     if (amount > month.cashInHand) {
       return UI.toast('नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(month.cashInHand) + ')', 'error');
     }
-    month.loansGiven.push({ memberId, amount, signature, time: new Date().toISOString() });
+    const entry = { memberId, amount, signature, time: new Date().toISOString() };
+    if (note) entry.note = note;
+    month.loansGiven.push(entry);
     member.outstandingLoan = (member.outstandingLoan || 0) + amount;
     Accounting.recalcMonth(month, data);
     notifyLoanPrivate(data, member, amount);
@@ -1514,8 +1831,10 @@ function renderSelectedMonthly() {
     { label: '१०. गरिएको लगानी', val: month.newLoansGiven, detail: 'loans' },
     { label: '११. उठ्न बाँकी लगानी', val: month.outstandingLoans, red: true },
     { label: '१२. कोसमा नगद', val: month.cashInHand },
-    { label: '१३. जम्मा सदस्य', val: month.totalMembers },
-    { label: '१४. जम्मा कित्ता', val: month.totalKitta },
+    { label: '१३. सदस्य अग्रिम दायित्व (हटाएर)', val: month.totalAdvances || 0 },
+    { label: '१४. सदस्य शेयर कोस (खुद)', val: month.netShareAssets != null ? month.netShareAssets : month.finalAssets },
+    { label: '१५. जम्मा सदस्य', val: month.totalMembers },
+    { label: '१६. जम्मा कित्ता', val: month.totalKitta },
     { label: 'प्रति कित्ता मूल्य', val: perKitta, hl: true }
   ];
 
@@ -1583,7 +1902,8 @@ function showReportDetail(monthId, type) {
     (month.loansGiven || []).forEach(l => {
       total += l.amount || 0;
       const t = l.time ? fmtTimeOnly(l.time) : '';
-      body += `<tr><td>${nameOf(l.memberId)}</td><td class="fw-bold">${Accounting.formatNum(l.amount)}</td><td>${t}</td></tr>`;
+      const info = [t, l.note || ''].filter(Boolean).join(' · ');
+      body += `<tr><td>${nameOf(l.memberId)}</td><td class="fw-bold">${Accounting.formatNum(l.amount)}</td><td>${info}</td></tr>`;
     });
   }
 
@@ -1895,8 +2215,12 @@ async function submitProfileRequest() {
 function renderAdminProfile(container) {
   const data = DB.load();
   const showMigration = !data.migration.hideAfterFirst;
-  const pendingPin = (data.pinRequests || []).filter(r => r.status === 'pending').length;
-  const unreadC = (data.complaints || []).filter(c => !c.read).length;
+  const activeMembers = (data.members || []).filter(m => m.active);
+  const loanCnt = activeMembers.filter(m => Accounting.getEffectiveMemberLoan(data, m) > 0).length;
+  const dueCnt = activeMembers.filter(m => (Number(m.due) || 0) > 0).length;
+  const noPinCnt = activeMembers.filter(m => !(m.hasPin || m.pin)).length;
+  const fbCnt = activeMembers.filter(m => memberUnreadFeedbackCount(m.id, data) > 0).length;
+  window._profileFilter = window._profileFilter || 'all';
 
   container.innerHTML = `
     <div class="section-card">
@@ -1908,16 +2232,20 @@ function renderAdminProfile(container) {
     </div>
 
     <div class="section-card">
-      <div class="section-title">👥 सदस्य व्यवस्थापन</div>
+      <div class="section-title">👥 सदस्य व्यवस्थापन (${activeMembers.length} जना)</div>
       <button class="btn btn-success btn-block mb-1" onclick="showNewMemberForm()">➕ नयाँ सदस्य प्रवेश</button>
       <div class="search-box">
-        <input type="text" id="profile-member-search" placeholder="नामको अक्षर टाइप गर्नुहोस्..." oninput="filterProfileMembers()">
+        <input type="text" id="profile-member-search" placeholder="नाम वा मोबाइल खोज्नुहोस्..." oninput="filterProfileMembers()">
       </div>
-      <div id="profile-member-list">
-        <div class="text-muted text-center" style="padding:16px;font-size:0.85rem">नाम खोज्नुहोस् — सूची देखिनेछ</div>
+      <div id="profile-filter-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+        <button type="button" class="btn btn-sm ${window._profileFilter==='all'?'btn-primary':'btn-light'}" onclick="setProfileFilter('all')">सबै (${activeMembers.length})</button>
+        <button type="button" class="btn btn-sm ${window._profileFilter==='loan'?'btn-primary':'btn-light'}" onclick="setProfileFilter('loan')">🤝 ऋण (${loanCnt})</button>
+        <button type="button" class="btn btn-sm ${window._profileFilter==='due'?'btn-primary':'btn-light'}" onclick="setProfileFilter('due')">📉 बाँकी (${dueCnt})</button>
+        <button type="button" class="btn btn-sm ${window._profileFilter==='nopin'?'btn-primary':'btn-light'}" onclick="setProfileFilter('nopin')">🔢 PIN छैन (${noPinCnt})</button>
+        ${fbCnt > 0 ? `<button type="button" class="btn btn-sm ${window._profileFilter==='feedback'?'btn-primary':'btn-light'}" onclick="setProfileFilter('feedback')">📢 गुनासो (${fbCnt})</button>` : ''}
       </div>
+      <div id="profile-member-list"></div>
     </div>
-
 
     ${showMigration ? `
     <div class="section-card" style="border:2px solid #fd7e14">
@@ -1926,11 +2254,15 @@ function renderAdminProfile(container) {
       <button class="btn btn-orange btn-block" onclick="openMigration()">📥 अगाडिको हिसाब हाल्नुहोस्</button>
     </div>
     ` : ''}
-
-    <div class="section-card">
-            </div>
   `;
   setTimeout(function () { filterProfileMembers(); }, 50);
+}
+
+function setProfileFilter(mode) {
+  window._profileFilter = mode || 'all';
+  const container = document.getElementById('profile-content');
+  if (container && !Auth.isMember()) renderAdminProfile(container);
+  else filterProfileMembers();
 }
 
 function memberUnreadFeedbackCount(memberId, data) {
@@ -1943,18 +2275,21 @@ function renderProfileMemberListHtml(members, data) {
   if (!members.length) return '<div class="text-muted text-center" style="padding:12px">भेटिएन</div>';
   return members.map(function (m) {
     const n = memberUnreadFeedbackCount(m.id, data);
-    const badge = n > 0
-      ? '<span class="badge-unread">' + n + ' नयाँ</span>'
-      : '';
+    const effLoan = Accounting.getEffectiveMemberLoan(data, m);
+    const hasPin = !!(m.hasPin || m.pin);
+    const badge = n > 0 ? '<span class="badge-unread">' + n + ' नयाँ</span>' : '';
+    const pinTag = m.mustChangePin
+      ? '<span class="member-badge badge-advance">⏳ Temp PIN</span>'
+      : (hasPin ? '<span class="member-badge badge-kitta">PIN ✅</span>' : '<span class="member-badge badge-due">PIN छैन</span>');
+    const loanTag = effLoan > 0 ? `<span class="member-badge badge-loan">ऋण ${Accounting.formatNum(effLoan)}</span> ` : '';
+    const dueTag = (Number(m.due) || 0) > 0 ? `<span class="member-badge badge-due">बाँकी ${Accounting.formatNum(m.due)}</span> ` : '';
     const initial = (m.name || '?').charAt(0);
     return (
       '<div class="member-item" onclick="openMemberDetail(\'' + m.id + '\')">' +
         '<div class="member-avatar">' + initial + '</div>' +
         '<div class="member-info">' +
           '<div class="member-name">' + m.name + ' ' + badge + '</div>' +
-          '<div class="member-meta">' + (m.mobile || '') +
-            (n > 0 ? ' · 📢 गुनासो/सुझाव' : '') +
-          '</div>' +
+          '<div class="member-meta">' + (m.mobile || 'मोबाइल छैन') + ' · ' + (m.kitta || 0) + ' कित्ता ' + loanTag + dueTag + pinTag + '</div>' +
         '</div>' +
       '</div>'
     );
@@ -1962,26 +2297,20 @@ function renderProfileMemberListHtml(members, data) {
 }
 
 function filterProfileMembers() {
-  const q = (document.getElementById('profile-member-search').value || '').trim().toLowerCase();
+  const inp = document.getElementById('profile-member-search');
+  const q = (inp && inp.value || '').trim().toLowerCase();
   const data = DB.load();
   const el = document.getElementById('profile-member-list');
   if (!el) return;
-  if (!q) {
-    const withFb = data.members.filter(function (m) {
-      return m.active && memberUnreadFeedbackCount(m.id, data) > 0;
-    });
-    if (withFb.length) {
-      el.innerHTML =
-        '<div class="text-muted" style="font-size:0.78rem;margin-bottom:6px">📢 नयाँ गुनासो / सुझाव</div>' +
-        renderProfileMemberListHtml(withFb, data) +
-        '<div class="text-muted text-center" style="padding:12px;font-size:0.8rem">अन्य सदस्य नाम खोज्नुहोस्</div>';
-    } else {
-      el.innerHTML = '<div class="text-muted text-center" style="padding:16px;font-size:0.85rem">नाम खोज्नुहोस् — सूची देखिनेछ</div>';
-    }
-    return;
-  }
-  const filtered = data.members.filter(function (m) {
-    return m.active && m.name.toLowerCase().includes(q);
+  const mode = window._profileFilter || 'all';
+  const filtered = (data.members || []).filter(function (m) {
+    if (!m.active) return false;
+    if (mode === 'loan' && Accounting.getEffectiveMemberLoan(data, m) <= 0) return false;
+    if (mode === 'due' && (Number(m.due) || 0) <= 0) return false;
+    if (mode === 'nopin' && (m.hasPin || m.pin)) return false;
+    if (mode === 'feedback' && memberUnreadFeedbackCount(m.id, data) <= 0) return false;
+    if (!q) return true;
+    return (m.name || '').toLowerCase().includes(q) || (m.mobile || '').toLowerCase().includes(q);
   });
   el.innerHTML = renderProfileMemberListHtml(filtered, data);
 }
@@ -2061,6 +2390,9 @@ function openMemberDetail(memberId) {
 
   const snap = Accounting.getSnapshot(data);
   const myAssets = Accounting.memberAssets(data, member);
+  const effLoan = Accounting.getEffectiveMemberLoan(data, member);
+  const effAdv = Accounting.getEffectiveMemberAdvance(data, member);
+  const pinLabel = member.mustChangePin ? '⏳ Temp PIN (फेर्न बाँकी)' : ((member.hasPin || member.pin) ? '✅ सेट छ' : '❌ सेट छैन');
 
   const photo = member.photo ? `<img src="${member.photo}" style="width:72px;height:72px;border-radius:50%;object-fit:cover;margin-bottom:8px"/>` : '';
   const idCard = member.idCardPhoto ? `<img src="${member.idCardPhoto}" style="max-width:100%;max-height:120px;border-radius:8px;margin-top:6px"/>` : '';
@@ -2074,14 +2406,13 @@ function openMemberDetail(memberId) {
       <div class="report-row"><span class="label">🎫 कित्ता</span><span class="value fw-bold">${member.kitta}</span></div>
       <div class="report-row highlight"><span class="label">💎 सम्पत्ति (हिस्सा)</span><span class="value fw-bold">${Accounting.formatNum(myAssets)}</span></div>
       <div class="report-row"><span class="label">💰 प्रति कित्ता</span><span class="value">${Accounting.formatNum(snap.perKitta)}</span></div>
-      <div class="report-row"><span class="label">🤝 बाँकी ऋण</span><span class="value">${Accounting.formatNum(member.outstandingLoan||0)}</span></div>
-      <div class="report-row"><span class="label">💚 अग्रिम</span><span class="value">${Accounting.formatNum(member.advance||0)}</span></div>
+      <div class="report-row"><span class="label">🤝 बाँकी ऋण</span><span class="value">${Accounting.formatNum(effLoan)}</span></div>
+      <div class="report-row"><span class="label">💚 अग्रिम</span><span class="value">${Accounting.formatNum(effAdv)}</span></div>
       <div class="report-row"><span class="label">📉 बाँकी</span><span class="value">${Accounting.formatNum(member.due||0)}</span></div>
-      <div class="report-row"><span class="label">🔢 PIN</span><span class="value">${(member.hasPin || member.pin) ? '****' : 'सेट छैन'}</span></div>
+      <div class="report-row"><span class="label">🔢 PIN</span><span class="value">${pinLabel}</span></div>
       ${idCard ? '<div style="margin-top:8px"><div class="text-muted" style="font-size:0.8rem">परिचय पत्र</div>'+idCard+'</div>' : ''}
     </div>
   `;
-  // Member complaints — visible in profile (admin + own)
   const memComplaints = (data.complaints || []).filter(c => c.memberId === memberId);
   if (memComplaints.length) {
     html += `<div class="section-title mt-2">📢 गुनासो / प्रतिक्रिया (${memComplaints.length})</div>`;
@@ -2106,7 +2437,7 @@ function openMemberDetail(memberId) {
       <button class="btn btn-primary btn-block mb-1 mt-2" onclick="editMember('${memberId}')">✏️ सम्पादन</button>
       <button class="btn btn-success btn-block mb-1" onclick="showAddKitta('${memberId}')">➕ कित्ता थप्नुहोस्</button>
       <button class="btn btn-warning btn-block mb-1" onclick="showReduceKitta('${memberId}')">➖ कित्ता घटाउनुहोस्</button>
-      <button class="btn btn-info btn-block mb-1" onclick="showSetPin('${memberId}')">🔢 PIN सेट</button>
+      <button class="btn btn-info btn-block mb-1" onclick="showSetPin('${memberId}')">🎲 Temp PIN / WhatsApp निमन्त्रणा</button>
       <button class="btn btn-purple btn-block mb-1" onclick="showPassbook('${memberId}')">📖 पासबुक</button>
       <button class="btn btn-danger btn-block" onclick="confirmExitMember('${memberId}')">🚪 समूहबाट बाहिरिनुहोस्</button>
     `;
@@ -2189,19 +2520,113 @@ function saveMemberEdit(memberId) {
   if (pending === 0) finish();
 }
 
+function generateRandomPin() {
+  const bad = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321'];
+  let p = '4827';
+  for (let i = 0; i < 20; i++) {
+    const arr = new Uint32Array(1);
+    crypto.getRandomValues(arr);
+    const cand = String(1000 + (arr[0] % 9000));
+    if (bad.indexOf(cand) < 0) { p = cand; break; }
+  }
+  return p;
+}
+
 function showSetPin(memberId) {
+  const data = DB.load();
+  const member = data.members.find(m => m.id === memberId);
+  if (!member) return;
+  if (!member.mobile) {
+    return UI.toast('पहिले ✏️ सम्पादन बाट सदस्यको मोबाइल नम्बर राख्नुहोस्', 'error');
+  }
+  const rnd = generateRandomPin();
   const html = `
-    <div class="form-group"><label>नयाँ PIN (४ अंक)</label><input type="password" id="set-pin" maxlength="4" placeholder="४ अंक"></div>
-    <button class="btn btn-primary btn-block" onclick="doSetPin('${memberId}')">✅ सेट गर्नुहोस्</button>
+    <p class="text-muted" style="font-size:0.84rem;margin-bottom:10px">
+      <strong>${escapeHtmlChat(member.name)}</strong> (📱 ${escapeHtmlChat(member.mobile)}) को लागि अस्थायी (Temp) PIN बनाउनुहोस्। सेट भएपछि सिधै WhatsApp निमन्त्रणा पठाउन मिल्छ।
+    </p>
+    <div class="form-group">
+      <label>नयाँ ४ अंकको PIN (स्वतः तयार पारिएको)</label>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="set-pin" maxlength="4" inputmode="numeric" value="${rnd}" style="flex:1;font-weight:700;letter-spacing:3px;text-align:center">
+        <button type="button" class="btn btn-light" onclick="document.getElementById('set-pin').value=generateRandomPin()">🎲 अर्को</button>
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:0.84rem;margin-bottom:12px;cursor:pointer">
+      <input type="checkbox" id="set-pin-temp" checked style="width:18px;height:18px">
+      पहिलो लगइनमा सदस्यले आफैँ नयाॅ PIN फेर्नुपर्ने (Temp PIN)
+    </label>
+    <button type="button" class="btn btn-primary btn-block" onclick="doSetPin('${memberId}')">✅ PIN सेट गरी WhatsApp सन्देश बनाउनुहोस्</button>
   `;
-  UI.showModal('🔢 PIN सेट', html, '<button class="btn btn-outline" onclick="openMemberDetail(\''+memberId+'\')">←</button>');
+  UI.showModal('🎲 Temp PIN / निमन्त्रणा', html, '<button class="btn btn-outline" onclick="openMemberDetail(\''+memberId+'\')">←</button>');
 }
 
 async function doSetPin(memberId) {
-  const pin = document.getElementById('set-pin').value;
-  const res = await Auth.setMemberPin(memberId, pin);
+  const pin = (document.getElementById('set-pin').value || '').trim();
+  const isTemp = !!(document.getElementById('set-pin-temp') && document.getElementById('set-pin-temp').checked);
+  const res = await Auth.setMemberPin(memberId, pin, { isTemp });
   UI.toast(res.msg, res.ok ? 'success' : 'error');
-  if (res.ok) openMemberDetail(memberId);
+  if (res.ok) {
+    showMemberInviteModal(memberId, pin, isTemp);
+  }
+}
+
+function formatWhatsAppPhone(mobile) {
+  let d = String(mobile || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.length === 10 && (d.startsWith('98') || d.startsWith('97') || d.startsWith('96'))) {
+    return '977' + d;
+  }
+  return d;
+}
+
+function showMemberInviteModal(memberId, pin, isTemp) {
+  const data = DB.load();
+  const member = data.members.find(m => m.id === memberId);
+  if (!member) return;
+  const gName = (data.group && data.group.name) || 'समूह बचत';
+  const appUrl = (typeof location !== 'undefined' && location.origin) ? (location.origin + '/') : '';
+  const msg =
+    `🙏 नमस्कार ${member.name} ज्यू,\n` +
+    `तपाईंको मोबाइल नम्बर (${member.mobile}) '${gName}' डिजिटल बचत एपमा दर्ता भएको छ।\n\n` +
+    `🔑 लगइन विवरण:\n` +
+    `• लिन्क: ${appUrl}\n` +
+    `• मोबाइल (Username): ${member.mobile}\n` +
+    `• ${isTemp ? 'अस्थायी (Temp) PIN' : 'PIN'}: ${pin}\n\n` +
+    `📲 पहिलो पटक चलाउने तरिका:\n` +
+    `१) माथिको लिन्क Chrome (iPhone भए Safari) मा खोलेर मोबाइल र ${isTemp ? 'Temp PIN' : 'PIN'} हाली Login गर्नुहोस्।\n` +
+    (isTemp ? `२) भित्र पस्नासाथ पहिले आफ्नो सम्झिने नयाॅ ४ अंकको गोप्य PIN अनिवार्य सेट गर्नुहोस्।\n` : `२) सेटिङबाट चाहेको बेला PIN फेर्न सक्नुहुन्छ।\n`) +
+    `३) त्यसपछि आउने सूचना (Notification) अनिवार्य 'Allow' गर्नुहोस् — बैठक र बचत घण्टी मोबाइलमा बज्छ।\n` +
+    `४) एप सेभ गर्न: Chrome को माथि ⋮ थिची 'Add to Home screen / Install' गर्नुहोस् (वा ★ Bookmark गर्नुहोस्) ताकि अर्को पटक सिधै खोल्न सकियोस्।\n\n` +
+    `धन्यवाद — ${gName}`;
+
+  const waNum = formatWhatsAppPhone(member.mobile);
+  const waHref = waNum
+    ? `https://wa.me/${waNum}?text=${encodeURIComponent(msg)}`
+    : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
+  window._lastInviteText = msg;
+  const html = `
+    <div style="font-size:0.84rem;color:#198754;font-weight:600;margin-bottom:8px">✅ PIN (${escapeHtmlChat(pin)}) सुरक्षित सेभ भयो! अब सदस्यलाई WhatsApp पठाउनुहोस्:</div>
+    <textarea id="invite-msg-box" rows="9" style="width:100%;font-size:0.82rem;padding:10px;border:1px solid #ced4da;border-radius:10px;line-height:1.45">${escapeHtmlChat(msg)}</textarea>
+    <a href="${waHref}" target="_blank" rel="noopener noreferrer" class="btn btn-success btn-block mt-2" style="text-decoration:none">📤 WhatsApp मा सिधै पठाउनुहोस्</a>
+    <button type="button" class="btn btn-primary btn-block mt-1" onclick="copyMemberInviteMsg()">📋 सन्देश Copy गर्नुहोस्</button>
+  `;
+  UI.showModal('📲 सदस्य निमन्त्रणा (WhatsApp)', html, '<button class="btn btn-outline" onclick="openMemberDetail(\''+memberId+'\')">← सदस्य प्रोफाइल</button>');
+}
+
+function copyMemberInviteMsg() {
+  const box = document.getElementById('invite-msg-box');
+  const txt = (box && box.value) || window._lastInviteText || '';
+  if (!txt) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(() => UI.toast('सन्देश Copy भयो ✅', 'success')).catch(() => {
+      if (box) { box.select(); document.execCommand('copy'); UI.toast('सन्देश Copy भयो ✅', 'success'); }
+    });
+  } else if (box) {
+    box.select();
+    document.execCommand('copy');
+    UI.toast('सन्देश Copy भयो ✅', 'success');
+  }
 }
 
 function showAddKitta(memberId) {
@@ -2524,6 +2949,8 @@ function renderPassbookContent(memberId) {
   const snap = Accounting.getSnapshot(data);
   const myAssets = Accounting.memberAssets(data, member);
   const curMonth = Accounting.getCurrentMonth(data);
+  const effLoan = Accounting.getEffectiveMemberLoan(data, member, curMonth);
+  const effAdv = Accounting.getEffectiveMemberAdvance(data, member, curMonth);
 
   let assetRows = (member.assetHistory || []).slice();
   let loanRows = (member.loanHistory || []).slice();
@@ -2538,16 +2965,36 @@ function renderPassbookContent(memberId) {
       total: myAssets
     });
     const taken = (curMonth.loansGiven || []).filter(l => l.memberId === memberId).reduce((s, l) => s + l.amount, 0);
-    const repaid = (curMonth.collections[memberId] && curMonth.collections[memberId].principal) || 0;
+    const repaid = (curMonth.collections && curMonth.collections[memberId] && curMonth.collections[memberId].principal) || 0;
     const prevL = loanRows.length ? loanRows[loanRows.length - 1].balance
-      : ((member.outstandingLoan || 0) - taken + repaid);
+      : (effLoan - taken + repaid);
     loanRows.push({
       monthName: curMonth.name + ' (चलिरहेको)',
       prev: prevL,
       taken,
       repaid,
-      balance: member.outstandingLoan || 0
+      balance: effLoan
     });
+  }
+
+  // मासिक भुक्तानी विवरण तालिका (थिच्दा पूरा बिल/विवरण खुल्छ)
+  const payMonths = (data.months || []).filter(m => m.status === 'closed' || (m.collections && m.collections[memberId]));
+  let payHtml = '';
+  if (!payMonths.length) {
+    payHtml = '<tr><td colspan="6">अहिलेसम्म भुक्तानी रेकर्ड छैन</td></tr>';
+  } else {
+    payHtml = payMonths.map(mo => {
+      const c = (mo.collections && mo.collections[memberId]) || {};
+      const statusTag = mo.status === 'closed' ? '' : ' *';
+      return `<tr style="cursor:pointer" onclick="showMemberMonthPaymentDetail('${mo.id}','${memberId}')">
+        <td style="color:#0d6efd;text-decoration:underline">${mo.name}${statusTag}</td>
+        <td>${Accounting.formatNum(c.saving || 0)}</td>
+        <td>${Accounting.formatNum(c.interest || 0)}</td>
+        <td>${Accounting.formatNum(c.principal || 0)}</td>
+        <td>${Accounting.formatNum(c.fine || 0)}</td>
+        <td class="fw-bold">${Accounting.formatNum(c.totalPaid || 0)}</td>
+      </tr>`;
+    }).join('');
   }
 
   let html = `<div class="print-area" id="print-passbook">
@@ -2555,12 +3002,16 @@ function renderPassbookContent(memberId) {
     <div class="print-meta">पासबुक · ${member.name}</div>
     <div class="report-card mb-2">
       <div class="report-row"><span class="label">🎫 कित्ता</span><span class="value fw-bold">${member.kitta}</span></div>
-      <div class="report-row highlight"><span class="label">💎 हालको सम्पत्ति</span><span class="value fw-bold">${Accounting.formatNum(myAssets)}</span></div>
+      <div class="report-row highlight"><span class="label">💎 हालको सम्पत्ति (हिस्सा)</span><span class="value fw-bold">${Accounting.formatNum(myAssets)}</span></div>
       <div class="report-row"><span class="label">💰 प्रति कित्ता</span><span class="value">${Accounting.formatNum(snap.perKitta)}</span></div>
-      <div class="report-row"><span class="label">🤝 बाँकी ऋण</span><span class="value">${Accounting.formatNum(member.outstandingLoan||0)}</span></div>
-      <div class="report-row"><span class="label">💚 अग्रिम</span><span class="value">${Accounting.formatNum(member.advance||0)}</span></div>
+      <div class="report-row"><span class="label">🤝 बाँकी ऋण</span><span class="value">${Accounting.formatNum(effLoan)}</span></div>
+      <div class="report-row"><span class="label">💚 अग्रिम</span><span class="value">${Accounting.formatNum(effAdv)}</span></div>
     </div>
-    <h3>💎 सम्पत्ति इतिहास</h3>
+    <h3>💵 मासिक भुक्तानी विवरण <span style="font-size:0.75rem;color:#666;font-weight:400">(महिना थिचेर रसिद हेर्नुहोस्)</span></h3>
+    <div class="table-wrap"><table style="font-size:0.76rem"><thead><tr><th>महिना</th><th>बचत</th><th>ब्याज</th><th>सावा</th><th>जरि.</th><th>नगद</th></tr></thead><tbody>
+    ${payHtml}
+    </tbody></table></div>
+    <h3 class="mt-2">💎 सम्पत्ति इतिहास</h3>
     <div class="table-wrap"><table><thead><tr><th>महिना</th><th>पहिले</th><th>थप</th><th>जम्मा</th></tr></thead><tbody>`;
   if (!assetRows.length) {
     html += '<tr><td colspan="4">अहिलेसम्म रेकर्ड छैन</td></tr>';
@@ -2583,6 +3034,35 @@ function renderPassbookContent(memberId) {
   html += '<button class="btn btn-primary btn-block mt-2" onclick="printReportImage(\'print-passbook\')">🖨️ प्रिन्ट</button>';
 
   UI.showModal('📖 पासबुक - ' + member.name, html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+}
+
+function showMemberMonthPaymentDetail(monthId, memberId) {
+  const data = DB.load();
+  const mo = (data.months || []).find(m => m.id === monthId);
+  const member = (data.members || []).find(m => m.id === memberId);
+  if (!mo || !member) return;
+  const bid = mo.memberBills && mo.memberBills[memberId];
+  if (bid && data.bills && data.bills[bid]) {
+    viewBill(bid);
+    return;
+  }
+  const c = (mo.collections && mo.collections[memberId]) || {};
+  const taken = (mo.loansGiven || []).filter(l => l.memberId === memberId).reduce((s, l) => s + (l.amount || 0), 0);
+  const html = `
+    <div class="report-card">
+      <div class="report-row"><span class="label">महिना</span><span class="value fw-bold">${mo.name} (${mo.status})</span></div>
+      <div class="report-row"><span class="label">बचत</span><span class="value">रु. ${Accounting.formatNum(c.saving || 0)}</span></div>
+      <div class="report-row"><span class="label">ब्याज</span><span class="value">रु. ${Accounting.formatNum(c.interest || 0)}</span></div>
+      <div class="report-row"><span class="label">सावा</span><span class="value">रु. ${Accounting.formatNum(c.principal || 0)}</span></div>
+      <div class="report-row"><span class="label">जरिवाना</span><span class="value">रु. ${Accounting.formatNum(c.fine || 0)}</span></div>
+      <div class="report-row"><span class="label">अघिल्लो बाँकी तिरेको</span><span class="value">रु. ${Accounting.formatNum(c.previousDue || 0)}</span></div>
+      <div class="report-row"><span class="label">नयाॅ अग्रिम थप</span><span class="value">रु. ${Accounting.formatNum(c.advance || 0)}</span></div>
+      <div class="report-row"><span class="label">अग्रिमबाट कट्टा</span><span class="value">रु. ${Accounting.formatNum(c.fromAdvance || 0)}</span></div>
+      <div class="report-row highlight"><span class="label">जम्मा नगद तिरेको</span><span class="value fw-bold">रु. ${Accounting.formatNum(c.totalPaid || 0)}</span></div>
+      ${taken > 0 ? `<div class="report-row"><span class="label">यस महिना लिएको ऋण</span><span class="value">रु. ${Accounting.formatNum(taken)}</span></div>` : ''}
+    </div>
+  `;
+  UI.showModal('🧾 ' + member.name + ' · ' + mo.name, html, '<button class="btn btn-outline" onclick="closeModal()">← फर्कनुहोस्</button>');
 }
 
 // ========== MIGRATION ==========
@@ -3208,8 +3688,10 @@ function renderSettingsTab() {
     container.innerHTML = `
       <div class="section-card">
         <div class="section-title">⚙️ सेटिङ</div>
-        <button class="btn btn-success btn-block mb-1" onclick="enablePushFromSettings()">🔔 push notifications</button>
-        <button class="btn btn-danger btn-block mb-2" onclick="doLogout()">🚪 logout</button>
+        <button class="btn btn-primary btn-block mb-1" onclick="showChangeOwnPinModal()">🔐 मेरो PIN परिवर्तन गर्नुहोस्</button>
+        <button class="btn btn-success btn-block mb-1" onclick="enablePushFromSettings()">🔔 पुश सूचना (Notification)</button>
+        <button class="btn btn-outline btn-block mb-1" onclick="showMemberGuideTour(0, true)">❓ एप चलाउने गाइड</button>
+        <button class="btn btn-danger btn-block mb-2" onclick="doLogout()">🚪 लगआउट</button>
       </div>
       ${appOwnerCardHtml(dataM)}
     `;
@@ -3296,6 +3778,33 @@ function renderSettingsTab() {
     </div>
     <input type="file" id="import-file" accept=".json" class="hidden" onchange="doImport(event)">
   `;
+}
+
+function showChangeOwnPinModal() {
+  const html = `
+    <p class="text-muted" style="font-size:0.84rem;margin-bottom:10px">नयाँ PIN राखेपछि पुरानो PIN चल्दैन (इन्टरनेट आवश्यक)।</p>
+    <div class="form-group"><label>अहिलेको (पुरानो) PIN</label>
+      <input type="password" id="cp-old" maxlength="4" inputmode="numeric" placeholder="४ अंक">
+    </div>
+    <div class="form-group"><label>नयाँ PIN (४ अंक)</label>
+      <input type="password" id="cp-new1" maxlength="4" inputmode="numeric" placeholder="नयाँ ४ अंक">
+    </div>
+    <div class="form-group"><label>नयाँ PIN फेरि लेख्नुहोस्</label>
+      <input type="password" id="cp-new2" maxlength="4" inputmode="numeric" placeholder="फेरि त्यही ४ अंक">
+    </div>
+    <button type="button" class="btn btn-primary btn-block" onclick="submitChangeOwnPin()">✅ PIN परिवर्तन गर्नुहोस्</button>
+  `;
+  UI.showModal('🔐 मेरो PIN परिवर्तन', html, '<button class="btn btn-outline" onclick="closeModal()">रद्द</button>');
+}
+
+async function submitChangeOwnPin() {
+  const oldP = (document.getElementById('cp-old').value || '').trim();
+  const n1 = (document.getElementById('cp-new1').value || '').trim();
+  const n2 = (document.getElementById('cp-new2').value || '').trim();
+  if (n1 !== n2) return UI.toast('नयाँ PIN मिलेन', 'error');
+  const res = await Auth.changeOwnPin(oldP, n1);
+  UI.toast(res.msg, res.ok ? 'success' : 'error');
+  if (res.ok) closeModal();
 }
 
 
@@ -4640,11 +5149,11 @@ function runAccountingAuditCheck() {
   const active = (data.members || []).filter((m) => m && m.active !== false);
   let sumLoans = 0, sumAdvances = 0, sumMemberAssets = 0, negIssues = [];
   const totalKitta = Accounting.totalKitta(data);
-  const perKitta = Accounting.perKittaValue(data, snap.currentMonth || snap.prevMonth);
+  const perKitta = snap.perKitta;
 
   active.forEach((m) => {
-    const loan = Number(m.outstandingLoan) || 0;
-    const adv = Number(m.advance) || 0;
+    const loan = Accounting.getEffectiveMemberLoan(data, m);
+    const adv = Accounting.getEffectiveMemberAdvance(data, m);
     sumLoans += loan;
     sumAdvances += adv;
     sumMemberAssets += (Number(m.kitta) || 0) * perKitta;
@@ -4655,23 +5164,37 @@ function runAccountingAuditCheck() {
 
   const loanDiff = Math.round((snap.loans - sumLoans) * 100) / 100;
   const equationDiff = Math.round((snap.assets - (snap.cash + snap.loans)) * 100) / 100;
-  const allOk = Math.abs(loanDiff) <= 1 && Math.abs(equationDiff) <= 1 && negIssues.length === 0;
+  const equityDiff = Math.round(((snap.netShareAssets || 0) - Math.max(0, snap.assets - sumAdvances)) * 100) / 100;
+  const allOk = Math.abs(loanDiff) <= 1 && Math.abs(equationDiff) <= 1 && Math.abs(equityDiff) <= 1 && negIssues.length === 0;
 
   const html = `
     <div class="section-title">${allOk ? '✅ हिसाब १००% मिलेको छ' : '⚠️ फरक जाँच गर्नुहोस्'}</div>
     <div class="report-card mb-2">
       <div class="report-row"><span class="label">सक्रिय सदस्य / कुल कित्ता</span><span class="value">${active.length} जना · ${totalKitta} कित्ता</span></div>
-      <div class="report-row"><span class="label">कुल सम्पत्ति</span><span class="value">रु. ${Accounting.formatNum(snap.assets)}</span></div>
+      <div class="report-row"><span class="label">कुल कोस (नगद + ऋण)</span><span class="value">रु. ${Accounting.formatNum(snap.assets)}</span></div>
       <div class="report-row"><span class="label">कोसमा नगद + बाँकी ऋण</span><span class="value">रु. ${Accounting.formatNum(snap.cash + snap.loans)}</span></div>
       <div class="report-row"><span class="label">सम्पत्ति vs (नगद+ऋण) फरक</span><span class="value" style="color:${Math.abs(equationDiff)<=1?'#198754':'#dc3545'}">${equationDiff}</span></div>
-      <div class="report-row"><span class="label">सदस्य बाँकी ऋण योग</span><span class="value">रु. ${Accounting.formatNum(sumLoans)}</span></div>
+      <div class="report-row"><span class="label">सदस्य बाँकी ऋण योग (लाइभ)</span><span class="value">रु. ${Accounting.formatNum(sumLoans)}</span></div>
       <div class="report-row"><span class="label">ऋण मिलान फरक</span><span class="value" style="color:${Math.abs(loanDiff)<=1?'#198754':'#dc3545'}">${loanDiff}</span></div>
-      <div class="report-row"><span class="label">सदस्य कुल अग्रिम</span><span class="value">रु. ${Accounting.formatNum(sumAdvances)}</span></div>
+      <div class="report-row"><span class="label">सदस्य कुल अग्रिम (दायित्व)</span><span class="value">रु. ${Accounting.formatNum(sumAdvances)}</span></div>
+      <div class="report-row highlight"><span class="label">सदस्य खुद शेयर कोस (कोस − अग्रिम)</span><span class="value fw-bold">रु. ${Accounting.formatNum(snap.netShareAssets || 0)}</span></div>
     </div>
     ${negIssues.length ? `<div style="color:#dc3545;font-size:0.82rem">ऋणात्मक मान भेटियो: ${negIssues.join(', ')}</div>` : ''}
-    <p class="text-muted" style="font-size:0.78rem">यो अडिट पूर्णतः read-only हो — हिसाब वा सूत्र परिवर्तन गर्दैन।</p>
+    <p class="text-muted" style="font-size:0.78rem;margin-bottom:10px">अग्रिम रकम कोसमा नगद/लगानी भए पनि प्रति कित्ता शेयर मूल्य गणना गर्दा अग्रिम दायित्व अलग गरिएको छ।</p>
+    ${Auth.isAccountsWriter && Auth.isAccountsWriter() ? `<button type="button" class="btn btn-warning btn-block" onclick="runAdvanceSnapshotReconcile()">🛠️ पुराना स्न्यापसट र पासबुक मिलान (अग्रिम अलग)</button>` : ''}
   `;
   UI.showModal('🧮 हिसाब मिलान अडिट', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+}
+
+function runAdvanceSnapshotReconcile() {
+  UI.showPinModal('पुराना बन्द महिनाका स्न्यापसट र पासबुक शेयर मूल्य (अग्रिम अलग) मिलान गर्न PIN दिनुहोस्', () => {
+    const data = DB.load();
+    const n = Accounting.reconcileAdvanceSnapshots(data);
+    DB.save(data);
+    UI.updateHome(data);
+    UI.toast(`${n} बन्द महिनाका स्न्यापसट र पासबुक मिल्यो ✅`, 'success');
+    runAccountingAuditCheck();
+  });
 }
 
 async function openSnapshotBackups() {
@@ -4955,6 +5478,8 @@ function viewBill(billId) {
         <tr style="font-weight:700;border-top:1px solid #333"><td>जम्मा तिरेको</td><td style="text-align:right">${Accounting.formatNum(bill.totalPaid)}</td></tr>
         <tr><td>थप ऋण</td><td style="text-align:right">${Accounting.formatNum(bill.loanTaken)}</td></tr>
         <tr><td>बाँकी ऋण</td><td style="text-align:right;color:#c00">${Accounting.formatNum(bill.loanBalance)}</td></tr>
+        <tr><td>बाँकी अग्रिम</td><td style="text-align:right;color:#0d6efd">${Accounting.formatNum(bill.advance || 0)}</td></tr>
+        <tr><td>तिर्न बाँकी (अनिवार्य)</td><td style="text-align:right;color:#dc3545">${Accounting.formatNum(bill.due || 0)}</td></tr>
       </table>
       <div style="text-align:center;font-size:0.7rem;margin-top:10px;color:#666">— समूह बचत प्रणाली —</div>
     </div>
