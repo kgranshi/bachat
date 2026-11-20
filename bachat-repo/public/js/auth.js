@@ -13,11 +13,19 @@ const Auth = {
   },
 
   isAdmin() {
-    return this.currentUser && (this.currentUser.role === 'admin' || this.currentUser.role === 'admin_ro');
+    return !!(this.currentUser && (this.currentUser.role === 'admin' || this.currentUser.role === 'treasurer' || this.currentUser.role === 'admin_ro'));
+  },
+
+  isPrimaryAdmin() {
+    return !!(this.currentUser && this.currentUser.role === 'admin');
+  },
+
+  isTreasurer() {
+    return !!(this.currentUser && this.currentUser.role === 'treasurer');
   },
 
   isAccountsWriter() {
-    return this.currentUser && this.currentUser.role === 'admin' && this.currentUser.accountsWriter === true;
+    return !!(this.currentUser && this.currentUser.role === 'treasurer' && this.currentUser.accountsWriter === true);
   },
 
   isMember() {
@@ -179,11 +187,12 @@ const Auth = {
     const m = String(mobile || '').trim();
     const au = String(data.admin.username || '').trim();
     const am = String(data.admin.mobile || '').trim();
+    const tu = String((data.treasurer && data.treasurer.username) || '').trim();
     if (!m) return false;
-    if (m === au || m === am) return true;
+    if (m === au || m === am || (tu && m === tu)) return true;
     const md = m.replace(/\D/g, '');
     const amd = am.replace(/\D/g, '');
-    if (md && (md === au || (amd && md === amd))) return true;
+    if (md && (md === au || (tu && md === tu) || (amd && md === amd))) return true;
     const other = (data.members || []).find((x) =>
       x.active && x.id !== excludeMemberId &&
       (x.mobile === m || (md && String(x.mobile || '').replace(/\D/g, '') === md))
@@ -213,12 +222,15 @@ const Auth = {
       return { ok: false, msg: (credRes && credRes.error) || 'PIN सेभ असफल (नेट जाँच्नुहोस्)' };
     }
 
+    if (credRes.version && typeof DB.setServerVersion === 'function') {
+      DB.setServerVersion(credRes.version);
+    }
     member.hasPin = true;
     member.mustChangePin = isTemp;
     (data.pinRequests || []).forEach((r) => {
       if (r.memberId === memberId && r.status === 'pending') r.status = 'approved';
     });
-    DB.save(data);
+    DB.save(data, { localOnly: true });
     return { ok: true, msg: isTemp ? 'Temp PIN सुरक्षित सेट भयो' : 'PIN सुरक्षित सेट भयो', pin, isTemp };
   },
 

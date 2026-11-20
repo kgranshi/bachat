@@ -71,7 +71,7 @@ const DB = {
     try {
       if (typeof Auth === 'undefined' || !Auth.currentUser) return false;
       const u = Auth.currentUser;
-      return u.role === 'admin' && u.accountsWriter === true;
+      return u.role === 'treasurer' && u.accountsWriter === true;
     } catch (e) {
       return false;
     }
@@ -92,6 +92,7 @@ const DB = {
         closePin: '',
         accountsWriterUsername: ''
       },
+      treasurer: null,
       secondaryAdmins: [],
       members: [],
       months: [],
@@ -449,6 +450,7 @@ const DB = {
     }
     if (!u) return '';
     if (u.role === 'member' && u.memberId) return 'mem:' + String(u.memberId);
+    if (u.role === 'treasurer' && u.username) return 'trs:' + String(u.username);
     if (u.role === 'admin_ro' && u.username) return 'sec:' + String(u.username);
     return 'admin:' + String(u.username || 'admin');
   },
@@ -699,6 +701,28 @@ const DB = {
       body: JSON.stringify(payload)
     });
     return res.body || { ok: false };
+  },
+
+  async saveAdminSettings(patch) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'सेटिङ सेभ गर्न इन्टरनेट जडान चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/admin/settings', {
+        method: 'POST',
+        body: JSON.stringify(patch || {})
+      });
+      if (res.ok && res.body && res.body.ok) {
+        if (res.body.version) this.setServerVersion(res.body.version);
+        if (res.body.data) this._applyServerPayload(res.body.data, null, res.body.version);
+        this._cloud = true;
+        try { if (typeof UI !== 'undefined' && UI.updateSyncStatus) UI.updateSyncStatus('saved'); } catch (e) {}
+        return res.body;
+      }
+      return { ok: false, error: (res.body && res.body.error) || 'सेटिङ सेभ असफल' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
   },
 
   bindOnlineSync() {

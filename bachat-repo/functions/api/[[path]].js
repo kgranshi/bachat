@@ -44,6 +44,7 @@ function defaultState() {
       closePin: '',
       accountsWriterUsername: ''
     },
+    treasurer: null,
     secondaryAdmins: [],
     members: [],
     months: [],
@@ -120,6 +121,15 @@ function stripSecretsFromState(data) {
   if (clean.settings) {
     clean.settings = Object.assign({}, clean.settings, { closePin: '' });
   }
+  if (clean.treasurer && typeof clean.treasurer === 'object') {
+    clean.treasurer = {
+      memberId: clean.treasurer.memberId || '',
+      name: clean.treasurer.name || '',
+      username: clean.treasurer.username || '',
+      active: clean.treasurer.active !== false,
+      hasPin: !!(clean.treasurer.pin || clean.treasurer.hasPin)
+    };
+  }
   if (Array.isArray(clean.secondaryAdmins)) {
     clean.secondaryAdmins = clean.secondaryAdmins.map((s) => ({
       name: s.name || s.username || '',
@@ -158,6 +168,7 @@ function sanitizeStateForRole(state, user, pinFlags) {
     out.complaints = (out.complaints || []).filter((c) => c.memberId === user.memberId);
     out.suggestions = (out.suggestions || []).filter((s) => s.memberId === user.memberId);
     out.secondaryAdmins = [];
+    out.treasurer = null;
   }
   return out;
 }
@@ -271,6 +282,7 @@ async function setPinResetFlag(db, memberId, mustChange) {
 function userReadKey(user) {
   if (!user) return '';
   if (user.role === 'member' && user.memberId) return 'mem:' + String(user.memberId);
+  if (user.role === 'treasurer' && user.username) return 'trs:' + String(user.username);
   if (user.role === 'admin_ro' && user.username) return 'sec:' + String(user.username);
   return 'admin:' + String(user.username || 'admin');
 }
@@ -350,8 +362,6 @@ async function syncCredentialsFromBackup(db, rawData) {
   const now = new Date().toISOString();
   const stmts = [];
   if (rawData.admin && rawData.admin.username && rawData.admin.password) {
-    const writerName = (rawData.settings && rawData.settings.accountsWriterUsername) || rawData.admin.username;
-    const isWriter = rawData.admin.username === writerName ? 1 : 0;
     const passHash = await hashSecret(rawData.admin.password);
     const pinVal = rawData.admin.pin || (rawData.settings && rawData.settings.closePin) || '';
     const pinHash = pinVal ? await hashSecret(pinVal) : null;
@@ -359,11 +369,11 @@ async function syncCredentialsFromBackup(db, rawData) {
       db
         .prepare(
           `INSERT INTO auth_credentials (id, role, username, mobile, member_id, name, secret_hash, pin_hash, accounts_writer, active, updated_at)
-           VALUES ('admin', 'admin', ?, ?, ?, ?, ?, ?, ?, 1, ?)
+           VALUES ('admin', 'admin', ?, ?, ?, ?, ?, ?, 0, 1, ?)
            ON CONFLICT(id) DO UPDATE SET
              username=excluded.username, mobile=excluded.mobile, member_id=excluded.member_id,
              name=excluded.name, secret_hash=excluded.secret_hash, pin_hash=excluded.pin_hash,
-             accounts_writer=excluded.accounts_writer, active=1, updated_at=excluded.updated_at`
+             accounts_writer=0, active=1, updated_at=excluded.updated_at`
         )
         .bind(
           rawData.admin.username,
@@ -372,9 +382,24 @@ async function syncCredentialsFromBackup(db, rawData) {
           rawData.admin.name || 'Admin',
           passHash,
           pinHash,
-          isWriter,
           now
         )
+    );
+  }
+  if (rawData.treasurer && rawData.treasurer.username && rawData.treasurer.password) {
+    const t = rawData.treasurer;
+    const passHash = await hashSecret(t.password);
+    const pinHash = t.pin ? await hashSecret(t.pin) : null;
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO auth_credentials (id, role, username, mobile, member_id, name, secret_hash, pin_hash, accounts_writer, active, updated_at)
+           VALUES ('treasurer', 'treasurer', ?, '', ?, ?, ?, ?, 1, 1, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             username=excluded.username, member_id=excluded.member_id, name=excluded.name,
+             secret_hash=excluded.secret_hash, pin_hash=excluded.pin_hash, accounts_writer=1, active=1, updated_at=excluded.updated_at`
+        )
+        .bind(t.username, t.memberId || null, t.name || t.username, passHash, pinHash, now)
     );
   }
   for (const s of rawData.secondaryAdmins || []) {
@@ -654,14 +679,14 @@ export async function onRequest(context) {
       });
     }
 
-    // 6. Import Backup JSON (Allowed either BEFORE first admin exists OR by authenticated Admin A!)
+    // 6. Import Backup JSON (Allowed either BEFORE first admin exists OR by authenticated Admin!)
     if (path === '/import-backup' && method === 'POST') {
       const existingAdmin = await env.DB.prepare("SELECT id FROM auth_credentials WHERE role = 'admin' LIMIT 1").first();
       let actor = 'bootstrap';
       if (existingAdmin) {
         const user = await authenticateRequest(request, env);
-        if (!user || user.role !== 'admin' || !user.accountsWriter) {
-          return json({ ok: false, error: 'Admin A लगइन आवश्यक छ' }, 403);
+        if (!user || user.role !== 'admin') {
+          return json({ ok: false, error: 'Admin लगइन आवश्यक छ' }, 403);
         }
         actor = user.username || 'admin';
       }
@@ -788,6 +813,8 @@ export async function onRequest(context) {
       let cred;
       if (user.role === 'admin') {
         cred = await env.DB.prepare("SELECT pin_hash FROM auth_credentials WHERE id = 'admin'").first();
+      } else if (user.role === 'treasurer') {
+        cred = await env.DB.prepare("SELECT pin_hash FROM auth_credentials WHERE id = 'treasurer'").first();
       } else if (user.role === 'admin_ro') {
         cred = await env.DB.prepare('SELECT pin_hash FROM auth_credentials WHERE id = ?').bind('sec:' + user.username).first();
       } else {
@@ -817,10 +844,66 @@ export async function onRequest(context) {
       });
     }
 
-    // 9. Save State (Admin A ONLY, version-checked & idempotent via txnId)
+    // 8b. Admin Non-Accounting Settings & Rules Update (ONLY Admin, never overwrites accounting!)
+    if (path === '/admin/settings' && method === 'POST') {
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'सेटिङ परिवर्तन गर्ने अधिकार Admin लाई मात्र छ' }, 403);
+      }
+      const patch = await request.json().catch(() => ({}));
+      const cur = await loadStateRow(env.DB);
+      const working = JSON.parse(JSON.stringify(cur.data || defaultState()));
+      if (!working.settings) working.settings = defaultState().settings;
+      if (!working.group) working.group = defaultState().group;
+
+      if (patch.group && typeof patch.group === 'object') {
+        working.group = Object.assign({}, working.group, patch.group);
+      }
+      if (patch.settingsPatch && typeof patch.settingsPatch === 'object') {
+        const keepWriter = working.settings.accountsWriterUsername || '';
+        const keepClosePin = working.settings.closePin || '';
+        working.settings = Object.assign({}, working.settings, patch.settingsPatch, {
+          accountsWriterUsername: keepWriter,
+          closePin: keepClosePin
+        });
+      }
+      if (Array.isArray(patch.rules)) working.rules = patch.rules;
+      if (Array.isArray(patch.ruleChangeLog)) working.ruleChangeLog = patch.ruleChangeLog;
+      if (Array.isArray(patch.pendingRuleEdits)) working.pendingRuleEdits = patch.pendingRuleEdits;
+      if (Array.isArray(patch.meetings)) working.meetings = patch.meetings;
+      if (Array.isArray(patch.suggestions)) working.suggestions = patch.suggestions;
+      if (Array.isArray(patch.complaints)) working.complaints = patch.complaints;
+
+      await offloadHeavyMediaToR2(env, working);
+      const pinFlags = await getPinResetFlags(env.DB);
+      if (Array.isArray(working.members)) {
+        working.members = working.members.map((m) =>
+          m && m.id ? Object.assign({}, m, { mustChangePin: !!pinFlags[String(m.id)] }) : m
+        );
+      }
+      const cleanState = stripSecretsFromState(working);
+      const nextVersion = (cur.version || 0) + 1;
+      const now = new Date().toISOString();
+
+      await env.DB
+        .prepare(
+          `INSERT INTO group_state (id, version, data_json, updated_at)
+           VALUES ('main', ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET version=excluded.version, data_json=excluded.data_json, updated_at=excluded.updated_at`
+        )
+        .bind(nextVersion, JSON.stringify(cleanState), now)
+        .run();
+
+      return json({
+        ok: true,
+        version: nextVersion,
+        data: sanitizeStateForRole(cleanState, user, pinFlags)
+      });
+    }
+
+    // 9. Save State (कोषाध्यक्ष / Treasurer ONLY — version-checked & idempotent via txnId)
     if (path === '/state' && method === 'POST') {
-      if (user.role !== 'admin' || !user.accountsWriter) {
-        return json({ ok: false, error: 'Read-only: हिसाब लेख्ने अधिकार Admin A लाई मात्र छ' }, 403);
+      if (user.role !== 'treasurer' || !user.accountsWriter) {
+        return json({ ok: false, error: 'Read-only: हिसाब किताब लेख्ने अधिकार कोषाध्यक्षलाई मात्र छ' }, 403);
       }
       const body = await request.json();
       const { txnId, baseVersion, forceOverwrite, data: incomingRaw, closedMonthId, pushNotice } = body || {};
@@ -936,32 +1019,170 @@ export async function onRequest(context) {
       });
     }
 
-    // 10. Manage Credentials (Admin A updates Admin password/PIN, Admin B, or Member PIN)
+    // 10. Manage Credentials (Admin updates Admin, Treasurer/कोषाध्यक्ष, or Member PIN; Treasurer can update member_meta)
     if (path === '/admin/credentials' && method === 'POST') {
-      if (user.role !== 'admin' || !user.accountsWriter) {
-        return json({ ok: false, error: 'Admin A मात्र' }, 403);
-      }
       const body = await request.json();
       const now = new Date().toISOString();
+
+      if (body.type === 'member_meta') {
+        if (user.role !== 'admin' && !(user.role === 'treasurer' && user.accountsWriter)) {
+          return json({ ok: false, error: 'अनुमति छैन' }, 403);
+        }
+        const { memberId, mobile, name, active, address, bio } = body;
+        const mob = normalizeMobile(mobile);
+        await env.DB
+          .prepare('UPDATE auth_credentials SET mobile=?, name=?, active=?, updated_at=? WHERE id=?')
+          .bind(mob, name || memberId, active === false ? 0 : 1, now, 'mem:' + memberId)
+          .run();
+
+        let nextVer = null;
+        if (memberId && body.syncProfileFields) {
+          const curState = await loadStateRow(env.DB);
+          if (curState && curState.data && Array.isArray(curState.data.members)) {
+            const stMem = curState.data.members.find((m) => m && m.id === memberId);
+            if (stMem) {
+              if (name !== undefined) stMem.name = String(name || stMem.name || '');
+              if (mobile !== undefined) stMem.mobile = String(mobile || '');
+              if (address !== undefined) stMem.address = String(address || '');
+              if (bio !== undefined) stMem.bio = String(bio || '');
+              nextVer = (curState.version || 0) + 1;
+              await env.DB
+                .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+                .bind(nextVer, JSON.stringify(stripSecretsFromState(curState.data)), now)
+                .run();
+            }
+          }
+        }
+        return json({ ok: true, version: nextVer });
+      }
+
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'यो अधिकार Admin लाई मात्र छ' }, 403);
+      }
 
       if (body.type === 'admin_profile') {
         const row = await env.DB.prepare("SELECT * FROM auth_credentials WHERE id = 'admin'").first();
         if (!row) return json({ ok: false, error: 'Admin फेला परेन' }, 404);
-        const nextUser = body.username || row.username;
-        const nextName = body.name || row.name;
+        const nextUser = String(body.username || row.username || '').trim();
+        const nextName = String(body.name || row.name || '').trim();
         const nextMob = body.mobile ? normalizeMobile(body.mobile) : row.mobile;
+        if (!nextUser || !nextName) return json({ ok: false, error: 'Admin नाम र Username चाहिन्छ' }, 400);
+        const trRow = await env.DB.prepare("SELECT username FROM auth_credentials WHERE id = 'treasurer'").first();
+        if (trRow && trRow.username && trRow.username === nextUser) {
+          return json({ ok: false, error: 'यो Username कोषाध्यक्षसँग मिल्न गयो — फरक राख्नुहोस्' }, 400);
+        }
         const nextPassHash = body.password ? await hashSecret(body.password) : row.secret_hash;
         const nextPinHash = body.pin ? await hashSecret(body.pin) : row.pin_hash;
         await env.DB
           .prepare(
-            `UPDATE auth_credentials SET username=?, name=?, mobile=?, secret_hash=?, pin_hash=?, updated_at=? WHERE id='admin'`
+            `UPDATE auth_credentials SET username=?, name=?, mobile=?, secret_hash=?, pin_hash=?, accounts_writer=0, updated_at=? WHERE id='admin'`
           )
           .bind(nextUser, nextName, nextMob, nextPassHash, nextPinHash, now)
           .run();
+
+        const curState = await loadStateRow(env.DB);
+        const stData = curState.data || defaultState();
+        stData.admin = Object.assign({}, stData.admin || {}, {
+          name: nextName,
+          username: nextUser,
+          mobile: nextMob,
+          memberId: (stData.admin && stData.admin.memberId) || 'm1',
+          hasPin: !!nextPinHash
+        });
+        const nextVer = (curState.version || 0) + 1;
+        await env.DB
+          .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+          .bind(nextVer, JSON.stringify(stripSecretsFromState(stData)), now)
+          .run();
+
         const jwtSecret = await getJwtSecret(env);
-        const newUser = Object.assign({}, user, { username: nextUser, name: nextName, mobile: nextMob });
+        const newUser = Object.assign({}, user, { accountsWriter: false, username: nextUser, name: nextName, mobile: nextMob });
         const token = await signJwt(newUser, jwtSecret);
-        return json({ ok: true, token, user: newUser, pinVerifier: nextPinHash });
+        return json({ ok: true, token, user: newUser, pinVerifier: nextPinHash, version: nextVer });
+      }
+
+      if (body.type === 'treasurer_save') {
+        const memberId = String(body.memberId || '').trim();
+        const username = String(body.username || '').trim();
+        const password = String(body.password || '').trim();
+        const pin = String(body.pin || '').trim();
+        if (!memberId || !username) {
+          return json({ ok: false, error: 'सदस्य र कोषाध्यक्ष Username छान्नुहोस्' }, 400);
+        }
+        if (pin && (pin.length !== 4 || !/^\d{4}$/.test(pin))) {
+          return json({ ok: false, error: 'PIN ठीक ४ अंकको हुनुपर्छ' }, 400);
+        }
+
+        const adminRow = await env.DB.prepare("SELECT username FROM auth_credentials WHERE id = 'admin'").first();
+        if (adminRow && adminRow.username === username) {
+          return json({ ok: false, error: 'कोषाध्यक्ष Username Admin को Username सँग एउटै हुनु हुँदैन' }, 400);
+        }
+
+        const curState = await loadStateRow(env.DB);
+        const stData = curState.data || defaultState();
+        const member = (stData.members || []).find((m) => m && m.id === memberId && m.active !== false);
+        if (!member) {
+          return json({ ok: false, error: 'सदस्य सूचीमा सक्रिय सदस्य भेटिएन' }, 404);
+        }
+        const conflictMem = (stData.members || []).find((m) => m && (m.mobile === username || normalizeMobile(m.mobile) === username));
+        if (conflictMem) {
+          return json({ ok: false, error: 'कोषाध्यक्ष Username सदस्यको मोबाइल नम्बरसँग नजुध्ने राख्नुहोस्' }, 400);
+        }
+
+        const existingTr = await env.DB.prepare("SELECT * FROM auth_credentials WHERE id = 'treasurer'").first();
+        if (!existingTr && (!password || !pin)) {
+          return json({ ok: false, error: 'पहिलो पटक कोषाध्यक्ष बनाउँदा Password र ४ अंकको PIN अनिवार्य छ' }, 400);
+        }
+        if (password && password.length < 4) {
+          return json({ ok: false, error: 'Password कम्तिमा ४ अक्षरको हुनुपर्छ' }, 400);
+        }
+
+        const passHash = password ? await hashSecret(password) : existingTr.secret_hash;
+        const pinHash = pin ? await hashSecret(pin) : (existingTr ? existingTr.pin_hash : null);
+        if (!pinHash) {
+          return json({ ok: false, error: '४ अंकको PIN अनिवार्य छ' }, 400);
+        }
+
+        await env.DB
+          .prepare(
+            `INSERT INTO auth_credentials (id, role, username, mobile, member_id, name, secret_hash, pin_hash, accounts_writer, active, updated_at)
+             VALUES ('treasurer', 'treasurer', ?, '', ?, ?, ?, ?, 1, 1, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               role='treasurer', username=excluded.username, mobile='', member_id=excluded.member_id,
+               name=excluded.name, secret_hash=excluded.secret_hash, pin_hash=excluded.pin_hash,
+               accounts_writer=1, active=1, updated_at=excluded.updated_at`
+          )
+          .bind(username, member.id, member.name, passHash, pinHash, now)
+          .run();
+
+        // Ensure Admin is no longer accounts_writer & clean legacy Admin B rows
+        await env.DB.prepare("UPDATE auth_credentials SET accounts_writer=0 WHERE id='admin'").run();
+        await env.DB.prepare("DELETE FROM auth_credentials WHERE role='admin_ro'").run();
+
+        stData.treasurer = {
+          memberId: member.id,
+          name: member.name,
+          username,
+          active: true,
+          hasPin: true
+        };
+        stData.secondaryAdmins = [];
+        if (!stData.settings) stData.settings = defaultState().settings;
+        stData.settings.accountsWriterUsername = username;
+
+        const nextVer = (curState.version || 0) + 1;
+        await env.DB
+          .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+          .bind(nextVer, JSON.stringify(stripSecretsFromState(stData)), now)
+          .run();
+
+        const pinFlags = await getPinResetFlags(env.DB);
+        return json({
+          ok: true,
+          treasurer: stData.treasurer,
+          version: nextVer,
+          data: sanitizeStateForRole(stData, user, pinFlags)
+        });
       }
 
       if (body.type === 'member_pin') {
@@ -980,50 +1201,20 @@ export async function onRequest(context) {
           .run();
         await setPinResetFlag(env.DB, memberId, !!isTemp);
         const curState = await loadStateRow(env.DB);
+        let nxtVer = null;
         if (curState && curState.data && Array.isArray(curState.data.members)) {
           const stMem = curState.data.members.find((m) => m && m.id === memberId);
           if (stMem) {
             stMem.hasPin = true;
             stMem.mustChangePin = !!isTemp;
-            const nxtVer = (curState.version || 0) + 1;
+            nxtVer = (curState.version || 0) + 1;
             await env.DB
               .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
               .bind(nxtVer, JSON.stringify(stripSecretsFromState(curState.data)), now)
               .run();
           }
         }
-        return json({ ok: true, isTemp: !!isTemp });
-      }
-
-      if (body.type === 'member_meta') {
-        const { memberId, mobile, name, active } = body;
-        const mob = normalizeMobile(mobile);
-        await env.DB
-          .prepare('UPDATE auth_credentials SET mobile=?, name=?, active=?, updated_at=? WHERE id=?')
-          .bind(mob, name || memberId, active === false ? 0 : 1, now, 'mem:' + memberId)
-          .run();
-        return json({ ok: true });
-      }
-
-      if (body.type === 'secondary_add') {
-        const { name, username, password, pin } = body;
-        if (!username || !password || !pin) return json({ ok: false, error: 'सबै फिल्ड चाहिन्छ' }, 400);
-        const passHash = await hashSecret(password);
-        const pinHash = await hashSecret(pin);
-        await env.DB
-          .prepare(
-            `INSERT INTO auth_credentials (id, role, username, mobile, member_id, name, secret_hash, pin_hash, accounts_writer, active, updated_at)
-             VALUES (?, 'admin_ro', ?, '', NULL, ?, ?, ?, 0, 1, ?)
-             ON CONFLICT(id) DO UPDATE SET name=excluded.name, secret_hash=excluded.secret_hash, pin_hash=excluded.pin_hash, active=1, updated_at=excluded.updated_at`
-          )
-          .bind('sec:' + username, username, name || username, passHash, pinHash, now)
-          .run();
-        return json({ ok: true });
-      }
-
-      if (body.type === 'secondary_remove') {
-        await env.DB.prepare('DELETE FROM auth_credentials WHERE id = ?').bind('sec:' + body.username).run();
-        return json({ ok: true });
+        return json({ ok: true, isTemp: !!isTemp, version: nxtVer });
       }
 
       return json({ ok: false, error: 'Unknown credential type' }, 400);
@@ -1097,7 +1288,9 @@ export async function onRequest(context) {
         return json({ ok: false, error: 'अनुमति छैन' }, 403);
       }
       const msgId = String(id || 'm' + Date.now() + '_' + randomHex(3));
-      const fromId = user.role === 'admin' ? (user.memberId || user.username || 'admin') : (user.memberId || user.username || 'user');
+      const fromId = (user.role === 'admin' || user.role === 'treasurer')
+        ? (user.memberId || user.username || user.role)
+        : (user.memberId || user.username || 'user');
       const fromName = (type === 'auto_group' || type === 'system') ? 'समूह सूचना' : (user.name || 'सदस्य');
       const fromRole = (type === 'auto_group' || type === 'system') ? 'system' : user.role;
       const createdAt = time || new Date().toISOString();
@@ -1112,7 +1305,7 @@ export async function onRequest(context) {
 
       const inserted = !runRes || !runRes.meta || typeof runRes.meta.changes !== 'number' || runRes.meta.changes > 0;
       if (ch === 'group' && inserted && !body.silentPush) {
-        const senderKey = user.role === 'admin' ? 'admin' : (user.memberId || null);
+        const senderKey = user.role === 'admin' ? 'admin' : user.role === 'treasurer' ? 'treasurer' : (user.memberId || null);
         await broadcastPush(
           env,
           {
@@ -1126,10 +1319,10 @@ export async function onRequest(context) {
       return json({ ok: true, id: msgId, inserted });
     }
 
-    // 11b. Admin Delete Chat Message
+    // 11b. Admin or Treasurer Delete Chat Message
     if (path === '/chat/delete' && method === 'POST') {
-      if (user.role !== 'admin' || !user.accountsWriter) {
-        return json({ ok: false, error: 'Admin A ले मात्र सन्देश मेट्न मिल्छ' }, 403);
+      if (user.role !== 'admin' && !(user.role === 'treasurer' && user.accountsWriter)) {
+        return json({ ok: false, error: 'Admin वा कोषाध्यक्षले मात्र सन्देश मेट्न मिल्छ' }, 403);
       }
       const body = await request.json().catch(() => ({}));
       const msgId = String((body && body.id) || '').trim();
@@ -1213,7 +1406,7 @@ export async function onRequest(context) {
       let targetMemberId = '';
       if (user.role === 'member') {
         targetMemberId = user.memberId || '';
-      } else if (user.role === 'admin' && user.accountsWriter) {
+      } else if ((user.role === 'treasurer' && user.accountsWriter) || user.role === 'admin') {
         targetMemberId = String((body && body.memberId) || '');
       } else {
         return json({ ok: false, error: 'फोटो अपलोड अनुमति छैन' }, 403);
@@ -1247,10 +1440,10 @@ export async function onRequest(context) {
       return json({ ok: true, url: urlOut, photoLocked: !!state.members[idx].photoLocked, version: nextVersion });
     }
 
-    // 13c. Admin Reset Member Photo Lock (allows member to re-upload photo once)
+    // 13c. Admin Reset Member Photo Lock (ONLY Admin)
     if (path === '/admin/reset-member-photo' && method === 'POST') {
-      if (user.role !== 'admin' || !user.accountsWriter) {
-        return json({ ok: false, error: 'Admin A मात्र' }, 403);
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'Admin मात्र' }, 403);
       }
       const body = await request.json().catch(() => ({}));
       const memberId = String((body && body.memberId) || '').trim();
@@ -1277,7 +1470,7 @@ export async function onRequest(context) {
       if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
         return json({ ok: false, error: 'Invalid push subscription' }, 400);
       }
-      const userKey = user.role === 'admin' ? 'admin' : user.role === 'admin_ro' ? 'admin_ro' : (user.memberId || 'guest');
+      const userKey = user.role === 'admin' ? 'admin' : user.role === 'treasurer' ? 'treasurer' : user.role === 'admin_ro' ? 'admin_ro' : (user.memberId || 'guest');
       const subKey = userKey + ':' + sub.endpoint.slice(-32);
       await env.DB
         .prepare(
@@ -1302,7 +1495,7 @@ export async function onRequest(context) {
 
     if (path === '/push/test' && method === 'POST') {
       const vapid = await getVapidKeys(env);
-      const userKey = user.role === 'admin' ? 'admin' : user.role === 'admin_ro' ? 'admin_ro' : (user.memberId || 'guest');
+      const userKey = user.role === 'admin' ? 'admin' : user.role === 'treasurer' ? 'treasurer' : user.role === 'admin_ro' ? 'admin_ro' : (user.memberId || 'guest');
       const rows = await env.DB.prepare('SELECT * FROM push_subscriptions WHERE user_key = ?').bind(userKey).all();
       let sent = 0;
       for (const s of rows.results || []) {
@@ -1316,10 +1509,10 @@ export async function onRequest(context) {
       return json({ ok: true, sent });
     }
 
-    // 15. Admin A Manual Meeting Reminder Push to ALL subscribed members (even when their app is closed)
+    // 15. Admin / Treasurer Manual Meeting Reminder Push to ALL subscribed members
     if (path === '/push/remind' && method === 'POST') {
-      if (user.role !== 'admin' || !user.accountsWriter) {
-        return json({ ok: false, error: 'Admin A मात्र' }, 403);
+      if (user.role !== 'admin' && !(user.role === 'treasurer' && user.accountsWriter)) {
+        return json({ ok: false, error: 'Admin वा कोषाध्यक्ष मात्र' }, 403);
       }
       const body = await request.json().catch(() => ({}));
       const title = String(body.title || '🔔 बचत बैठक रिमाइन्डर');
@@ -1337,9 +1530,10 @@ export async function onRequest(context) {
       const vapid = await getVapidKeys(env);
       const rows = await env.DB.prepare('SELECT sub_key, user_key, endpoint, p256dh, auth FROM push_subscriptions').all();
       const subs = rows.results || [];
+      const selfKey = user.role === 'admin' ? 'admin' : 'treasurer';
       let sent = 0;
       for (const s of subs) {
-        if (s.user_key === 'admin') continue;
+        if (s.user_key === selfKey) continue;
         try {
           const res = await sendWebPush(s, { title, body: message, tag: 'meeting-remind' }, vapid);
           if (res.ok) sent++;
@@ -1353,8 +1547,8 @@ export async function onRequest(context) {
 
     // 16. Closed Month Snapshots (D1 + R2)
     if (path === '/snapshots' && method === 'GET') {
-      if (user.role !== 'admin' && user.role !== 'admin_ro') {
-        return json({ ok: false, error: 'Admin मात्र' }, 403);
+      if (user.role !== 'admin' && user.role !== 'treasurer' && user.role !== 'admin_ro') {
+        return json({ ok: false, error: 'Admin वा कोषाध्यक्ष मात्र' }, 403);
       }
       const rows = await env.DB
         .prepare('SELECT month_id, name, year_bs, month_index, r2_backup_key, closed_at FROM month_snapshots ORDER BY closed_at DESC LIMIT 36')
@@ -1363,8 +1557,8 @@ export async function onRequest(context) {
     }
 
     if (path.startsWith('/snapshot/') && method === 'GET') {
-      if (user.role !== 'admin' && user.role !== 'admin_ro') {
-        return json({ ok: false, error: 'Admin मात्र' }, 403);
+      if (user.role !== 'admin' && user.role !== 'treasurer' && user.role !== 'admin_ro') {
+        return json({ ok: false, error: 'Admin वा कोषाध्यक्ष मात्र' }, 403);
       }
       const monthId = decodeURIComponent(path.slice('/snapshot/'.length));
       const row = await env.DB
@@ -1391,10 +1585,10 @@ export async function onRequest(context) {
       });
     }
 
-    // 17. Full Backup Export
+    // 17. Full Backup Export (Admin & Treasurer)
     if (path === '/export-backup' && method === 'GET') {
-      if (user.role !== 'admin' && user.role !== 'admin_ro') {
-        return json({ ok: false, error: 'Admin मात्र' }, 403);
+      if (user.role !== 'admin' && user.role !== 'treasurer' && user.role !== 'admin_ro') {
+        return json({ ok: false, error: 'Admin वा कोषाध्यक्ष मात्र' }, 403);
       }
       const stateRow = await loadStateRow(env.DB);
       const chat = await loadChatFromDb(env.DB, user);

@@ -221,6 +221,7 @@ const UI = {
     setTxt('home-cash', snap.cash);
     setTxt('home-member-count', snap.members);
     setTxt('home-kitta-count', snap.kitta);
+    setTxt('home-advance', snap.totalAdvance || 0);
     setTxt('home-per-kitta', snap.perKitta);
 
     const banner = document.getElementById('mig-banner');
