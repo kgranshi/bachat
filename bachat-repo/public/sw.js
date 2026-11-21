@@ -1,5 +1,5 @@
 /* समूह बचत — Single Unified Service Worker (Offline Cache + Standard Web Push) */
-const CACHE = 'samuha-cf-v10';
+const CACHE = 'samuha-cf-v11';
 const ASSETS = [
   './',
   './index.html',
@@ -18,7 +18,7 @@ const ASSETS = [
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(ASSETS).catch(() => {})).then(() => self.skipWaiting())
+    caches.open(CACHE).then((c) => c.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' }))).catch(() => {})).then(() => self.skipWaiting())
   );
 });
 
@@ -39,9 +39,13 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Network-first for HTML/JS/CSS so updates from GitHub -> Cloudflare arrive immediately
+  const isSameOrigin = url.origin === self.location.origin;
+  const isCodeOrDoc = e.request.mode === 'navigate' || /\.(?:html|js|css|json)$/i.test(url.pathname) || url.pathname.endsWith('/');
+  const netReq = (isSameOrigin && isCodeOrDoc) ? new Request(e.request, { cache: 'no-cache' }) : e.request;
+
+  // Network-first for HTML/JS/CSS so updates from GitHub -> Cloudflare arrive immediately on custom domain too
   e.respondWith(
-    fetch(e.request)
+    fetch(netReq)
       .then((res) => {
         if (res && res.ok && res.type === 'basic') {
           const copy = res.clone();

@@ -3760,7 +3760,7 @@ function getDefaultTermsClauses(groupName, domain) {
 
 function getEffectiveTermsConfig(data, overrideGroupName) {
   const gName = overrideGroupName || (data && data.group && data.group.name) || 'समूह बचत';
-  const host = (typeof location !== 'undefined' && location.hostname && location.hostname !== 'localhost' && !location.hostname.includes('127.0.0.1') && !location.hostname.endsWith('.run.app'))
+  const host = (typeof location !== 'undefined' && location.hostname && location.hostname !== 'localhost' && !location.hostname.includes('127.0.0.1') && !location.hostname.endsWith('.run.app') && !location.hostname.endsWith('.pages.dev'))
     ? location.hostname
     : 'bachat.gopalkoirala.com.np';
   const saved = (data && data.settings && data.settings.terms) || {};
