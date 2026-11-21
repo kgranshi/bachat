@@ -17,6 +17,7 @@ function resetActivity() {
 }
 
 async function initApp() {
+  try { sessionStorage.removeItem('gs_loan_sandbox_temp_v1'); } catch (e) {}
   let health = { ok: false, hasAdmin: false };
   try {
     if (typeof startCloudSync === 'function') {
@@ -150,12 +151,26 @@ function showMainApp() {
   renderSettingsTab();
   renderVidhanTab();
 
-  if (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) {
-    const pending = (APP_DATA.pinRequests || []).filter(r => r.status === 'pending');
-    const unread = (APP_DATA.complaints || []).filter(c => !c.read).length;
-    if (pending.length > 0 || unread > 0) {
-      setTimeout(() => UI.toast(`📩 PIN: ${pending.length} · गुनासो: ${unread}`, 'success'), 500);
+  if ((Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter())) {
+    const isPrim = Auth.isPrimaryAdmin && Auth.isPrimaryAdmin();
+    const pending = isPrim ? (APP_DATA.pinRequests || []).filter(r => r.status === 'pending') : [];
+    const unresolved = (APP_DATA.complaints || []).filter(c => c && !c.auto && !c.resolved).length;
+    if (pending.length > 0 || unresolved > 0) {
+      const msg = isPrim ? `📩 PIN अनुरोध: ${pending.length} · बाँकी गुनासो: ${unresolved}` : `📢 समाधान बाँकी गुनासो: ${unresolved}`;
+      setTimeout(() => UI.toast(msg, 'success'), 500);
     }
+  }
+  if (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) {
+    try {
+      const u = new URL(window.location.href);
+      if (u.searchParams.get('open') === 'health') {
+        u.searchParams.delete('open');
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState({}, '', u.pathname + (u.search || '') + (u.hash || ''));
+        }
+        setTimeout(() => { openSystemHealthReport(); }, 450);
+      }
+    } catch (e) {}
   }
 }
 
@@ -197,13 +212,13 @@ function showMandatoryPinChangeModal() {
       🔐 <strong>सुरक्षा सूचना:</strong> Admin ले तपाईंलाई अस्थायी (Temp) PIN दिनुभएको छ। अगाडि बढ्नुअघि तुरुन्तै आफ्नो गोप्य ४ अंकको नयाँ PIN बनाउनुहोस्।
     </div>
     <div class="form-group"><label>अहिलेको अस्थायी (Temp) PIN</label>
-      <input type="password" id="ob-cur-pin" maxlength="4" inputmode="numeric" placeholder="Admin ले पठाएको ४ अंक">
+      <input type="text" id="ob-cur-pin" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="Admin ले पठाएको ४ अंक" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <div class="form-group"><label>नयाँ ४ अंकको गोप्य PIN</label>
-      <input type="password" id="ob-new-pin" maxlength="4" inputmode="numeric" placeholder="आफैँ सम्झिने ४ अंक">
+      <input type="text" id="ob-new-pin" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="आफैँ सम्झिने ४ अंक" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <div class="form-group"><label>नयाँ PIN फेरि लेख्नुहोस्</label>
-      <input type="password" id="ob-new-pin2" maxlength="4" inputmode="numeric" placeholder="फेरि त्यही ४ अंक">
+      <input type="text" id="ob-new-pin2" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="फेरि त्यही ४ अंक" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <button type="button" class="btn btn-primary btn-block" onclick="submitMandatoryPinChange()">✅ नयाँ PIN सेभ गरी अगाडि बढ्नुहोस्</button>
     <button type="button" class="btn btn-outline btn-block mt-1" onclick="UI._noClose=false;doLogout()">🚪 लगआउट</button>
@@ -681,13 +696,21 @@ function openMemberOwnProfileModal(options = {}) {
   let complaintHtml = '';
   if (myComplaints.length) {
     complaintHtml = myComplaints.slice().reverse().map(c => {
-      let replies = (c.replies || []).map(r =>
-        `<div style="margin:6px 0 0 12px;padding:6px 10px;background:#f0f7ff;border-radius:8px;font-size:0.84rem">
-          <strong>${r.from === 'admin' ? 'Admin' : 'तपाईं'}:</strong> ${r.text}
-        </div>`).join('');
+      const statusBadge = c.resolved
+        ? '<span class="complaint-pill-resolved">✅ समाधान भयो</span>'
+        : '<span class="complaint-pill-open">⏳ जवाफ बाँकी</span>';
+      let replies = (c.replies || []).map(r => {
+        const who = r.from === 'treasurer' ? 'कोषाध्यक्ष' : (r.from === 'admin' ? 'Admin' : 'तपाईं');
+        return `<div style="margin:6px 0 0 12px;padding:6px 10px;background:#f0f7ff;border-radius:8px;font-size:0.84rem">
+          <strong>${who}:</strong> ${escapeHtmlChat(r.text || '')}
+        </div>`;
+      }).join('');
       return `<div class="section-card" style="padding:10px;margin-bottom:8px">
-        <div class="text-muted" style="font-size:0.74rem">${new Date(c.time).toLocaleString()}</div>
-        <div style="font-size:0.88rem">${c.text}</div>${replies}
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px">
+          <span class="text-muted" style="font-size:0.74rem">${new Date(c.time).toLocaleString('ne-NP')}</span>
+          ${statusBadge}
+        </div>
+        <div style="font-size:0.88rem">${escapeHtmlChat(c.text || '')}</div>${replies}
       </div>`;
     }).join('');
   }
@@ -743,9 +766,17 @@ function memberFeedbackUnread(memberId, data) {
     const list = (data.complaints || []).filter(c => c.memberId === memberId && !c.auto);
     let n = 0;
     list.forEach(function (c) {
+      let unreadReplies = 0;
       (c.replies || []).forEach(function (r) {
-        if (r.from === 'admin' && !r.readByMember && (!fbReadAt || (r.time && r.time > fbReadAt))) n++;
+        if ((r.from === 'admin' || r.from === 'treasurer') && !r.readByMember && (!fbReadAt || (r.time && r.time > fbReadAt))) {
+          unreadReplies++;
+        }
       });
+      if (unreadReplies > 0) {
+        n += unreadReplies;
+      } else if (c.resolved && c.resolvedAt && (!fbReadAt || c.resolvedAt > fbReadAt)) {
+        n += 1;
+      }
     });
     return n;
   } catch (e) { return 0; }
@@ -755,7 +786,7 @@ function appOwnerCardHtml(data) {
   const o = (data.settings && data.settings.appOwner) || {};
   const photo = o.photo || './owner-photo.jpg';
   if (!o.name && !o.mobile && !o.email && !o.website) {
-    return '<div class="ao-card ao-empty">visiting card · not set</div>';
+    return '<div class="ao-card ao-empty">एप परिचय विवरण सेट गरिएको छैन</div>';
   }
   function esc(s) { return String(s || '').replace(/</g, ''); }
   function row(label, val, href) {
@@ -779,18 +810,18 @@ function appOwnerCardHtml(data) {
         '<div class="ao-top">' +
           '<img class="ao-photo" src="' + photo + '" alt="" width="64" height="64" onerror="this.style.display=\'none\'"/>' +
           '<div class="ao-id">' +
-            '<div class="ao-label">App Owner</div>' +
+            '<div class="ao-label">एप परिचय · About Us</div>' +
             '<div class="ao-name">' + esc(o.name || '—') + '</div>' +
             (o.title ? '<div class="ao-title">' + esc(o.title) + '</div>' : '') +
           '</div>' +
         '</div>' +
         '<div class="ao-body">' +
-          row('Mobile', o.mobile, o.mobile ? 'tel:' + o.mobile : '') +
-          row('Email', o.email, o.email ? 'mailto:' + o.email : '') +
-          row('Web', web, webHref) +
-          row('Facebook', fb, fbHref) +
-          row('WhatsApp', wa, waHref) +
-          row('Address', o.address, '') +
+          row('मोबाइल', o.mobile, o.mobile ? 'tel:' + o.mobile : '') +
+          row('इमेल', o.email, o.email ? 'mailto:' + o.email : '') +
+          row('वेबसाइट', web, webHref) +
+          row('फेसबुक', fb, fbHref) +
+          row('ह्वाट्सएप', wa, waHref) +
+          row('ठेगाना', o.address, '') +
           (o.note ? '<div class="ao-note">' + esc(o.note) + '</div>' : '') +
         '</div>' +
       '</div>' +
@@ -802,11 +833,11 @@ function openMemberFeedbackHub() {
   const data = DB.load();
   const memberId = Auth.currentUser && Auth.currentUser.memberId;
   if (!memberId) return;
-  const list = (data.complaints || []).filter(c => c.memberId === memberId).slice().reverse();
-  // mark admin replies as read persistently (D1 + localStorage)
+  const list = (data.complaints || []).filter(c => c.memberId === memberId && !c.auto).slice().reverse();
+  // mark admin/treasurer replies as read persistently (D1 + localStorage)
   list.forEach(function (c) {
     (c.replies || []).forEach(function (r) {
-      if (r.from === 'admin') r.readByMember = true;
+      if (r.from === 'admin' || r.from === 'treasurer') r.readByMember = true;
     });
   });
   DB.save(data, { localOnly: !Auth.isAccountsWriter() });
@@ -821,18 +852,24 @@ function openMemberFeedbackHub() {
   } else {
     list.forEach(function (c) {
       const time = c.time ? new Date(c.time).toLocaleString('ne-NP') : '';
-      const kind = c.auto ? '✅ स्वतः' : (c.kind === 'suggestion' ? '💡 सुझाव' : '📢 गुनासो');
+      const kind = c.kind === 'suggestion' ? '💡 सुझाव' : '📢 गुनासो';
+      const statusPill = c.resolved
+        ? '<span class="complaint-pill-resolved">✅ समाधान भयो</span>'
+        : '<span class="complaint-pill-open">⏳ जवाफ बाँकी</span>';
       let replies = '';
       (c.replies || []).forEach(function (r) {
-        const who = r.from === 'admin' ? 'Admin' : 'तपाईं';
+        const who = r.from === 'treasurer' ? 'कोषाध्यक्ष' : (r.from === 'admin' ? 'Admin' : 'तपाईं');
         replies += '<div style="margin-top:6px;padding:8px;background:#f0f7ff;border-radius:8px;font-size:0.82rem">' +
-          '<strong>' + who + '</strong>: ' + (r.text || '') +
+          '<strong>' + who + '</strong>: ' + escapeHtmlChat(r.text || '') +
           (r.time ? '<div class="text-muted" style="font-size:0.72rem">' + new Date(r.time).toLocaleString('ne-NP') + '</div>' : '') +
           '</div>';
       });
       rows += '<div class="section-card" style="margin-bottom:8px;padding:10px">' +
-        '<div class="text-muted" style="font-size:0.72rem">' + kind + ' · ' + time + '</div>' +
-        '<div style="font-size:0.9rem;margin-top:4px">' + (c.text || '') + '</div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px">' +
+          '<span class="text-muted" style="font-size:0.72rem">' + kind + ' · ' + time + '</span>' +
+          statusPill +
+        '</div>' +
+        '<div style="font-size:0.9rem;margin-top:4px">' + escapeHtmlChat(c.text || '') + '</div>' +
         replies + '</div>';
     });
   }
@@ -1383,8 +1420,8 @@ function _doStartNewMonth() {
   notifyMonthStarted(data, month);
   DB.save(data, {
     pushNotice: {
-      title: '📢 ' + (month.name || 'नयाँ महिना') + ' बचत सुरु भयो',
-      body: 'समूहको बचत बैठक सुरु भएको छ — कृपया समयमै सहभागी हुनुहोला।'
+      title: '📢 ' + (month.name || 'नयाँ महिना') + ' बचत संकलन सुरु भयो',
+      body: 'मासिक बचत तथा ब्याज असुली खुला भएको छ — समयमै उपस्थित भई बचत बुझाउनुहोला।'
     }
   });
   UI.updateHome(data);
@@ -1651,7 +1688,6 @@ function saveCollection(memberId) {
   month.collections[memberId] = { ...allocated, time: new Date().toISOString() };
 
   Accounting.recalcMonth(month, data);
-  notifyCollectionPrivate(data, member, month.collections[memberId], month);
   DB.save(data);
   UI.updateHome(data); // entry सँगै होम अपडेट
   UI.toast('कलेक्सन सेभ भयो', 'success');
@@ -1692,17 +1728,6 @@ function openLoans() {
   const canWrite = Auth.isAccountsWriter && Auth.isAccountsWriter();
 
   let html = '';
-  /* TEMPORARY LOAN PRACTICE BANNER (REMOVE AFTER TESTING) */
-  html += `<div class="loan-sbx-banner">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-      <div style="font-size:0.8rem;color:#78350f;line-height:1.35">
-        <strong>🧪 ऋण लगानी अभ्यास (Test मोड)</strong><br>
-        <span style="font-size:0.74rem">ऋण प्रक्रिया, सहि र रेकर्ड कहाँ कसरी बस्छ हेर्नुहोस् (रियल हिसाबमा जाँदैन)</span>
-      </div>
-      <button type="button" class="btn btn-warning btn-sm" style="white-space:nowrap;font-weight:700" onclick="openLoanSandbox()">🧪 अभ्यास खोल्नुहोस्</button>
-    </div>
-  </div>`;
-  /* END TEMPORARY LOAN PRACTICE BANNER */
 
   if (!canWrite) {
     html += `<div style="background:#fff3cd;border:1px solid #ffe69c;color:#664d03;padding:8px 10px;border-radius:10px;font-size:0.8rem;margin-bottom:8px">👁️ Read-only मोड: ऋण लगानी र महिना बन्द कोषाध्यक्षले मात्र गर्न सक्नुहुन्छ।</div>`;
@@ -2019,7 +2044,7 @@ function openLoanTreasurerApprovalStep() {
     </div>
     <div class="form-group">
       <label>🔢 कोषाध्यक्षको ४-अंकको PIN प्रविष्ट गर्नुहोस्</label>
-      <input type="password" id="real-loan-pin" maxlength="4" inputmode="numeric" placeholder="४ अंकको PIN" class="pin-input" onkeydown="if(event.key==='Enter')finalizeRealLoanDisbursement()">
+      <input type="text" id="real-loan-pin" maxlength="4" inputmode="numeric" placeholder="४ अंकको PIN" class="pin-input masked-secret" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" onkeydown="if(event.key==='Enter')finalizeRealLoanDisbursement()">
     </div>
     <button type="button" id="real-loan-submit-btn" class="btn btn-orange btn-block" onclick="finalizeRealLoanDisbursement()">🔒 PIN दिई ऋण लगानी दर्ता गर्नुहोस्</button>
   `;
@@ -2084,7 +2109,6 @@ async function finalizeRealLoanDisbursement() {
   month.loansGiven.push(entry);
   member.outstandingLoan = prevLoanNow + d.amount;
   Accounting.recalcMonth(month, data);
-  notifyLoanPrivate(data, member, d.amount);
   DB.save(data);
   _realLoanDraft = null;
   UI.toast('ऋण लगानी र डिजिटल सम्झौता दर्ता भयो', 'success');
@@ -2189,8 +2213,8 @@ function doCloseMonth() {
     DB.save(data, {
       closedMonthId: month.id,
       pushNotice: {
-        title: '🧾 ' + (month.name || 'महिना') + ' बन्द भयो',
-        body: 'हिसाब बन्द भई डिजिटल रसिद र पासबुक अपडेट भएको छ।'
+        title: '✅ ' + (month.name || 'महिना') + ' को हिसाब बन्द भयो',
+        body: 'डिजिटल रसिद र पासबुक अपडेट भयो। कृपया आफ्नो हिसाब जाँच गर्नुहोस्।'
       }
     });
     UI.toast(month.name + ' बन्द भयो · बिल पठाइयो', 'success');
@@ -2613,6 +2637,7 @@ function renderAdminProfile(container) {
   const noPinCnt = activeMembers.filter(m => !(m.hasPin || m.pin)).length;
   const fbCnt = activeMembers.filter(m => memberUnreadFeedbackCount(m.id, data) > 0).length;
   const pendingPins = (data.pinRequests || []).filter(r => r.status === 'pending').length;
+  const openFbTotal = (data.complaints || []).filter(c => c && !c.auto && !c.resolved).length;
   window._profileFilter = window._profileFilter || 'all';
 
   container.innerHTML = `
@@ -2620,6 +2645,7 @@ function renderAdminProfile(container) {
       <div class="section-title">👥 सदस्य व्यवस्थापन (${activeMembers.length} जना)</div>
       ${isTreasurerWriter ? `<button class="btn btn-success btn-block mb-1" onclick="showNewMemberForm()">➕ नयाँ सदस्य प्रवेश</button>` : ''}
       ${isPrimaryAdmin && pendingPins > 0 ? `<button class="btn btn-warning btn-block mb-1" onclick="showPinRequests()">🔢 बाँकी PIN अनुरोध (${pendingPins})</button>` : ''}
+      ${(isPrimaryAdmin || isTreasurerWriter) && openFbTotal > 0 ? `<button class="btn btn-danger btn-block mb-1" onclick="showComplaints()">📢 समाधान बाँकी गुनासोहरू (${openFbTotal})</button>` : ''}
       <div class="search-box">
         <input type="text" id="profile-member-search" placeholder="नाम वा मोबाइल खोज्नुहोस्..." oninput="filterProfileMembers()">
       </div>
@@ -2653,7 +2679,7 @@ function setProfileFilter(mode) {
 
 function memberUnreadFeedbackCount(memberId, data) {
   return (data.complaints || []).filter(function (c) {
-    return c.memberId === memberId && !c.auto && !c.read;
+    return c && c.memberId === memberId && !c.auto && !c.resolved;
   }).length;
 }
 
@@ -2721,28 +2747,7 @@ function openMemberDetail(memberId, options = {}) {
   window._openMemberDetailId = memberId;
   const isPrimaryAdmin = Auth.isPrimaryAdmin && Auth.isPrimaryAdmin();
   const canWriteAcc = Auth.isAccountsWriter && Auth.isAccountsWriter();
-
-  // गुनासो/सुझाव खोल्दा read — सूचीबाट badge हट्छ
-  let marked = false;
-  (data.complaints || []).forEach(function (c) {
-    if (c.memberId === memberId && !c.auto && !c.read) {
-      c.read = true;
-      marked = true;
-    }
-  });
-  if (marked) {
-    if (isPrimaryAdmin) {
-      DB.save(data, { localOnly: true });
-      if (typeof DB.saveAdminSettings === 'function') {
-        DB.saveAdminSettings({ complaints: data.complaints }).catch(function () {});
-      }
-    } else if (canWriteAcc) {
-      DB.save(data);
-    } else {
-      DB.save(data, { localOnly: true });
-    }
-    try { refreshProfileMemberListAfterRead(); } catch (e) {}
-  }
+  const canReplyComplaint = isPrimaryAdmin || canWriteAcc;
 
   const snap = Accounting.getSnapshot(data);
   const myAssets = Accounting.memberAssets(data, member);
@@ -2752,11 +2757,45 @@ function openMemberDetail(memberId, options = {}) {
     ? '⏳ Temp PIN (फेर्न बाँकी)'
     : ((member.hasPin || member.pin) ? '✅ सदस्यले सेट गर्यो' : '❌ सेट छैन');
 
+  const allMemComplaints = (data.complaints || []).filter(c => c && c.memberId === memberId && !c.auto);
+  const openComplaints = allMemComplaints.filter(c => !c.resolved).slice().reverse();
+  const resolvedComplaints = allMemComplaints.filter(c => c.resolved).slice().reverse();
+
+  function renderComplaintCardHtml(c) {
+    const replies = (c.replies || []).map(r => {
+      const who = r.from === 'treasurer' ? 'कोषाध्यक्ष' : (r.from === 'admin' ? 'Admin' : 'सदस्य');
+      return `<div style="margin:4px 0 0 10px;padding:6px 8px;background:#f0f7ff;border-radius:8px;font-size:0.8rem">
+        <strong>${who}:</strong> ${escapeHtmlChat(r.text || '')}
+      </div>`;
+    }).join('');
+    const pill = c.resolved
+      ? '<span class="complaint-pill-resolved">✅ समाधान भयो</span>'
+      : '<span class="complaint-pill-open">⏳ समाधान बाँकी</span>';
+    const btnLabel = c.resolved ? '💬 थप जवाफ' : '💬 जवाफ / समाधान';
+    return `<div class="section-card" style="padding:10px;margin-bottom:8px;${!c.resolved ? 'border:1.5px solid #fd7e14;background:#fffbf5' : ''}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px">
+        <span class="text-muted" style="font-size:0.72rem">${new Date(c.time).toLocaleString('ne-NP')}</span>
+        ${pill}
+      </div>
+      <div style="font-size:0.9rem">${escapeHtmlChat(c.text || '')}</div>
+      ${replies}
+      ${canReplyComplaint ? `<button type="button" class="btn btn-sm ${c.resolved ? 'btn-light' : 'btn-info'} mt-1" onclick="openReplyComplaintForm('${c.id}')">${btnLabel}</button>` : ''}
+    </div>`;
+  }
+
   const photo = member.photo ? `<img src="${member.photo}" class="member-passport-photo" style="width:68px;height:85px;margin-bottom:8px"/>` : '';
   const idCard = member.idCardPhoto ? `<img src="${member.idCardPhoto}" style="max-width:100%;max-height:120px;border-radius:8px;margin-top:6px"/>` : '';
   let html = `
     <div class="section-title">${member.name}</div>
     <div style="text-align:center">${photo}</div>
+  `;
+
+  if (openComplaints.length) {
+    html += `<div class="section-title" style="color:#b45309">📢 समाधान बाँकी गुनासो (${openComplaints.length})</div>`;
+    html += openComplaints.map(renderComplaintCardHtml).join('');
+  }
+
+  html += `
     <div class="report-card">
       <div class="report-row"><span class="label">📱 मोबाइल</span><span class="value">${member.mobile || '-'}</span></div>
       <div class="report-row"><span class="label">🏠 ठेगाना</span><span class="value">${member.address || '-'}</span></div>
@@ -2771,22 +2810,11 @@ function openMemberDetail(memberId, options = {}) {
       ${idCard ? '<div style="margin-top:8px"><div class="text-muted" style="font-size:0.8rem">परिचय पत्र</div>'+idCard+'</div>' : ''}
     </div>
   `;
-  const memComplaints = (data.complaints || []).filter(c => c.memberId === memberId);
-  if (memComplaints.length) {
-    html += `<div class="section-title mt-2">📢 गुनासो / प्रतिक्रिया (${memComplaints.length})</div>`;
-    memComplaints.slice().reverse().forEach(c => {
-      const replies = (c.replies || []).map(r =>
-        `<div style="margin:4px 0 0 10px;padding:6px 8px;background:#f0f7ff;border-radius:8px;font-size:0.8rem">
-          <strong>${r.from === 'admin' ? 'Admin' : 'सदस्य'}:</strong> ${r.text}
-        </div>`).join('');
-      html += `<div class="section-card" style="padding:10px;margin-bottom:8px">
-        <div class="text-muted" style="font-size:0.72rem">${new Date(c.time).toLocaleString()}${c.auto ? ' · स्वतः' : ''}</div>
-        <div style="font-size:0.9rem">${c.text}</div>
-        ${replies}
-        ${isPrimaryAdmin && !c.auto ? `<button class="btn btn-sm btn-info mt-1" onclick="openReplyComplaintForm('${c.id}')">💬 जवाफ</button>` : ''}
-      </div>`;
-    });
-  } else if (Auth.isAdmin()) {
+
+  if (resolvedComplaints.length) {
+    html += `<div class="section-title mt-2">✅ समाधान भएका गुनासो (${resolvedComplaints.length})</div>`;
+    html += resolvedComplaints.map(renderComplaintCardHtml).join('');
+  } else if (!openComplaints.length && Auth.isAdmin()) {
     html += `<div class="text-muted text-center mt-2" style="font-size:0.85rem">यस सदस्यको गुनासो छैन</div>`;
   }
 
@@ -3385,7 +3413,6 @@ async function submitComplaintAfter(memberId, source) {
 }
 
 function buildPassbookTwoBoxHtml(data, member, options = {}) {
-  const isSandbox = !!options.sandbox;
   const myAssets = Accounting.memberAssets(data, member);
   const curMonth = options.monthOverride !== undefined ? options.monthOverride : Accounting.getCurrentMonth(data);
   const effLoan = Accounting.getEffectiveMemberLoan(data, member, curMonth);
@@ -3451,7 +3478,7 @@ function buildPassbookTwoBoxHtml(data, member, options = {}) {
       const mId = resolveMonthId(h);
       const canOpenAgreement = (Number(h.taken) || 0) > 0 && !!mId;
       const monthCell = canOpenAgreement
-        ? `<span class="pb-loan-link" role="button" tabindex="0" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(mId))}','${escapeHtmlChat(String(member.id))}',${isSandbox ? 'true' : 'false'})">${escapeHtmlChat(h.monthName || '')} <span class="pb-agreement-pill">📄 सम्झौता</span></span>`
+        ? `<span class="pb-loan-link" role="button" tabindex="0" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(mId))}','${escapeHtmlChat(String(member.id))}')">${escapeHtmlChat(h.monthName || '')} <span class="pb-agreement-pill">📄 सम्झौता</span></span>`
         : escapeHtmlChat(h.monthName || '');
       return `
       <tr class="${i === 0 ? 'pb-latest-row' : ''}">
@@ -3512,21 +3539,9 @@ function renderPassbookContent(memberId) {
   UI.showModal('📖 पासबुक - ' + member.name, html, footerHtml, { passbook: true });
 }
 
-function showMemberLoanAgreement(monthId, memberId, isSandbox = false, selectedLoanKey = '', opts = {}) {
-  let data = null;
-  let month = null;
-  if (isSandbox && typeof getOrInitLoanSandbox === 'function') {
-    const sbx = getOrInitLoanSandbox();
-    data = sbx.data;
-    if (sbx.month && sbx.month.id === monthId) {
-      month = sbx.month;
-    } else {
-      month = (data.months || []).find(m => m && m.id === monthId) || sbx.month;
-    }
-  } else {
-    data = DB.load();
-    month = (data.months || []).find(m => m && m.id === monthId);
-  }
+function showMemberLoanAgreement(monthId, memberId, _unused = false, selectedLoanKey = '', opts = {}) {
+  const data = DB.load();
+  const month = (data.months || []).find(m => m && m.id === monthId);
   const member = (data && data.members || []).find(m => m && m.id === memberId);
   if (!month || !member) return UI.toast('ऋण सम्झौता विवरण भेटिएन', 'error');
 
@@ -3577,7 +3592,7 @@ function showMemberLoanAgreement(monthId, memberId, isSandbox = false, selectedL
       loans.map((l, idx) => {
         const key = l.id ? String(l.id) : String((month.loansGiven || []).indexOf(l));
         const activeCls = idx === activeIdx ? ' active' : '';
-        return `<button type="button" class="loan-tab-pill${activeCls}" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(month.id))}','${escapeHtmlChat(String(member.id))}',${isSandbox ? 'true' : 'false'},'${escapeHtmlChat(key)}',{noPush:true})">ऋण ${idx + 1}: रु. ${Accounting.formatNum(l.amount)}</button>`;
+        return `<button type="button" class="loan-tab-pill${activeCls}" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(month.id))}','${escapeHtmlChat(String(member.id))}',false,'${escapeHtmlChat(key)}',{noPush:true})">ऋण ${idx + 1}: रु. ${Accounting.formatNum(l.amount)}</button>`;
       }).join('') +
       '</div>';
   }
@@ -3591,7 +3606,6 @@ function showMemberLoanAgreement(monthId, memberId, isSandbox = false, selectedL
   const timeTxt = loan.time ? new Date(loan.time).toLocaleString('ne-NP') : '';
 
   const html = `
-    ${isSandbox ? '<div class="loan-sbx-banner no-print" style="padding:7px 10px;font-size:0.76rem;color:#78350f">🧪 यो अभ्यास (Test) ऋण सम्झौता हो — रियल डाटामा सेभ गरिएको छैन।</div>' : ''}
     ${switcherHtml}
     <div class="print-area loan-voucher" id="print-loan-agreement">
       <div class="loan-voucher-head">
@@ -3635,8 +3649,6 @@ function showMemberLoanAgreement(monthId, memberId, isSandbox = false, selectedL
 
   if (opts && opts.replaceToLoans) {
     UI.showModal('📜 ऋण सम्झौता - ' + member.name, html, '<button class="btn btn-outline" onclick="openLoans()">← ऋण मेनु</button>', { replace: true, back: 'openLoans' });
-  } else if (opts && opts.replaceToSandbox) {
-    UI.showModal('🧪 अभ्यास ऋण सम्झौता - ' + member.name, html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← अभ्यासमा फर्कनुहोस्</button>', { replace: true, back: 'openLoanSandbox' });
   } else if (opts && opts.noPush) {
     UI.showModal('📜 ऋण सम्झौता - ' + member.name, html, '<button class="btn btn-outline" onclick="closeModal()">← फर्कनुहोस्</button>');
   } else {
@@ -3834,9 +3846,8 @@ function _chatSender() {
   return { id: 'system', name: 'प्रणाली', role: 'system' };
 }
 function _ensureChat(data) {
-  if (!data.chat) data.chat = { group: [], private: {} };
+  if (!data.chat) data.chat = { group: [] };
   if (!Array.isArray(data.chat.group)) data.chat.group = [];
-  if (!data.chat.private) data.chat.private = {};
   return data;
 }
 function escapeHtmlChat(s) {
@@ -3845,6 +3856,9 @@ function escapeHtmlChat(s) {
 function postGroupMessage(text, type, data, opts) {
   data = _ensureChat(data || DB.load());
   const t = type || 'text';
+  if (opts && opts.id && (data.chat.group || []).some(m => m && m.id === opts.id)) {
+    return data;
+  }
   // अटो सन्देश दोहोरो नजाओस् (PIN दोब्बर / सिंक मर्ज)
   if (t === 'auto_group' || t === 'system') {
     const recent = (data.chat.group || []).slice(-15);
@@ -3858,7 +3872,7 @@ function postGroupMessage(text, type, data, opts) {
     ? { id: 'system', name: 'समूह सूचना', role: 'system' }
     : _chatSender();
   const msgObj = {
-    id: _chatId(),
+    id: (opts && opts.id) ? String(opts.id) : _chatId(),
     fromId: sender.id,
     fromName: sender.name,
     fromRole: sender.role,
@@ -3880,62 +3894,21 @@ function postGroupMessage(text, type, data, opts) {
   }
   return data;
 }
-function postPrivateMessage(memberId, text, type, data) {
-  data = _ensureChat(data || DB.load());
-  if (!data.chat.private[memberId]) data.chat.private[memberId] = [];
-  const sender = type === 'auto_private'
-    ? { id: 'system', name: 'समूह सूचना', role: 'system' }
-    : _chatSender();
-  const msgObj = {
-    id: _chatId(),
-    fromId: sender.id,
-    fromName: sender.name,
-    fromRole: sender.role,
-    text: text,
-    type: type || 'text',
-    time: new Date().toISOString()
-  };
-  data.chat.private[memberId].push(msgObj);
-  if (data.chat.private[memberId].length > 300) {
-    data.chat.private[memberId] = data.chat.private[memberId].slice(-300);
-  }
-  if (typeof DB !== 'undefined' && DB.getToken && DB.getToken() && typeof DB.pushChatMessage === 'function') {
-    DB.pushChatMessage({
-      id: msgObj.id,
-      channel: 'private:' + memberId,
-      text: msgObj.text,
-      type: msgObj.type,
-      time: msgObj.time
-    }).catch(function () {});
-  }
-  return data;
-}
 
 function notifyMonthStarted(data, month) {
+  const gName = (data.group && data.group.name) || 'समूह बचत';
   const text =
-    '📢 बचत सन्कलन सुरु\n\n' +
-    'महिना: ' + (month.name || '') + '\n' +
-    'समूहको बचत / कलेक्सन बैठक सुरु भइसकेको छ।\n' +
-    'कृपया समयमै उपस्थित भई मासिक बचत बुझाउनुहोला।\n\n' +
-    'धन्यवाद।';
+    '📢 ' + (month.name || 'नयाँ महिना') + ' — बचत संकलन सुरु\n' +
+    gName + ' को ' + (month.name || 'यो महिना') + ' को मासिक बचत तथा ब्याज असुली खुला भएको छ।\n' +
+    'कृपया तोकिएको बैठक मितिमा समयमै उपस्थित भई बचत र किस्ता बुझाउनुहोला। धन्यवाद!';
   postGroupMessage(text, 'auto_group', data, { silentPush: true });
-}
-
-function notifyCollectionPrivate(data, member, allocated, month) {
-  /* महिना बन्दपछि डिजिटल रसिद — बीचमा नोटिफिकेसन पठाइँदैन */
-}
-
-function notifyLoanPrivate(data, member, amount) {
-  /* महिना बन्दपछि डिजिटल रसिदमा समावेश */
 }
 
 function notifyMonthClosed(data, month) {
   const text =
-    '🙏 धन्यवाद\n\n' +
-    (month.name || '') + ' को हिसाब बन्द भएको छ।\n' +
-    'यस महिनाको सहयोगका लागि सबै सदस्यलाई धन्यवाद।\n\n' +
-    'पासबुक / रिपोर्ट जाँच्नुहोस्।\n' +
-    'कुनै गुनासो भए लेख्नुहोस्।';
+    '✅ ' + (month.name || 'महिना') + ' — हिसाब बन्द भयो\n' +
+    'यस महिनाको सम्पूर्ण बचत, ब्याज र ऋण हिसाब प्रमाणित भई बन्द भएको छ। सहयोगका लागि सबै सदस्यज्यूहरूलाई धन्यवाद!\n' +
+    'आफ्नो डिजिटल रसिद र पासबुक जाँच गर्नुहोस्। कुनै कैफियत लागे अर्को बैठकअघि नै एपबाट गुनासो पठाउनुहोला।';
   postGroupMessage(text, 'auto_group', data, { silentPush: true });
 }
 
@@ -3997,96 +3970,143 @@ function resolvePinRequest(reqId) {
 }
 
 function showComplaints() {
+  if (!((Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter()))) {
+    return UI.toast('Admin वा कोषाध्यक्ष मात्र', 'error');
+  }
   const data = DB.load();
-  const list = data.complaints || [];
+  const list = (data.complaints || []).filter(c => c && !c.auto);
+  const sorted = [
+    ...list.filter(c => !c.resolved).slice().reverse(),
+    ...list.filter(c => c.resolved).slice().reverse()
+  ];
   let html = '';
-  if (list.length === 0) {
+  if (sorted.length === 0) {
     html = '<div class="empty-state">कुनै गुनासो छैन</div>';
   } else {
-    list.slice().reverse().forEach(c => {
-      const m = data.members.find(x => x.id === c.memberId);
-      const badge = c.read ? '' : ' <span class="member-badge badge-due">नयाँ</span>';
-      html += `<div class="section-card" style="cursor:pointer" onclick="openComplaintDetail('${c.id}')">
-        <div class="fw-bold">${m ? m.name : c.memberId}${badge}</div>
-        <div class="text-muted">${new Date(c.time).toLocaleString()}</div>
-        <p class="mt-1">${c.text.substring(0, 60)}${c.text.length > 60 ? '...' : ''}</p>
+    sorted.forEach(c => {
+      const m = (data.members || []).find(x => x && x.id === c.memberId);
+      const pill = c.resolved
+        ? '<span class="complaint-pill-resolved">✅ समाधान भयो</span>'
+        : '<span class="complaint-pill-open">⏳ समाधान बाँकी</span>';
+      const repCount = (c.replies || []).length;
+      html += `<div class="section-card" style="cursor:pointer;${!c.resolved ? 'border:1.5px solid #fd7e14;background:#fffbf5' : ''}" onclick="openComplaintDetail('${c.id}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+          <div class="fw-bold">${escapeHtmlChat(m ? m.name : c.memberId)}</div>
+          ${pill}
+        </div>
+        <div class="text-muted" style="font-size:0.75rem">${new Date(c.time).toLocaleString('ne-NP')}${repCount ? ' · ' + repCount + ' जवाफ' : ''}</div>
+        <p class="mt-1" style="margin-bottom:0">${escapeHtmlChat((c.text || '').substring(0, 80))}${(c.text || '').length > 80 ? '...' : ''}</p>
       </div>`;
     });
   }
-  UI.showModal('📢 गुनासोहरू', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+  UI.showModal('📢 सदस्य गुनासो तथा समाधान', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
 }
 
 function openComplaintDetail(cId) {
   const data = DB.load();
-  const c = (data.complaints || []).find(x => x.id === cId);
+  const c = (data.complaints || []).find(x => x && x.id === cId);
   if (!c) return;
-  const isPrimaryAdmin = Auth.isPrimaryAdmin && Auth.isPrimaryAdmin();
-  if (!c.read) {
-    c.read = true;
-    if (isPrimaryAdmin && typeof DB.saveAdminSettings === 'function') {
-      DB.save(data, { localOnly: true });
-      DB.saveAdminSettings({ complaints: data.complaints }).catch(function () {});
-    } else if (Auth.isAccountsWriter && Auth.isAccountsWriter()) {
-      DB.save(data);
-    } else {
-      DB.save(data, { localOnly: true });
-    }
-  }
-  const m = data.members.find(x => x.id === c.memberId);
-  let replies = (c.replies || []).map(r =>
-    `<div style="margin:8px 0;padding:8px 12px;background:${r.from==='admin'?'#e7f1ff':'#f8f9fa'};border-radius:10px;font-size:0.9rem">
-      <strong>${r.from === 'admin' ? 'Admin' : (m?m.name:'सदस्य')}:</strong> ${r.text}
-      <div class="text-muted" style="font-size:0.7rem">${new Date(r.time).toLocaleString()}</div>
-    </div>`).join('');
+  const canManage = (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter());
+  const m = (data.members || []).find(x => x && x.id === c.memberId);
+  const pill = c.resolved
+    ? `<span class="complaint-pill-resolved">✅ समाधान भयो${c.resolvedBy ? ' · ' + escapeHtmlChat(c.resolvedBy) : ''}</span>`
+    : '<span class="complaint-pill-open">⏳ समाधान बाँकी</span>';
+
+  const replies = (c.replies || []).map(r => {
+    const who = r.from === 'treasurer' ? 'कोषाध्यक्ष' : (r.from === 'admin' ? 'Admin' : (m ? m.name : 'सदस्य'));
+    return `<div style="margin:8px 0;padding:8px 12px;background:${(r.from === 'admin' || r.from === 'treasurer') ? '#e7f1ff' : '#f8f9fa'};border-radius:10px;font-size:0.9rem">
+      <strong>${escapeHtmlChat(who)}:</strong> ${escapeHtmlChat(r.text || '')}
+      <div class="text-muted" style="font-size:0.7rem">${new Date(r.time).toLocaleString('ne-NP')}</div>
+    </div>`;
+  }).join('');
 
   const html = `
-    <div class="fw-bold">${m ? m.name : c.memberId}</div>
-    <div class="text-muted mb-1">${new Date(c.time).toLocaleString()}</div>
-    <div class="section-card">${c.text}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div class="fw-bold">${escapeHtmlChat(m ? m.name : c.memberId)}</div>
+      ${pill}
+    </div>
+    <div class="text-muted mb-1" style="font-size:0.75rem">${new Date(c.time).toLocaleString('ne-NP')}</div>
+    <div class="section-card">${escapeHtmlChat(c.text || '')}</div>
     ${replies}
-    ${isPrimaryAdmin ? `
-      <div class="form-group mt-2"><label>जवाफ लेख्नुहोस्</label>
-        <textarea id="complaint-reply" rows="2" placeholder="जवाफ..."></textarea>
+    ${canManage ? `
+      <div class="form-group mt-2"><label>जवाफ / समाधान टिप्पणी लेख्नुहोस्</label>
+        <textarea id="complaint-reply" rows="3" placeholder="सदस्यलाई स्पष्ट जवाफ लेख्नुहोस्..."></textarea>
       </div>
-      <button class="btn btn-primary btn-block" onclick="replyComplaint('${cId}')">📤 जवाफ पठाउनुहोस्</button>
+      <div style="display:grid;grid-template-columns:1fr;gap:6px">
+        ${!c.resolved
+          ? `<button type="button" class="btn btn-success btn-block" onclick="replyComplaint('${cId}', true)">✅ समाधान भयो भनी पठाउनुहोस् (जवाफ सहित/रहित)</button>
+             <button type="button" class="btn btn-primary btn-block" onclick="replyComplaint('${cId}', false)">📤 जवाफ मात्र पठाउनुहोस् (बाँकी नै राख्ने)</button>`
+          : `<button type="button" class="btn btn-primary btn-block" onclick="replyComplaint('${cId}', true)">📤 थप जवाफ पठाउनुहोस्</button>
+             <button type="button" class="btn btn-outline btn-sm btn-block" onclick="toggleComplaintResolve('${cId}', false)">↩️ पुनः समाधान बाँकीमा सार्नुहोस्</button>`
+        }
+      </div>
     ` : ''}
   `;
-  UI.showModal('📢 गुनासो', html, '<button class="btn btn-outline" onclick="showComplaints()">← फर्कनुहोस्</button>');
+  UI.showModal('📢 गुनासो विवरण', html, '<button class="btn btn-outline" onclick="showComplaints()">← सूचीमा फर्कनुहोस्</button>');
 }
 
 function openReplyComplaintForm(cId) {
-  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र जवाफ दिन सक्नुहुन्छ', 'error');
-  const html = `
-    <div class="form-group"><label>जवाफ लेख्नुहोस्</label>
-      <textarea id="complaint-reply" rows="3" placeholder="Admin जवाफ..."></textarea>
-    </div>
-    <button class="btn btn-primary btn-block" onclick="replyComplaint('${cId}')">📤 जवाफ पठाउनुहोस्</button>
-  `;
+  const canManage = (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter());
+  if (!canManage) return UI.toast('Admin वा कोषाध्यक्षले मात्र जवाफ दिन सक्नुहुन्छ', 'error');
   const data = DB.load();
-  const c = (data.complaints || []).find(x => x.id === cId);
-  const mid = c && c.memberId;
-  UI.showModal('💬 जवाफ', html, mid
+  const c = (data.complaints || []).find(x => x && x.id === cId);
+  if (!c) return;
+  const mid = c.memberId;
+  const html = `
+    <div class="section-card" style="padding:10px;background:#f8fafc;margin-bottom:10px;font-size:0.86rem">
+      <div class="text-muted" style="font-size:0.74rem;margin-bottom:3px">सदस्यको गुनासो:</div>
+      ${escapeHtmlChat(c.text || '')}
+    </div>
+    <div class="form-group"><label>जवाफ / समाधान विवरण</label>
+      <textarea id="complaint-reply" rows="3" placeholder="सदस्यलाई स्पष्ट जवाफ लेख्नुहोस्..."></textarea>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr;gap:6px">
+      <button type="button" class="btn btn-success btn-block" onclick="replyComplaint('${cId}', true, 'member')">✅ जवाफ पठाई समाधान चिन्ह लगाउनुहोस्</button>
+      <button type="button" class="btn btn-primary btn-block" onclick="replyComplaint('${cId}', false, 'member')">📤 जवाफ मात्र पठाउनुहोस्</button>
+    </div>
+  `;
+  UI.showModal('💬 गुनासो जवाफ र समाधान', html, mid
     ? '<button class="btn btn-outline" onclick="openMemberDetail(\'' + mid + '\')">← प्रोफाइल</button>'
     : '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
 }
 
-async function replyComplaint(cId) {
-  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र जवाफ दिन सक्नुहुन्छ', 'error');
-  const text = document.getElementById('complaint-reply').value.trim();
-  if (!text) return UI.toast('जवाफ लेख्नुहोस्', 'error');
-  const data = DB.load();
-  const c = (data.complaints || []).find(x => x.id === cId);
-  if (!c) return;
-  c.replies = c.replies || [];
-  c.replies.push({ from: 'admin', text, time: new Date().toISOString(), readByMember: false });
-  c.read = true;
-  const res = await DB.saveAdminSettings({ complaints: data.complaints });
+async function replyComplaint(cId, resolveFlag, returnTarget) {
+  const canManage = (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter());
+  if (!canManage) return UI.toast('Admin वा कोषाध्यक्ष मात्र', 'error');
+  const el = document.getElementById('complaint-reply');
+  const text = ((el && el.value) || '').trim();
+  const resolveBool = typeof resolveFlag === 'boolean' ? resolveFlag : undefined;
+  if (!text && resolveBool !== true) {
+    return UI.toast('कृपया जवाफ लेख्नुहोस्', 'error');
+  }
+  const res = await DB.replyComplaint({
+    complaintId: cId,
+    replyText: text,
+    resolve: resolveBool
+  });
   if (!res || !res.ok) {
     return UI.toast((res && res.error) || 'जवाफ सेभ असफल', 'error');
   }
-  UI.toast('जवाफ पठाइयो', 'success');
-  if (c.memberId) openMemberDetail(c.memberId);
-  else openComplaintDetail(cId);
+  APP_DATA = DB.load();
+  try { renderProfileTab(); } catch (e) {}
+  UI.toast(resolveBool ? 'गुनासो समाधान भयो ✅' : 'जवाफ पठाइयो ✅', 'success');
+  const updatedC = (APP_DATA.complaints || []).find(x => x && x.id === cId);
+  if (returnTarget === 'member' && updatedC && updatedC.memberId) {
+    openMemberDetail(updatedC.memberId);
+  } else if (!returnTarget && document.getElementById('modal-title') && document.getElementById('modal-title').textContent.includes('प्रोफाइल')) {
+    if (updatedC && updatedC.memberId) openMemberDetail(updatedC.memberId);
+  } else {
+    openComplaintDetail(cId);
+  }
+}
+
+async function toggleComplaintResolve(cId, resolvedVal) {
+  const res = await DB.replyComplaint({ complaintId: cId, replyText: '', resolve: !!resolvedVal });
+  if (!res || !res.ok) return UI.toast((res && res.error) || 'अपडेट असफल', 'error');
+  APP_DATA = DB.load();
+  try { renderProfileTab(); } catch (e) {}
+  UI.toast(resolvedVal ? 'समाधान भयो चिन्ह लगाइयो ✅' : 'पुनः बाँकीमा सारियो', 'success');
+  openComplaintDetail(cId);
 }
 
 function editAdminProfile() {
@@ -4095,10 +4115,10 @@ function editAdminProfile() {
   const html = `
     <p class="text-muted" style="font-size:0.8rem;margin-bottom:10px">Admin ले सेटिङ, विधान, सदस्य PIN, गुनासो र कोषाध्यक्ष नियुक्ति व्यवस्थापन गर्नुहुन्छ (हिसाब लेखन कोषाध्यक्षबाट मात्र हुन्छ)।</p>
     <div class="form-group"><label>नाम</label><input type="text" id="ea-name" value="${data.admin.name}"></div>
-    <div class="form-group"><label>Username</label><input type="text" id="ea-user" value="${data.admin.username}"></div>
-    <div class="form-group"><label>नयाँ Password (खाली राखे नबदलिने)</label><input type="password" id="ea-pass"></div>
+    <div class="form-group"><label>Username</label><input type="text" id="ea-user" value="${data.admin.username}" autocomplete="off"></div>
+    <div class="form-group"><label>नयाँ Password (खाली राखे नबदलिने)</label><input type="text" id="ea-pass" class="masked-secret" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"></div>
     <div class="form-group"><label>मोबाइल</label><input type="tel" id="ea-mobile" value="${data.admin.mobile}"></div>
-    <div class="form-group"><label>नयाँ PIN (खाली राखे नबदलिने)</label><input type="password" id="ea-pin" maxlength="4"></div>
+    <div class="form-group"><label>नयाँ PIN (खाली राखे नबदलिने)</label><input type="text" id="ea-pin" class="masked-secret" maxlength="4" inputmode="numeric" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"></div>
     <button class="btn btn-primary btn-block" onclick="saveAdminProfile()">💾 सेभ</button>
   `;
   UI.showModal('✏️ Admin प्रोफाइल', html, '<button class="btn btn-outline" onclick="closeModal()">रद्द</button>');
@@ -4658,44 +4678,19 @@ function renderSettingsTab() {
   const isPrimaryAdmin = Auth.isPrimaryAdmin && Auth.isPrimaryAdmin();
 
   if (!isPrimaryAdmin) {
-    // Treasurer (कोषाध्यक्ष) settings view — focused on accounting tools, sync, push, terms & backup
+    // Treasurer (कोषाध्यक्ष) settings view — clean top-level menu + More Settings
     const u = Auth.currentUser || {};
     container.innerHTML = `
       <div class="section-card">
         <div class="section-title">💼 कोषाध्यक्ष सेटिङ</div>
         <div style="background:#e7f1ff;border:1px solid #b6d4fe;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:0.84rem;color:#084298">
           <div><strong>${escapeHtmlChat(u.name || 'कोषाध्यक्ष')}</strong> (@${escapeHtmlChat(u.username || 'treasurer')})</div>
-          <div style="font-size:0.76rem;margin-top:2px">अधिकार: मासिक असुली, ऋण, कित्ता, सदस्य प्रवेश/बहिर्गमन र क्लाउड सिंक (सेटिङ/बिधान Admin बाट मात्र)।</div>
+          <div style="font-size:0.76rem;margin-top:2px">अधिकार: मासिक असुली, ऋण, कित्ता, सदस्य प्रवेश/बहिर्गमन र गुनासो समाधान।</div>
         </div>
         <ul class="settings-list">
-          <li class="settings-item" onclick="showCloudSetup()">
-            <div class="settings-icon" style="background:#cfe2ff">☁️</div>
-            <div class="settings-text"><div class="title">क्लाउड सिंक (Cloudflare)</div><div class="desc">D1 / R2 स्थिति र म्यानुअल सिंक</div></div>
-            <div class="settings-arrow">›</div>
-          </li>
           <li class="settings-item" onclick="enablePushFromSettings()">
             <div class="settings-icon" style="background:#d1e7dd">🔔</div>
             <div class="settings-text"><div class="title">पुश सूचना (Web Push)</div><div class="desc">ब्याकग्राउन्ड सूचना अनुमति र बैठक रिमाइन्डर</div></div>
-            <div class="settings-arrow">›</div>
-          </li>
-          <li class="settings-item" onclick="runAccountingAuditCheck()">
-            <div class="settings-icon" style="background:#d1e7dd">🧮</div>
-            <div class="settings-text"><div class="title">हिसाब मिलान अडिट</div><div class="desc">सम्पत्ति, नगद, ऋण र सदस्य हिसाब क्रस-चेक</div></div>
-            <div class="settings-arrow">›</div>
-          </li>
-          <li class="settings-item" onclick="openSnapshotBackups()">
-            <div class="settings-icon" style="background:#e2e3ff">🗂️</div>
-            <div class="settings-text"><div class="title">बन्द महिना स्न्यापसट (R2)</div><div class="desc">प्रत्येक बन्द महिनाको सुरक्षित ब्याकअप</div></div>
-            <div class="settings-arrow">›</div>
-          </li>
-          <li class="settings-item" onclick="openTermsModal()">
-            <div class="settings-icon" style="background:#e7f1ff">📜</div>
-            <div class="settings-text"><div class="title">नियम, सर्त तथा मञ्जुरी (Terms)</div><div class="desc">संस्करण v${termsComp.version} · ${termsComp.agreed}/${termsComp.total} सदस्य मञ्जुर</div></div>
-            <div class="settings-arrow">›</div>
-          </li>
-          <li class="settings-item" onclick="showAppGuide()">
-            <div class="settings-icon" style="background:#fff3cd">📖</div>
-            <div class="settings-text"><div class="title">एप गाइड / सूत्र</div><div class="desc">सबै हिसाब सूत्रहरू</div></div>
             <div class="settings-arrow">›</div>
           </li>
           <li class="settings-item" onclick="doExportBackup()">
@@ -4705,7 +4700,12 @@ function renderSettingsTab() {
           </li>
           <li class="settings-item" onclick="showShareAppQr()">
             <div class="settings-icon" style="background:#d1e7dd">📱</div>
-            <div class="settings-text"><div class="title">Share app</div><div class="desc">QR code · open link</div></div>
+            <div class="settings-text"><div class="title">एप सेयर (QR)</div><div class="desc">QR कोड र एप लिङ्क सेयर गर्नुहोस्</div></div>
+            <div class="settings-arrow">›</div>
+          </li>
+          <li class="settings-item" onclick="openTreasurerMoreSettings()">
+            <div class="settings-icon" style="background:#e7f1ff">⚙️</div>
+            <div class="settings-text"><div class="title">थप सेटिङ (More Settings)</div><div class="desc">क्लाउड सिंक · हिसाब मिलान अडिट · नियम तथा सर्त</div></div>
             <div class="settings-arrow">›</div>
           </li>
           <li class="settings-item" onclick="doLogout()">
@@ -4738,6 +4738,11 @@ function renderSettingsTab() {
           <div class="settings-text"><div class="title">कोषाध्यक्ष (हिसाब लेख्ने)</div><div class="desc">${trDesc}</div></div>
           <div class="settings-arrow">›</div>
         </li>
+        <li class="settings-item" onclick="openSystemHealthReport()">
+          <div class="settings-icon" style="background:#d1e7dd">🛠️</div>
+          <div class="settings-text"><div class="title">प्रणाली स्वास्थ्य, भण्डारण र गतिविधि</div><div class="desc">Cloudflare सीमा, D1/R2 भण्डारण, त्रुटि समाधान र गतिविधि</div></div>
+          <div class="settings-arrow">›</div>
+        </li>
         <li class="settings-item" onclick="openTermsModal()">
           <div class="settings-icon" style="background:#e7f1ff">📜</div>
           <div class="settings-text"><div class="title">नियम, सर्त तथा मञ्जुरी (Terms)</div><div class="desc">संस्करण v${termsComp.version} · ${termsComp.agreed}/${termsComp.total} सदस्य मञ्जुर · सम्पादन र ट्र्याकिङ</div></div>
@@ -4745,12 +4750,12 @@ function renderSettingsTab() {
         </li>
         <li class="settings-item" onclick="editAppOwner()">
           <div class="settings-icon" style="background:#cfe2ff">🪪</div>
-          <div class="settings-text"><div class="title">App Owner card</div><div class="desc">member settings card</div></div>
+          <div class="settings-text"><div class="title">एप परिचय (About Us)</div><div class="desc">सदस्य सेटिङमा देखिने परिचय तथा सम्पर्क कार्ड</div></div>
           <div class="settings-arrow">›</div>
         </li>
         <li class="settings-item" onclick="showShareAppQr()">
           <div class="settings-icon" style="background:#d1e7dd">📱</div>
-          <div class="settings-text"><div class="title">Share app</div><div class="desc">QR code · open link</div></div>
+          <div class="settings-text"><div class="title">एप सेयर (QR)</div><div class="desc">QR कोड र एप लिङ्क</div></div>
           <div class="settings-arrow">›</div>
         </li>
         <li class="settings-item" onclick="editGroupProfile()">
@@ -4809,17 +4814,148 @@ function renderSettingsTab() {
   `;
 }
 
+function openTreasurerMoreSettings() {
+  const data = DB.load();
+  const termsComp = getTermsComplianceSummary(data);
+  const html = `
+    <ul class="settings-list">
+      <li class="settings-item" onclick="showCloudSetup()">
+        <div class="settings-icon" style="background:#cfe2ff">☁️</div>
+        <div class="settings-text"><div class="title">क्लाउड सिंक (Cloudflare)</div><div class="desc">सिंक स्थिति र म्यानुअल सिंक</div></div>
+        <div class="settings-arrow">›</div>
+      </li>
+      <li class="settings-item" onclick="runAccountingAuditCheck()">
+        <div class="settings-icon" style="background:#d1e7dd">🧮</div>
+        <div class="settings-text"><div class="title">हिसाब मिलान अडिट</div><div class="desc">सम्पत्ति, नगद, ऋण र सदस्य हिसाब क्रस-चेक</div></div>
+        <div class="settings-arrow">›</div>
+      </li>
+      <li class="settings-item" onclick="openTermsModal()">
+        <div class="settings-icon" style="background:#e7f1ff">📜</div>
+        <div class="settings-text"><div class="title">नियम, सर्त तथा मञ्जुरी (Terms)</div><div class="desc">संस्करण v${termsComp.version} · ${termsComp.agreed}/${termsComp.total} सदस्य मञ्जुर</div></div>
+        <div class="settings-arrow">›</div>
+      </li>
+    </ul>
+  `;
+  UI.showModal('⚙️ थप सेटिङ', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>', { root: true });
+}
+
+function _formatBytesReadable(bytes) {
+  const b = Number(bytes) || 0;
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(2) + ' MB';
+  return (b / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function handleHealthIssueAction(action) {
+  if (action === 'audit') return runAccountingAuditCheck();
+  if (action === 'complaints') return showComplaints();
+  if (action === 'pins') return showPinRequests();
+  if (action === 'terms') return openTermsModal();
+  if (action === 'treasurer') return editTreasurer();
+  if (action === 'nopin') {
+    closeModal();
+    window._profileFilter = 'nopin';
+    switchTab('profile');
+  }
+}
+
+async function openSystemHealthReport() {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) {
+    return UI.toast('प्रणाली स्वास्थ्य जाँच Admin लाई मात्र उपलब्ध छ', 'error');
+  }
+  UI.showModal('🛠️ प्रणाली स्वास्थ्य र भण्डारण', '<div class="empty-state"><div class="spinner" style="margin:0 auto 10px"></div>Cloudflare D1 / R2 र हिसाब जाँच हुँदैछ…</div>', '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>', { root: true });
+
+  const res = await DB.getSystemHealth();
+  if (!res || !res.ok) {
+    UI.showModal('🛠️ प्रणाली स्वास्थ्य', `<div class="sys-health-issue error">⚠️ ${escapeHtmlChat((res && res.error) || 'जाँच गर्न सकिएन')}</div>`, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+    return;
+  }
+
+  const d1Pct = Math.min(100, Math.round(((res.d1.usedBytes / res.d1.limitBytes) * 100) * 1000) / 1000);
+  const r2Pct = res.r2.enabled
+    ? Math.min(100, Math.round(((res.r2.totalBytes / res.r2.limitBytes) * 100) * 1000) / 1000)
+    : 0;
+
+  const issuesHtml = (res.issues || []).map(it => {
+    const btn = it.action
+      ? `<div style="margin-top:6px"><button type="button" class="btn btn-sm btn-primary" onclick="handleHealthIssueAction('${escapeHtmlChat(it.action)}')">🔧 तुरुन्त समाधान खोल्नुहोस् →</button></div>`
+      : '';
+    return `<div class="sys-health-issue ${escapeHtmlChat(it.severity || 'warn')}">
+      <div class="fw-bold">${escapeHtmlChat(it.title)}</div>
+      <div style="margin-top:2px">${escapeHtmlChat(it.detail)}</div>
+      <div style="margin-top:3px;font-size:0.77rem"><strong>समाधान:</strong> ${escapeHtmlChat(it.solution)}</div>
+      ${btn}
+    </div>`;
+  }).join('');
+
+  const activitiesHtml = (res.activities || []).length
+    ? (res.activities || []).map(a => `
+        <div style="padding:7px 0;border-bottom:1px dashed #e2e8f0;font-size:0.8rem">
+          <div style="display:flex;justify-content:space-between;gap:6px">
+            <strong>${escapeHtmlChat(a.title)}</strong>
+            <span class="text-muted" style="font-size:0.7rem;white-space:nowrap">${a.time ? new Date(a.time).toLocaleString('ne-NP') : ''}</span>
+          </div>
+          <div class="text-muted" style="font-size:0.76rem">${escapeHtmlChat(a.detail)}</div>
+        </div>`).join('')
+    : '<div class="text-muted text-center" style="padding:10px">हालसम्म गतिविधि रेकर्ड छैन</div>';
+
+  const r2StatusHtml = res.r2.enabled
+    ? `<div class="report-row"><span class="label">R2 भण्डारण (${res.r2.objectCount}${res.r2.truncated ? '+' : ''} फाइल)</span><span class="value">${_formatBytesReadable(res.r2.totalBytes)} / 10 GB (${r2Pct}%)</span></div>
+       <div class="sys-health-bar-track"><div class="sys-health-bar-fill" style="width:${Math.max(1, r2Pct)}%;background:#198754"></div></div>`
+    : `<div class="report-row"><span class="label">Cloudflare R2 (मिडिया बकेट)</span><span class="value" style="color:#6c757d">सक्रिय छैन (D1 भित्र सुरक्षित)</span></div>`;
+
+  const ackNote = res.alertAcknowledged
+    ? `<div class="sys-health-issue ok" style="margin-bottom:8px">✅ घण्टे स्वास्थ्य अलर्ट बन्द गरियो (Admin ले स्वास्थ्य जाँच हेर्नुभयो)</div>`
+    : '';
+
+  const html = `
+    <div class="text-muted mb-1" style="font-size:0.75rem">अन्तिम जाँच: ${new Date(res.checkedAt).toLocaleString('ne-NP')} · सर्भर संस्करण v${res.version}</div>
+    ${ackNote}
+
+    <div class="section-title">☁️ Cloudflare Free Plan र भण्डारण उपयोग</div>
+    <div class="report-card mb-2">
+      <div class="report-row"><span class="label">D1 डाटाबेस उपयोग</span><span class="value fw-bold">${_formatBytesReadable(res.d1.usedBytes)} / 5 GB (${d1Pct}%)</span></div>
+      <div class="sys-health-bar-track"><div class="sys-health-bar-fill" style="width:${Math.max(1, d1Pct)}%"></div></div>
+      <div class="report-row mt-1"><span class="label">मुख्य हिसाब (group_state)</span><span class="value">${_formatBytesReadable(res.d1.groupStateBytes)}</span></div>
+      <div class="report-row"><span class="label">छलफल चौतारी (${res.d1.chatCount} सन्देश)</span><span class="value">${_formatBytesReadable(res.d1.chatBytes)}</span></div>
+      <div class="report-row"><span class="label">बन्द महिना स्न्यापसट (${res.d1.snapshotCount} वटा)</span><span class="value">${_formatBytesReadable(res.d1.snapshotBytes)}</span></div>
+      <div class="report-row"><span class="label">पुश सूचना दर्ता डिभाइस</span><span class="value">${res.d1.pushDevices} डिभाइस (${res.d1.pushUsers} प्रयोगकर्ता)</span></div>
+      ${r2StatusHtml}
+      <div class="text-muted mt-1" style="font-size:0.72rem">Free Plan दैनिक सीमा: D1 Read ५० लाख · Write १ लाख · Pages १ लाख अनुरोध (समुदाय बचतका लागि पर्याप्त)</div>
+    </div>
+
+    <div class="section-title">🩺 स्वचालित त्रुटि जाँच र समाधान</div>
+    ${issuesHtml}
+
+    <div class="section-title mt-2">📊 समूह सार</div>
+    <div class="report-card mb-2">
+      <div class="report-row"><span class="label">हालको महिना</span><span class="value">${escapeHtmlChat(res.stats.currentMonth)}</span></div>
+      <div class="report-row"><span class="label">सक्रिय सदस्य / बन्द महिना</span><span class="value">${res.stats.activeMembers} जना · ${res.stats.closedMonths} महिना</span></div>
+      <div class="report-row"><span class="label">नियम/सर्त मञ्जुरी (v${res.stats.termsVersion})</span><span class="value">${res.stats.termsAgreed} / ${res.stats.activeMembers} जना</span></div>
+    </div>
+
+    <div class="section-title mt-2">📜 पछिल्ला प्रणाली गतिविधिहरू</div>
+    <div class="section-card" style="max-height:220px;overflow-y:auto;padding:8px 12px">
+      ${activitiesHtml}
+    </div>
+    <button type="button" class="btn btn-primary btn-block mt-2" onclick="openSystemHealthReport()">🔄 पुनः स्क्यान गर्नुहोस्</button>
+  `;
+
+  UI.showModal('🛠️ प्रणाली स्वास्थ्य र भण्डारण', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>', { replace: true });
+}
+
 function showChangeOwnPinModal() {
   const html = `
     <p class="text-muted" style="font-size:0.84rem;margin-bottom:10px">नयाँ PIN राखेपछि पुरानो PIN चल्दैन (इन्टरनेट आवश्यक)।</p>
     <div class="form-group"><label>अहिलेको (पुरानो) PIN</label>
-      <input type="password" id="cp-old" maxlength="4" inputmode="numeric" placeholder="४ अंक">
+      <input type="text" id="cp-old" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="४ अंक" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <div class="form-group"><label>नयाँ PIN (४ अंक)</label>
-      <input type="password" id="cp-new1" maxlength="4" inputmode="numeric" placeholder="नयाँ ४ अंक">
+      <input type="text" id="cp-new1" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="नयाँ ४ अंक" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <div class="form-group"><label>नयाँ PIN फेरि लेख्नुहोस्</label>
-      <input type="password" id="cp-new2" maxlength="4" inputmode="numeric" placeholder="फेरि त्यही ४ अंक">
+      <input type="text" id="cp-new2" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="फेरि त्यही ४ अंक" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <button type="button" class="btn btn-primary btn-block" onclick="submitChangeOwnPin()">✅ PIN परिवर्तन गर्नुहोस्</button>
   `;
@@ -4867,19 +5003,19 @@ function editTreasurer() {
     </div>
     <div class="form-group">
       <label>कोषाध्यक्ष Username * (मोबाइल नम्बर भन्दा फरक)</label>
-      <input type="text" id="tr-username" value="${escapeHtmlChat(tr.username || '')}" placeholder="उदा: koshadhyaksha">
+      <input type="text" id="tr-username" value="${escapeHtmlChat(tr.username || '')}" placeholder="उदा: koshadhyaksha" autocomplete="off">
     </div>
     <div class="form-group">
       <label>Password ${tr.username ? '(खाली राखे पुरानै रहने)' : '*'}</label>
-      <input type="password" id="tr-password" placeholder="कम्तिमा ४ अक्षर">
+      <input type="text" id="tr-password" class="masked-secret" placeholder="कम्तिमा ४ अक्षर" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <div class="form-group">
       <label>४ अंकको सुरक्षा PIN ${tr.username ? '(खाली राखे पुरानै रहने)' : '*'} · हिसाब/लगआउट</label>
-      <input type="password" id="tr-pin" maxlength="4" inputmode="numeric" placeholder="४ अंक">
+      <input type="text" id="tr-pin" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="४ अंक" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <div class="form-group">
       <label>PIN Confirm</label>
-      <input type="password" id="tr-pin2" maxlength="4" inputmode="numeric" placeholder="फेरि ४ अंक">
+      <input type="text" id="tr-pin2" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="फेरि ४ अंक" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <button type="button" class="btn btn-primary btn-block" onclick="saveTreasurer()">💼 कोषाध्यक्ष सेभ गर्नुहोस्</button>
   `;
@@ -4940,28 +5076,28 @@ async function saveTreasurer() {
 }
 
 function editAppOwner() {
-  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin only', 'error');
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र सम्पादन गर्न सक्नुहुन्छ', 'error');
   const data = DB.load();
   const o = (data.settings && data.settings.appOwner) || {};
   const html = `
-    <p class="text-muted" style="font-size:0.78rem;margin-bottom:8px">Shown on member settings · empty fields hide · english / small text</p>
-    <div class="form-group"><label>name *</label><input type="text" id="ao-name" value="${o.name||''}" placeholder="full name"></div>
-    <div class="form-group"><label>title</label><input type="text" id="ao-title" value="${o.title||''}" placeholder="app owner · developer"></div>
-    <div class="form-group"><label>mobile</label><input type="tel" id="ao-mobile" value="${o.mobile||''}" placeholder="98xxxxxxxx"></div>
-    <div class="form-group"><label>email</label><input type="email" id="ao-email" value="${o.email||''}" placeholder="optional"></div>
-    <div class="form-group"><label>website</label><input type="text" id="ao-website" value="${o.website||''}" placeholder="https://..."></div>
-    <div class="form-group"><label>facebook</label><input type="text" id="ao-facebook" value="${o.facebook||''}" placeholder="page or profile url"></div>
-    <div class="form-group"><label>whatsapp</label><input type="tel" id="ao-whatsapp" value="${o.whatsapp||''}" placeholder="with country code"></div>
-    <div class="form-group"><label>address</label><input type="text" id="ao-address" value="${o.address||''}" placeholder="optional"></div>
-    <div class="form-group"><label>note</label><textarea id="ao-note" rows="2" placeholder="short note">${o.note||''}</textarea></div>
-    <p class="text-muted" style="font-size:0.72rem">photo: default light image in app (owner-photo.jpg). custom upload not stored in cloud to keep sync light.</p>
-    <button class="btn btn-primary btn-block" onclick="saveAppOwner()">save</button>
+    <p class="text-muted" style="font-size:0.78rem;margin-bottom:8px">यो परिचय कार्ड सदस्यहरूको सेटिङ पेजको तल देखिन्छ (खाली छोडिएको विवरण स्वतः लुक्छ)।</p>
+    <div class="form-group"><label>नाम / संस्था *</label><input type="text" id="ao-name" value="${escapeHtmlChat(o.name||'')}" placeholder="पूरा नाम वा समूह/संस्था"></div>
+    <div class="form-group"><label>पद / परिचय</label><input type="text" id="ao-title" value="${escapeHtmlChat(o.title||'')}" placeholder="जस्तै: प्रविधि सहयोग · समूह व्यवस्थापक"></div>
+    <div class="form-group"><label>मोबाइल नम्बर</label><input type="tel" id="ao-mobile" value="${escapeHtmlChat(o.mobile||'')}" placeholder="98xxxxxxxx"></div>
+    <div class="form-group"><label>इमेल</label><input type="email" id="ao-email" value="${escapeHtmlChat(o.email||'')}" placeholder="वैकल्पिक"></div>
+    <div class="form-group"><label>वेबसाइट</label><input type="text" id="ao-website" value="${escapeHtmlChat(o.website||'')}" placeholder="https://..."></div>
+    <div class="form-group"><label>फेसबुक लिङ्क</label><input type="text" id="ao-facebook" value="${escapeHtmlChat(o.facebook||'')}" placeholder="पेज वा प्रोफाइल लिङ्क"></div>
+    <div class="form-group"><label>ह्वाट्सएप नम्बर</label><input type="tel" id="ao-whatsapp" value="${escapeHtmlChat(o.whatsapp||'')}" placeholder="देश कोड सहित (977...)"></div>
+    <div class="form-group"><label>ठेगाना</label><input type="text" id="ao-address" value="${escapeHtmlChat(o.address||'')}" placeholder="वैकल्पिक"></div>
+    <div class="form-group"><label>संक्षिप्त सन्देश / नोट</label><textarea id="ao-note" rows="2" placeholder="सदस्यहरूका लागि छोटो सन्देश">${escapeHtmlChat(o.note||'')}</textarea></div>
+    <p class="text-muted" style="font-size:0.72rem">फोटो: एप भित्रैको हल्का फाइल (owner-photo.jpg) प्रयोग हुन्छ ताकि सिंक छिटो रहोस्।</p>
+    <button class="btn btn-primary btn-block" onclick="saveAppOwner()">💾 सुरक्षित सेभ गर्नुहोस्</button>
   `;
-  UI.showModal('app owner card', html, '<button class="btn btn-outline" onclick="closeModal()">close</button>');
+  UI.showModal('🪪 एप परिचय (About Us)', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
 }
 
 async function saveAppOwner() {
-  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin only', 'error');
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र', 'error');
   const appOwner = {
     name: (document.getElementById('ao-name').value || '').trim(),
     title: (document.getElementById('ao-title').value || '').trim(),
@@ -4979,7 +5115,7 @@ async function saveAppOwner() {
     return UI.toast((res && res.error) || 'सेभ असफल', 'error');
   }
   APP_DATA = DB.load();
-  UI.toast('app owner saved', 'success');
+  UI.toast('एप परिचय सुरक्षित सेभ भयो ✅', 'success');
   closeModal();
 }
 
@@ -5747,6 +5883,9 @@ function saveRates() {
 }
 
 function showAppGuide() {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) {
+    return UI.toast('एप गाइड Admin लाई मात्र उपलब्ध छ', 'error');
+  }
   const html = `
     <div class="report-card" style="font-size:0.85rem;max-height:60vh;overflow:auto">
       <p><strong>अकाउन्टिङ सूत्र:</strong></p>
@@ -5923,7 +6062,7 @@ function doLogout() {
   const html = `
     <p style="font-size:0.9rem;margin-bottom:10px">⚠️ <strong>लगआउट</strong> गर्दा यो फोनमा सत्र सकिन्छ र सूचना बन्द हुन्छ। अर्काको मोबाइल भए ठिक।</p>
     <div class="form-group"><label>आफ्नो PIN (४ अंक)</label>
-      <input type="password" id="logout-pin" inputmode="numeric" maxlength="4" placeholder="****">
+      <input type="text" id="logout-pin" class="masked-secret" inputmode="numeric" maxlength="4" placeholder="****" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
     </div>
     <button class="btn btn-danger btn-block" onclick="confirmLogoutWithPin()">लगआउट पुष्टि</button>
   `;
@@ -5973,7 +6112,7 @@ function showLockScreen() {
         <div style="font-size:2rem;margin-bottom:8px">🔒</div>
         <div style="font-weight:700;margin-bottom:4px">एप लक भयो</div>
         <p style="font-size:0.85rem;color:#666;margin-bottom:12px">१५ मिनेट नचलाएको / सुरक्षार्थ। लगइन मै छ — PIN हालेर खोल्नुहोस्।</p>
-        <input type="password" id="lock-pin-input" inputmode="numeric" maxlength="4" placeholder="PIN (४ अंक)"
+        <input type="text" id="lock-pin-input" class="masked-secret" inputmode="numeric" maxlength="4" placeholder="PIN (४ अंक)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"
           style="width:100%;padding:12px;font-size:1.2rem;text-align:center;border:2px solid #0d6efd;border-radius:10px;letter-spacing:8px">
         <button type="button" class="btn btn-primary btn-block" style="margin-top:12px" onclick="unlockAppSession()">🔓 खोल्नुहोस्</button>
       </div>`;
@@ -6559,7 +6698,6 @@ async function runManualCloudSync() {
 
 // ========== STANDARD WEB PUSH (VAPID) ==========
 window._pushLastGroupId = window._pushLastGroupId || null;
-window._pushLastPrivSig = window._pushLastPrivSig || {};
 
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -6756,6 +6894,9 @@ function runAdvanceSnapshotReconcile() {
 }
 
 async function openSnapshotBackups() {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) {
+    return UI.toast('स्न्यापसट ब्याकअप Admin लाई मात्र उपलब्ध छ', 'error');
+  }
   UI.toast('स्न्यापसट लोड हुँदैछ…', '');
   const res = await DB.apiFetch('/snapshots', { method: 'GET' });
   if (!res.ok || !res.body || !res.body.ok) {
@@ -6952,14 +7093,7 @@ function issueMonthCloseReceipts(data, month) {
   if (!data.bills) data.bills = {};
   if (!month.memberBills) month.memberBills = {};
   data.members.filter(m => m.active).forEach(member => {
-    const bill = buildMemberReceipt(data, month, member);
-    postPrivateMessage(member.id, receiptText(bill), 'receipt', data);
-    // store bill id on last message
-    const arr = data.chat.private[member.id];
-    if (arr && arr.length) {
-      arr[arr.length - 1].billId = bill.id;
-      arr[arr.length - 1].type = 'receipt';
-    }
+    buildMemberReceipt(data, month, member);
   });
 }
 
@@ -6996,48 +7130,72 @@ function viewBill(billId) {
   UI.showModal('🧾 बिल ' + billId, html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
 }
 
-function meetingReminderText(member, data) {
-  const month = Accounting.getCurrentMonth(data);
-  let mandatory = { total: 0, saving: 0, interest: 0, fine: 0, previousDue: 0 };
-  try {
-    if (month && member) mandatory = Accounting.calcMandatory(member, data, month);
-  } catch (e) {}
-  const lines = [
-    '🔔 बचत भेला रिमाइन्डर',
-    '',
-    'प्रिय ' + (member.name || '') + ',',
-    '',
-    'भोलि (नेपाली महिनाको दोस्रो शनिबार) समूहको बचत भेला बस्ने छ।',
-    'कृपया समयमै उपस्थित हुनुहोला।',
-    '',
-    '— तपाईंको विवरण —',
-    'अनिवार्य (नगद) तिर्नुपर्ने: रु. ' + Accounting.formatNum(mandatory.total || mandatory.totalGross || 0),
-    'बाँकी ऋण: रु. ' + Accounting.formatNum(member.outstandingLoan || 0),
-    'अग्रिम: रु. ' + Accounting.formatNum(member.advance || 0),
-    'अनिवार्य बाँकी: रु. ' + Accounting.formatNum(member.due || 0),
-    '',
-    'धन्यवाद।'
-  ];
-  return lines.join('\n');
-}
-
 function sendSecondFridayReminders(data) {
   if (!data.scheduleLog) data.scheduleLog = {};
   const nepal = getNepalNow();
   const bs = adToBsParts(nepal);
   if (!bs) return false;
-  const fri = nthWeekdayOfBsMonth(bs.year, bs.monthIndex, 5, 2); // Friday=5
+  const fri = nthWeekdayOfBsMonth(bs.year, bs.monthIndex, 5, 2); // BS 2nd Friday
   if (!fri || !fri.ad) return false;
-  // Must be second Friday, hour >= 18 Nepal time
   if (bs.day !== fri.day) return false;
+  // दोस्रो शुक्रबारको रिमाइन्डर साँझ ६/७/८ बजे (>= 18:00 NPT) मात्र, बिहान होइन
   if (nepal.getHours() < 18) return false;
+
   const key = 'remind_' + bs.year + '_' + bs.monthIndex;
-  if (data.scheduleLog[key]) return false;
-  data.members.filter(m => m.active).forEach(m => {
-    postPrivateMessage(m.id, meetingReminderText(m, data), 'auto_private', data);
-  });
+  const chatMsgId = 'rem_fri_' + bs.year + '_' + bs.monthIndex;
+  const localKey = 'gs_fri_rem_' + bs.year + '_' + bs.monthIndex;
+  const alreadyInChat = Array.isArray(data.chat && data.chat.group) && data.chat.group.some(m => m && m.id === chatMsgId);
+  if (data.scheduleLog[key] || alreadyInChat) return false;
+  try {
+    if (localStorage.getItem(localKey)) return false;
+  } catch (e) {}
+
+  const satDay = bs.day + 1;
+  const mName = (typeof BS_MONTHS_NP !== 'undefined' && BS_MONTHS_NP[bs.monthIndex]) || '';
+  const text =
+    '🔔 दोस्रो शनिबार — बचत बैठक सूचना\n' +
+    'भोलि (' + mName + ' ' + satDay + ' गते, दोस्रो शनिबार) समूहको नियमित मासिक बचत बैठक बस्ने छ।\n' +
+    'सदस्यज्यूहरूले आफ्नो पासबुक हेरी तोकिएको समयमा अनिवार्य बचत, ब्याज तथा किस्ता रकमसहित उपस्थित भइदिनुहोला। धन्यवाद!';
+
+  postGroupMessage(text, 'auto_group', data, { id: chatMsgId, silentPush: false });
   data.scheduleLog[key] = new Date().toISOString();
+  try { localStorage.setItem(localKey, data.scheduleLog[key]); } catch (e) {}
   return true;
+}
+
+async function maybeRunSecondFridayHealthScan() {
+  try {
+    if (typeof Auth === 'undefined' || !(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return false;
+    if (!navigator.onLine) return false;
+    const nepal = getNepalNow();
+    const bs = adToBsParts(nepal);
+    if (!bs) return false;
+    // बिहानी स्वास्थ्य जाँच (बिहान ६ बजेदेखि NPT)
+    if (nepal.getHours() < 6) return false;
+
+    const nDate = nepal.getFullYear() + '-' + String(nepal.getMonth() + 1).padStart(2, '0') + '-' + String(nepal.getDate()).padStart(2, '0');
+    const scanKey = 'gs_admin_health_scan_day_' + nDate;
+    try {
+      if (localStorage.getItem(scanKey)) return false;
+      localStorage.setItem(scanKey, new Date().toISOString());
+    } catch (e) {}
+
+    // ?background=1 पठाउँदा त्रुटि भए Admin लाई अलर्ट सेट हुन्छ, तर Admin ले नहेरेसम्म acknowledge हुँदैन
+    const res = await DB.getSystemHealth({ background: true });
+    if (!res || !res.ok) return false;
+    const errs = (res.issues || []).filter(i => i && i.severity === 'error');
+    const fri = nthWeekdayOfBsMonth(bs.year, bs.monthIndex, 5, 2);
+    const isSecondFriday = !!(fri && bs.day === fri.day);
+
+    if (errs.length > 0) {
+      UI.toast('🚨 प्रणाली स्वास्थ्यमा गम्भीर त्रुटि (' + errs.length + ')! कृपया सेटिङ → प्रणाली स्वास्थ्य खोलेर हेर्नुहोस्।', 'error');
+    } else if (isSecondFriday) {
+      UI.toast('✅ दोस्रो शुक्रबार बिहानी जाँच: प्रणाली १००% स्वस्थ छ', 'success');
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 function maybeAutoDriveBackupHint(data) {
@@ -7051,7 +7209,7 @@ function maybeAutoDriveBackupHint(data) {
   const key = 'backup_' + bs.year + '_' + bs.monthIndex;
   if (data.scheduleLog[key]) return false;
   data.scheduleLog[key] = new Date().toISOString();
-  // Trigger JSON download backup for admin
+  // Trigger JSON download backup
   try {
     if (typeof doExportBackup === 'function') doExportBackup();
     UI.toast('📦 दोस्रो शनिबार — ब्याकअप डाउनलोड सुरु (Drive मा सेभ गर्नुहोस्)', 'success');
@@ -7062,12 +7220,15 @@ function maybeAutoDriveBackupHint(data) {
 function runScheduleChecks() {
   try {
     if (typeof Auth === 'undefined' || !Auth.isLoggedIn || !Auth.isLoggedIn()) return;
-    if (!Auth.isAccountsWriter || !Auth.isAccountsWriter()) return;
+    const isPrim = Auth.isPrimaryAdmin && Auth.isPrimaryAdmin();
+    const isWriter = Auth.isAccountsWriter && Auth.isAccountsWriter();
+    if (!isPrim && !isWriter) return;
     const data = DB.load();
     let changed = false;
     if (sendSecondFridayReminders(data)) changed = true;
-    if (maybeAutoDriveBackupHint(data)) changed = true;
-    if (changed) DB.save(data);
+    if (isWriter && maybeAutoDriveBackupHint(data)) changed = true;
+    if (changed && isWriter) DB.save(data);
+    if (isPrim) maybeRunSecondFridayHealthScan();
   } catch (e) {
     console.warn('schedule', e);
   }
@@ -7077,498 +7238,21 @@ function startScheduleTimers() {
   if (window._samuhaSched) return;
   window._samuhaSched = setInterval(runScheduleChecks, 60000);
   setTimeout(runScheduleChecks, 5000);
+  try {
+    if (navigator.serviceWorker && !window._samuhaSwMsgBound) {
+      window._samuhaSwMsgBound = true;
+      navigator.serviceWorker.addEventListener('message', function (ev) {
+        if (ev && ev.data && ev.data.type === 'OPEN_HEALTH_CHECK') {
+          if (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) {
+            openSystemHealthReport();
+          }
+        }
+      });
+    }
+  } catch (e) {}
 }
 
 window.confirmClearAccountingOnly = confirmClearAccountingOnly;
 window.runClearAccountingOnly = runClearAccountingOnly;
 
 window.fixDuplicateMembersNow = fixDuplicateMembersNow;
-
-// ========== TEMPORARY ISOLATED LOAN SANDBOX (REMOVE AFTER TESTING) ==========
-const LOAN_SBX_STORAGE_KEY = 'gs_loan_sandbox_temp_v1';
-let _loanSbxSigPad = null;
-let _loanSbxPendingDraft = null;
-
-function getOrInitLoanSandbox() {
-  try {
-    const raw = sessionStorage.getItem(LOAN_SBX_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.data && parsed.month) return parsed;
-    }
-  } catch (e) {}
-
-  const real = DB.load();
-  const clone = JSON.parse(JSON.stringify(real));
-  const snap = Accounting.getSnapshot(clone);
-  let month = Accounting.getCurrentMonth(clone);
-  if (!month) {
-    const bs = adToBsParts(getNepalNow()) || { year: 2083, monthIndex: 7 };
-    const mName = (BS_MONTHS_NP[bs.monthIndex] || 'अभ्यास') + ' ' + bs.year;
-    month = {
-      id: 'sbx_' + Date.now(),
-      name: mName + ' (अभ्यास)',
-      yearBS: bs.year,
-      monthIndex: bs.monthIndex,
-      status: 'collection_closed',
-      startAssets: snap.assets,
-      finalAssets: snap.assets,
-      outstandingLoans: snap.loans,
-      cashInHand: snap.cash,
-      totalAdvances: snap.totalAdvance || 0,
-      netShareAssets: Math.max(0, snap.assets - (snap.totalAdvance || 0)),
-      savingsCollected: 0,
-      interestCollected: 0,
-      otherIncome: 0,
-      expenses: 0,
-      principalCollected: 0,
-      newLoansGiven: 0,
-      advanceFromCash: 0,
-      totalMembers: snap.members,
-      totalKitta: snap.kitta,
-      collections: {},
-      loansGiven: [],
-      otherIncomeDetails: [],
-      expenseDetails: [],
-      collectionClosedAt: new Date().toISOString()
-    };
-    clone.months = clone.months || [];
-    clone.months.push(month);
-    clone.currentMonthId = month.id;
-  } else {
-    month.status = 'collection_closed';
-    Accounting.recalcMonth(month, clone);
-  }
-  const sbx = {
-    data: clone,
-    monthId: month.id,
-    month,
-    extraCash: 0,
-    lastRecord: null,
-    createdAt: new Date().toISOString()
-  };
-  persistLoanSandbox(sbx);
-  return sbx;
-}
-
-function persistLoanSandbox(sbx) {
-  try {
-    sessionStorage.setItem(LOAN_SBX_STORAGE_KEY, JSON.stringify(sbx));
-  } catch (e) {}
-}
-
-function clearLoanSandbox(stayInLoans = true) {
-  try { sessionStorage.removeItem(LOAN_SBX_STORAGE_KEY); } catch (e) {}
-  _loanSbxSigPad = null;
-  _loanSbxPendingDraft = null;
-  UI.toast('अभ्यास डाटा सुरक्षित हटाइयो (रियल हिसाब जस्ताको तस्तै छ)', 'success');
-  if (stayInLoans) openLoans();
-}
-
-function resetLoanSandbox() {
-  try { sessionStorage.removeItem(LOAN_SBX_STORAGE_KEY); } catch (e) {}
-  _loanSbxSigPad = null;
-  _loanSbxPendingDraft = null;
-  openLoanSandbox();
-}
-
-function addLoanSandboxTestCash(amount) {
-  const sbx = getOrInitLoanSandbox();
-  sbx.extraCash = (sbx.extraCash || 0) + (Number(amount) || 50000);
-  persistLoanSandbox(sbx);
-  UI.toast('अभ्यास नगद +' + Accounting.formatNum(amount) + ' थपियो', 'success');
-  openLoanSandbox();
-}
-
-function getLoanSandboxCash(sbx) {
-  Accounting.recalcMonth(sbx.month, sbx.data);
-  return (Number(sbx.month.cashInHand) || 0) + (Number(sbx.extraCash) || 0);
-}
-
-function openLoanSandbox() {
-  const sbx = getOrInitLoanSandbox();
-  const sbxCash = getLoanSandboxCash(sbx);
-  const loans = sbx.month.loansGiven || [];
-  const last = sbx.lastRecord;
-
-  let lastInspectHtml = '';
-  if (last) {
-    const sizeKb = ((last.signatureDataUrl || '').length * 0.75 / 1024).toFixed(1);
-    const sigImg = last.signatureDataUrl
-      ? `<img src="${last.signatureDataUrl}" alt="सहि" style="max-width:160px;height:56px;object-fit:contain;border:1px solid #cbd5e1;border-radius:8px;background:#fff;padding:4px">`
-      : '';
-    const jsonPreview = escapeHtmlChat(JSON.stringify({
-      memberId: last.entry.memberId,
-      amount: last.entry.amount,
-      note: last.entry.note || undefined,
-      signature: last.simulatedR2Path,
-      time: last.entry.time
-    }, null, 2));
-
-    lastInspectHtml = `
-      <div class="section-card" style="border:2px solid #0d6efd;background:#f8fbff;padding:10px 12px">
-        <div class="section-title" style="color:#0a58ca;margin-bottom:6px">🔍 भर्खरै गरिएको अभ्यास ऋण · रेकर्ड र सहि कसरी बस्यो?</div>
-        <div class="loan-sbx-step">
-          <strong>१) सदस्यको डिजिटल सहि (Signature JPEG + R2 Storage):</strong>
-          <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
-            ${sigImg}
-            <div style="font-size:0.75rem;color:#334155;line-height:1.4">
-              <div>• Canvas साइज घटाएर हल्का JPEG: <strong>~${sizeKb} KB</strong></div>
-              <div>• सर्भरमा सहि फोटो बस्ने ठाउँ (R2):<br><code>${escapeHtmlChat(last.simulatedR2Path)}</code></div>
-            </div>
-          </div>
-        </div>
-        <div class="loan-sbx-step">
-          <strong>२) डाटाबेस (D1) मा बस्ने रेकर्ड (सम्झौता विवरण सहित):</strong>
-          <div style="font-size:0.75rem;margin-top:2px">• <code>month.loansGiven</code> भित्र <code>agreement</code> (सदस्य बयान + कोषाध्यक्ष निर्णय) सहित थपिन्छ, <code>member.outstandingLoan</code> मा रु. <strong>${Accounting.formatNum(last.entry.amount)}</strong> जोडिन्छ, र नगद घट्छ।</div>
-          <pre class="loan-sbx-code">${jsonPreview}</pre>
-        </div>
-        <div class="loan-sbx-step">
-          <strong>३) सदस्यलाई जाने व्यक्तिगत सन्देश र पासबुकमा सम्झौता लिंक:</strong>
-          <div style="font-size:0.76rem;color:#0f5132;background:#d1e7dd;padding:6px 8px;border-radius:8px;margin-top:4px">
-            "तपाईंलाई रु. ${Accounting.formatNum(last.entry.amount)} ऋण लगानी गरियो। हालको बाँकी ऋण: रु. ${Accounting.formatNum(last.newBalance)}"
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
-          <button type="button" class="btn btn-orange btn-sm" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(sbx.month.id))}','${escapeHtmlChat(String(last.entry.memberId))}',true,'${escapeHtmlChat(String(last.entry.id || ''))}',{push:true})">📄 अभ्यास सम्झौता / PDF</button>
-          <button type="button" class="btn btn-purple btn-sm" onclick="openLoanSandboxPassbook('${escapeHtmlChat(String(last.entry.memberId))}')">📖 अभ्यास पासबुक हेर्नुहोस्</button>
-        </div>
-        <div style="margin-top:6px">
-          <button type="button" class="btn btn-info btn-sm btn-block" onclick="openLoanSandboxCollectionPreview()">📋 सारांशमा सहि हेर्नुहोस्</button>
-        </div>
-      </div>`;
-  }
-
-  let sbxListHtml = '';
-  if (loans.length) {
-    sbxListHtml = '<div class="section-title mt-2">🧪 अभ्यासमा दिइएका ऋण (' + loans.length + ')</div>' +
-      loans.map((l, idx) => {
-        const mem = sbx.data.members.find(x => x.id === l.memberId);
-        const key = l.id ? String(l.id) : String(idx);
-        return `<div class="member-item" style="align-items:center">
-          <div class="member-info">
-            <div class="member-name">${mem ? mem.name : l.memberId} · रु. ${Accounting.formatNum(l.amount)}</div>
-            <div class="member-meta">${l.note ? '📝 ' + escapeHtmlChat(l.note) + ' · ' : ''}${new Date(l.time).toLocaleTimeString('ne-NP')}</div>
-          </div>
-          <div style="display:flex;align-items:center;gap:6px">
-            ${renderTinySignature(l.signature)}
-            <button type="button" class="btn btn-light btn-sm" style="padding:3px 7px;font-size:0.71rem;border:1px solid #fdba74;color:#9a3412" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(sbx.month.id))}','${escapeHtmlChat(String(l.memberId))}',true,'${escapeHtmlChat(key)}',{push:true})">📄</button>
-          </div>
-        </div>`;
-      }).join('');
-  }
-
-  const html = `
-    <div class="loan-sbx-banner">
-      <div style="font-size:0.82rem;color:#78350f;font-weight:700">⚠️ यो अभ्यास (Test) मोड मात्र हो — रियल D1, R2 वा हिसाबमा कुनै असर पर्दैन।</div>
-    </div>
-    <div class="report-card mb-2" style="padding:10px 12px">
-      <div class="report-row"><span class="label">💵 अभ्यास उपलब्ध नगद</span><span class="value fw-bold">रु. ${Accounting.formatNum(sbxCash)}</span></div>
-      <div class="report-row"><span class="label">🤝 अभ्यास ऋण दिइएको</span><span class="value">${loans.length} वटा (रु. ${Accounting.formatNum(loans.reduce((s, l) => s + (l.amount || 0), 0))})</span></div>
-    </div>
-    <div style="display:flex;gap:6px;margin-bottom:10px">
-      <button type="button" class="btn btn-orange" style="flex:1" onclick="showLoanSandboxMemberPick()">➕ अभ्यास ऋण लगानी गर्नुहोस्</button>
-      <button type="button" class="btn btn-light btn-sm" style="border:1px solid #cbd5e1;white-space:nowrap" onclick="addLoanSandboxTestCash(50000)">+रु. ५०,००० नगद</button>
-    </div>
-    ${lastInspectHtml}
-    ${sbxListHtml}
-    <div class="section-card mt-2" style="padding:10px 12px;background:#f8fafc">
-      <div class="section-title" style="font-size:0.86rem;margin-bottom:6px">📌 रियल ऋण लगानी प्रक्रिया र डाटा भण्डारण (३ चरण):</div>
-      <div style="font-size:0.78rem;line-height:1.5;color:#334155">
-        <div><strong>१. चरण १ (रकम र उद्देश्य):</strong> सदस्य छानेर ऋण रकम, वैकल्पिक उद्देश्य/साक्षी र कोषमा उपलब्ध नगद जाँच हुन्छ।</div>
-        <div><strong>२. चरण २ (सदस्य स्वीकारोक्ति + सहि):</strong> ऋण स्वीकारोक्ति बयान पढेर तलकै स्थिर बाकसमा सदस्यको डिजिटल सहि सेभ गरिन्छ।</div>
-        <div><strong>३. चरण ३ (कोषाध्यक्ष निर्णय + PIN):</strong> निर्णय प्रमाण पत्रसँगै कोषाध्यक्षको ४-अंकको PIN पुष्टि भएपछि <strong>Cloudflare R2</strong> मा सहि र <strong>D1</strong> मा सम्झौता सहित ऋण बस्छ — जुन सदस्यको <strong>पासबुकको ऋण बाकस</strong> बाट क्लिक गरी PDF सेभ गर्न सकिन्छ।</div>
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
-      <button type="button" class="btn btn-light btn-sm" style="border:1px solid #ced4da" onclick="resetLoanSandbox()">🔄 अभ्यास रिसेट</button>
-      <button type="button" class="btn btn-danger btn-sm" onclick="clearLoanSandbox(true)">🗑️ अभ्यास डाटा मेटाउनुहोस्</button>
-    </div>
-  `;
-
-  UI.showModal('🧪 ऋण लगानी अभ्यास (Test)', html, '<button class="btn btn-outline" onclick="openLoans()">← ऋण मेनु</button>', { replace: true, back: 'openLoans' });
-}
-
-function showLoanSandboxMemberPick() {
-  const sbx = getOrInitLoanSandbox();
-  const active = (sbx.data.members || []).filter(m => m.active);
-  const html = `
-    <div class="search-box">
-      <input type="text" id="sbx-loan-search" placeholder="अभ्यासका लागि सदस्य छान्नुहोस्..." oninput="filterLoanSandboxMembers()">
-    </div>
-    <div id="sbx-loan-member-list">
-      ${UI.renderMemberList(active, 'selectLoanSandboxMember')}
-    </div>
-  `;
-  UI.showModal('🧪 अभ्यास — सदस्य छान्नुहोस्', html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← फर्कनुहोस्</button>', { replace: true, back: 'openLoanSandbox' });
-}
-
-function filterLoanSandboxMembers() {
-  const q = ((document.getElementById('sbx-loan-search') && document.getElementById('sbx-loan-search').value) || '').trim().toLowerCase();
-  const sbx = getOrInitLoanSandbox();
-  const filtered = (sbx.data.members || []).filter(m => m.active && (m.name || '').toLowerCase().includes(q));
-  const box = document.getElementById('sbx-loan-member-list');
-  if (box) box.innerHTML = UI.renderMemberList(filtered, 'selectLoanSandboxMember');
-}
-
-function selectLoanSandboxMember(memberId, presetDraft) {
-  const sbx = getOrInitLoanSandbox();
-  const member = (sbx.data.members || []).find(m => m.id === memberId);
-  if (!member) return;
-  const availCash = getLoanSandboxCash(sbx);
-  const prevLoan = Number(member.outstandingLoan) || 0;
-  const presetAmt = (presetDraft && presetDraft.memberId === memberId) ? presetDraft.amount : (availCash >= 5000 ? 5000 : '');
-  const presetNote = (presetDraft && presetDraft.memberId === memberId) ? (presetDraft.note || '') : '';
-
-  const html = `
-    <div class="loan-sbx-banner" style="padding:7px 10px;font-size:0.76rem;color:#78350f">
-      🧪 अभ्यास मोड · चरण १ / ३ · उपलब्ध अभ्यास नगद: <strong>रु. ${Accounting.formatNum(availCash)}</strong>
-    </div>
-    <div class="loan-summary-strip">
-      <div class="loan-summary-chip"><div class="k">सदस्य</div><div class="v">${escapeHtmlChat(member.name)}</div></div>
-      <div class="loan-summary-chip"><div class="k">पहिलेको सावाँ</div><div class="v" style="color:#dc3545">रु. ${Accounting.formatNum(prevLoan)}</div></div>
-      <div class="loan-summary-chip"><div class="k">अभ्यास नगद</div><div class="v" style="color:#198754">रु. ${Accounting.formatNum(availCash)}</div></div>
-    </div>
-    <div class="form-group">
-      <label>💵 ऋण रकम</label>
-      <input type="number" id="sbx-loan-amount" placeholder="जस्तै: 5000" value="${presetAmt}">
-    </div>
-    <div class="form-group">
-      <label>📝 उद्देश्य / म्याद / साक्षी (वैकल्पिक)</label>
-      <input type="text" id="sbx-loan-note" placeholder="जस्तै: व्यापार · ६ महिना · साक्षी राम" value="${escapeHtmlChat(presetNote)}">
-    </div>
-    <button type="button" class="btn btn-orange btn-block" onclick="proceedToLoanSandboxAcceptance('${escapeHtmlChat(String(memberId))}')">अगाडि बढ्नुहोस् (अभ्यास स्वीकारोक्ति फारम) →</button>
-  `;
-  UI.showModal('🧪 अभ्यास ऋण — ' + member.name, html, '<button class="btn btn-outline" onclick="showLoanSandboxMemberPick()">← फर्कनुहोस्</button>', { replace: true, back: 'showLoanSandboxMemberPick' });
-}
-
-function proceedToLoanSandboxAcceptance(memberId) {
-  const amount = parseFloat((document.getElementById('sbx-loan-amount') && document.getElementById('sbx-loan-amount').value) || 0) || 0;
-  if (amount <= 0) return UI.toast('रकम लेख्नुहोस्', 'error');
-  const note = ((document.getElementById('sbx-loan-note') && document.getElementById('sbx-loan-note').value) || '').trim();
-
-  const sbx = getOrInitLoanSandbox();
-  const member = (sbx.data.members || []).find(m => m.id === memberId);
-  if (!member) return UI.toast('सदस्य भेटिएन', 'error');
-  const availCash = getLoanSandboxCash(sbx);
-  if (amount > availCash) {
-    return UI.toast('अभ्यास नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(availCash) + ' — +रु. ५०,००० थप्नुहोस्)', 'error');
-  }
-
-  _loanSbxPendingDraft = {
-    memberId,
-    memberName: member.name,
-    groupName: (sbx.data.group && sbx.data.group.name) || 'समूह बचत',
-    prevLoan: Number(member.outstandingLoan) || 0,
-    amount,
-    newTotalLoan: (Number(member.outstandingLoan) || 0) + amount,
-    interestRate: (sbx.data.settings && sbx.data.settings.interestRate) || 0,
-    cashBefore: availCash,
-    note,
-    dateStr: formatNepaliTodayDateStr(),
-    signature: ''
-  };
-  openLoanSandboxAcceptanceStep();
-}
-
-function backToLoanSandboxStep1() {
-  if (!_loanSbxPendingDraft) return openLoanSandbox();
-  selectLoanSandboxMember(_loanSbxPendingDraft.memberId, _loanSbxPendingDraft);
-}
-
-function openLoanSandboxAcceptanceStep() {
-  if (!_loanSbxPendingDraft) return openLoanSandbox();
-  const d = _loanSbxPendingDraft;
-  const html = `
-    <div class="loan-step-badge">🧪 अभ्यास चरण २ / ३ · सदस्य स्वीकारोक्ति र सहि</div>
-    <div class="loan-agree-scroll">
-      <div class="loan-summary-strip">
-        <div class="loan-summary-chip"><div class="k">पहिलेको सावाँ</div><div class="v">रु. ${Accounting.formatNum(d.prevLoan)}</div></div>
-        <div class="loan-summary-chip"><div class="k">आज थप ऋण</div><div class="v" style="color:#c2410c">+रु. ${Accounting.formatNum(d.amount)}</div></div>
-        <div class="loan-summary-chip"><div class="k">आजबाट जम्मा सावाँ</div><div class="v" style="color:#dc3545">रु. ${Accounting.formatNum(d.newTotalLoan)}</div></div>
-      </div>
-      <div class="loan-doc-paper">
-        ${buildLoanMemberDeclarationParagraphs(d)}
-      </div>
-    </div>
-    <div class="loan-sig-sticky">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <label style="font-size:0.82rem;font-weight:700;margin:0">✍️ सदस्यको सहि (तल कोर्नुहोस्)</label>
-        <button type="button" class="btn btn-light btn-sm" style="padding:3px 9px;font-size:0.74rem" onclick="clearLoanSandboxSignature()">🗑️ मेट्नुहोस्</button>
-      </div>
-      <div class="loan-sbx-sig-wrap">
-        <canvas id="sbx-sig-canvas" width="340" height="122"></canvas>
-      </div>
-      <button type="button" class="btn btn-orange btn-block" onclick="submitLoanSandbox('${escapeHtmlChat(String(d.memberId))}')">✅ सहि सेभ गरी अर्को चरणमा जानुहोस् →</button>
-    </div>
-  `;
-  UI.showModal('🧪 अभ्यास स्वीकारोक्ति - ' + d.memberName, html, '<button class="btn btn-outline" onclick="backToLoanSandboxStep1()">← रकम सच्याउनुहोस्</button>', { loanSign: true, replace: true, back: 'backToLoanSandboxStep1' });
-  initLoanSandboxSignaturePad();
-}
-
-function initLoanSandboxSignaturePad() {
-  const canvas = document.getElementById('sbx-sig-canvas');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  ctx.strokeStyle = '#0f172a';
-  ctx.lineWidth = 2.2;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  let drawing = false;
-  function pos(e) {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
-  }
-  function start(e) { e.preventDefault(); drawing = true; if (_loanSbxSigPad) _loanSbxSigPad.hasDrawn = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
-  function move(e) { e.preventDefault(); if (!drawing) return; const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); }
-  function end() { drawing = false; }
-  canvas.addEventListener('mousedown', start);
-  canvas.addEventListener('mousemove', move);
-  canvas.addEventListener('mouseup', end);
-  canvas.addEventListener('mouseleave', end);
-  canvas.addEventListener('touchstart', start, { passive: false });
-  canvas.addEventListener('touchmove', move, { passive: false });
-  canvas.addEventListener('touchend', end);
-  _loanSbxSigPad = { canvas, ctx, hasDrawn: false };
-}
-
-function clearLoanSandboxSignature() {
-  if (!_loanSbxSigPad) return;
-  _loanSbxSigPad.ctx.clearRect(0, 0, _loanSbxSigPad.canvas.width, _loanSbxSigPad.canvas.height);
-  _loanSbxSigPad.hasDrawn = false;
-}
-
-function submitLoanSandbox(memberId) {
-  if (!_loanSbxPendingDraft) return openLoanSandbox();
-  if (!_loanSbxSigPad || !_loanSbxSigPad.hasDrawn) return UI.toast('सदस्यको सहि कोर्न अनिवार्य छ', 'error');
-  _loanSbxPendingDraft.signature = compressSignatureFromPad(_loanSbxSigPad);
-  _loanSbxPendingDraft.dateStr = formatNepaliTodayDateStr();
-  showLoanSandboxPinConfirm();
-}
-
-function showLoanSandboxPinConfirm() {
-  if (!_loanSbxPendingDraft) return openLoanSandbox();
-  const d = _loanSbxPendingDraft;
-
-  const html = `
-    <div class="loan-step-badge">🧪 अभ्यास चरण ३ / ३ · कोषाध्यक्ष निर्णय र PIN</div>
-    <div class="loan-doc-paper" style="background:#f8fbff;border-color:#bfdbfe;margin-bottom:10px">
-      <div style="font-weight:700;color:#0a58ca;margin-bottom:6px;border-bottom:1px solid #dbeafe;padding-bottom:4px">🏛️ कोषाध्यक्षको निर्णय तथा रकम भुक्तानी विवरण (अभ्यास)</div>
-      ${buildLoanTreasurerApprovalParagraphs(d)}
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-top:8px;padding-top:8px;border-top:1px dashed #cbd5e1;flex-wrap:wrap">
-        <div>
-          <div style="font-size:0.72rem;color:#475569;margin-bottom:2px">सदस्यको डिजिटल सहि:</div>
-          ${renderTinySignature(d.signature, true)}
-        </div>
-        <div style="text-align:right;font-size:0.8rem">
-          <div style="color:#64748b">समूहको तर्फबाट:</div>
-          <strong>कोषाध्यक्ष</strong>
-        </div>
-      </div>
-    </div>
-    <div class="loan-sbx-banner" style="padding:7px 10px;font-size:0.76rem;color:#78350f">
-      रियल ऋण लगानीमा कोषाध्यक्षको वास्तविक PIN जाँच हुन्छ। अभ्यासमा कुनै पनि ४-अंक (उदा: <code>1234</code>) हालेर जाँच्न सक्नुहुन्छ।
-    </div>
-    <div class="form-group">
-      <label>🔢 ४-अंकको अभ्यास PIN हाल्नुहोस्</label>
-      <input type="password" id="sbx-pin-input" maxlength="4" inputmode="numeric" value="1234" class="pin-input" onkeydown="if(event.key==='Enter')confirmLoanSandboxPin()">
-    </div>
-    <button type="button" class="btn btn-orange btn-block" onclick="confirmLoanSandboxPin()">✅ PIN पुष्टि गरी अभ्यास ऋण र सम्झौता सेभ गर्नुहोस्</button>
-  `;
-  UI.showModal('🧪 अभ्यास कोषाध्यक्ष निर्णय - ' + d.memberName, html, '<button class="btn btn-outline" onclick="openLoanSandboxAcceptanceStep()">← अघिल्लो फारम</button>', { replace: true, back: 'openLoanSandboxAcceptanceStep' });
-}
-
-function confirmLoanSandboxPin() {
-  const pin = ((document.getElementById('sbx-pin-input') && document.getElementById('sbx-pin-input').value) || '').trim();
-  if (!/^\d{4}$/.test(pin)) {
-    return UI.toast('ठीक ४ अंकको PIN हाल्नुहोस् (जस्तै: 1234)', 'error');
-  }
-  const d = _loanSbxPendingDraft;
-  if (!d) return openLoanSandbox();
-
-  const curSbx = getOrInitLoanSandbox();
-  const member = (curSbx.data.members || []).find(m => m.id === d.memberId);
-  if (!member) return UI.toast('सदस्य भेटिएन', 'error');
-
-  const cashBefore = getLoanSandboxCash(curSbx);
-  const prevLoanNow = Number(member.outstandingLoan) || 0;
-  const agreement = buildLoanAgreementRecord({
-    groupName: (curSbx.data.group && curSbx.data.group.name) || 'समूह बचत',
-    memberName: member.name,
-    prevLoan: prevLoanNow,
-    amount: d.amount,
-    interestRate: (curSbx.data.settings && curSbx.data.settings.interestRate) || 0,
-    cashBefore,
-    note: d.note,
-    dateStr: d.dateStr || formatNepaliTodayDateStr()
-  });
-
-  const idx = (curSbx.month.loansGiven || []).length;
-  const loanId = 'sbx_ln_' + Date.now() + '_' + idx;
-  const entry = {
-    id: loanId,
-    memberId: d.memberId,
-    amount: d.amount,
-    signature: d.signature,
-    time: new Date().toISOString(),
-    agreement
-  };
-  if (d.note) entry.note = d.note;
-  curSbx.month.loansGiven = curSbx.month.loansGiven || [];
-  curSbx.month.loansGiven.push(entry);
-  member.outstandingLoan = prevLoanNow + d.amount;
-  Accounting.recalcMonth(curSbx.month, curSbx.data);
-
-  curSbx.lastRecord = {
-    entry,
-    newBalance: member.outstandingLoan,
-    signatureDataUrl: d.signature,
-    simulatedR2Path: '/api/media/signatures/' + curSbx.month.id + '-' + d.memberId + '-' + idx + '.jpg'
-  };
-  _loanSbxPendingDraft = null;
-  persistLoanSandbox(curSbx);
-  UI.toast('🧪 अभ्यास ऋण र सम्झौता रेकर्ड भयो (रियल डाटा छोइएको छैन)', 'success');
-  openLoanSandbox();
-}
-
-function openLoanSandboxPassbook(memberId) {
-  const sbx = getOrInitLoanSandbox();
-  const member = (sbx.data.members || []).find(m => m.id === memberId);
-  if (!member) return UI.toast('सदस्य भेटिएन', 'error');
-  const html = buildPassbookTwoBoxHtml(sbx.data, member, { monthOverride: sbx.month, sandbox: true });
-  UI.showModal('🧪 अभ्यास पासबुक - ' + member.name, html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← अभ्यासमा फर्कनुहोस्</button>', { passbook: true, replace: true, back: 'openLoanSandbox' });
-}
-
-function openLoanSandboxCollectionPreview() {
-  const sbx = getOrInitLoanSandbox();
-  const month = sbx.month;
-  const rows = (sbx.data.members || []).filter(m => m.active).map(m => {
-    const loans = (month.loansGiven || []).filter(l => l.memberId === m.id);
-    if (!loans.length) return '';
-    const taken = loans.reduce((s, l) => s + (l.amount || 0), 0);
-    const sigs = loans.map(l => renderTinySignature(l.signature)).join(' ');
-    return `<tr>
-      <td><strong>${m.name}</strong></td>
-      <td>${Accounting.formatNum(taken)}</td>
-      <td style="color:#dc3545;font-weight:700">${Accounting.formatNum(m.outstandingLoan || 0)}</td>
-      <td>${sigs}</td>
-    </tr>`;
-  }).filter(Boolean).join('');
-
-  const html = `
-    <div class="loan-sbx-banner" style="padding:7px 10px;font-size:0.76rem;color:#78350f">
-      कलेक्सन सारांशको <strong>"बुझिलिने"</strong> स्तम्भमा सदस्यको सहि यसरी प्रिन्ट सहित बस्छ:
-    </div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>सदस्य</th><th>लिएको ऋण</th><th>बाँकी ऋण</th><th>बुझिलिने सहि</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="4">अभ्यास ऋण छैन</td></tr>'}</tbody>
-    </table></div>
-  `;
-  UI.showModal('🧪 अभ्यास कलेक्सन सारांश', html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← फर्कनुहोस्</button>', { replace: true, back: 'openLoanSandbox' });
-}
-// ========== END TEMPORARY ISOLATED LOAN SANDBOX ==========
-

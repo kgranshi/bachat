@@ -138,15 +138,19 @@ const UI = {
   },
 
   closePinModal() {
+    const inp = document.getElementById('pin-input');
+    if (inp) inp.value = '';
     document.getElementById('pin-modal').classList.add('hidden');
     window._pinCallback = null;
   },
 
   async confirmPin() {
-    const pin = (document.getElementById('pin-input').value || '').trim();
+    const inp = document.getElementById('pin-input');
+    const pin = ((inp && inp.value) || '').trim();
     if (!pin) return this.toast('PIN हाल्नुहोस्', 'error');
     const ok = await Auth.verifyUserPin(pin);
     if (ok) {
+      if (inp) inp.value = '';
       const cb = window._pinCallback;
       window._pinCallback = null;
       document.getElementById('pin-modal').classList.add('hidden');

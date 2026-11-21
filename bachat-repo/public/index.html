@@ -12,7 +12,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
   <title>समूह बचत एप</title>
-  <link rel="stylesheet" href="./css/styles.css?v=14">
+  <link rel="stylesheet" href="./css/styles.css?v=16">
 </head>
 <body>
 <div id="app">
@@ -36,11 +36,11 @@
         <div id="login-options" class="form-card" style="padding:16px;margin-top:8px">
           <div class="form-group">
             <label>username / mobile</label>
-            <input type="text" id="login-id" placeholder="admin username वा सदस्य मोबाइल" autocomplete="username">
+            <input type="text" id="login-id" placeholder="admin username वा सदस्य मोबाइल" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
           </div>
           <div class="form-group">
             <label>password / pin</label>
-            <input type="password" id="login-secret" placeholder="password वा ४ अंक PIN" autocomplete="current-password" onkeydown="if(event.key==='Enter')unifiedLogin()">
+            <input type="text" id="login-secret" class="masked-secret" placeholder="password वा ४ अंक PIN" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" onkeydown="if(event.key==='Enter')unifiedLogin()">
           </div>
           <button type="button" id="login-submit-btn" class="btn btn-primary btn-lg btn-block" onclick="unifiedLogin()">🔓 लगइन</button>
 
@@ -69,27 +69,27 @@
           </div>
           <div class="form-group">
             <label>🔑 Username</label>
-            <input type="text" id="ca-username" placeholder="username">
+            <input type="text" id="ca-username" placeholder="username" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
           </div>
           <div class="form-group">
             <label>🔒 Password</label>
-            <input type="password" id="ca-password" placeholder="password">
+            <input type="text" id="ca-password" class="masked-secret" placeholder="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
           </div>
           <div class="form-group">
             <label>🔒 Password Confirm</label>
-            <input type="password" id="ca-password2" placeholder="फेरि password">
+            <input type="text" id="ca-password2" class="masked-secret" placeholder="फेरि password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
           </div>
           <div class="form-group">
             <label>📱 मोबाइल नम्बर</label>
-            <input type="tel" id="ca-mobile" placeholder="98xxxxxxxx">
+            <input type="tel" id="ca-mobile" placeholder="98xxxxxxxx" autocomplete="off">
           </div>
           <div class="form-group">
             <label>🔢 PIN (४ अंक)</label>
-            <input type="password" id="ca-pin" maxlength="4" inputmode="numeric" placeholder="४ अंकको PIN">
+            <input type="text" id="ca-pin" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="४ अंकको PIN" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
           </div>
           <div class="form-group">
             <label>🔢 PIN Confirm</label>
-            <input type="password" id="ca-pin2" maxlength="4" inputmode="numeric" placeholder="फेरि PIN">
+            <input type="text" id="ca-pin2" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="फेरि PIN" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other">
           </div>
           <button type="button" class="btn btn-primary btn-block" onclick="createAccount()">✅ खाता बनाउनुहोस्</button>
           <button type="button" class="btn btn-outline btn-block" onclick="backToLoginOptions()">← फर्कनुहोस्</button>
@@ -254,7 +254,7 @@
         </div>
         <div class="modal-body">
           <p id="pin-message">महिना बन्द गर्न PIN चाहिन्छ</p>
-          <input type="password" id="pin-input" maxlength="4" inputmode="numeric" placeholder="४ अंकको PIN" class="pin-input" onkeydown="if(event.key==='Enter')confirmPin()">
+          <input type="text" id="pin-input" maxlength="4" inputmode="numeric" placeholder="४ अंकको PIN" class="pin-input masked-secret" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" onkeydown="if(event.key==='Enter')confirmPin()">
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline" onclick="closePinModal()">रद्द</button>
@@ -264,11 +264,11 @@
     </div>
   </div>
 
-  <script src="./js/db.js?v=14"></script>
-  <script src="./js/accounting.js?v=14"></script>
-  <script src="./js/auth.js?v=14"></script>
-  <script src="./js/ui.js?v=14"></script>
-  <script src="./js/app.js?v=14"></script>
+  <script src="./js/db.js?v=16"></script>
+  <script src="./js/accounting.js?v=16"></script>
+  <script src="./js/auth.js?v=16"></script>
+  <script src="./js/ui.js?v=16"></script>
+  <script src="./js/app.js?v=16"></script>
   <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', function () {

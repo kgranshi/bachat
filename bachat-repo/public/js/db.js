@@ -111,7 +111,7 @@ const DB = {
       ruleChangeLog: [],
       pendingRuleEdits: [],
       scheduleLog: {},
-      chat: { group: [], private: {} }
+      chat: { group: [] }
     };
   },
 
@@ -383,7 +383,7 @@ const DB = {
   _applyServerPayload(remoteData, remoteChat, version) {
     const local = this.load();
     const merged = Object.assign({}, this.getDefault(), remoteData || {});
-    merged.chat = remoteChat || local.chat || { group: [], private: {} };
+    merged.chat = remoteChat || local.chat || { group: [] };
     if (version) this.setServerVersion(version);
 
     this._applyingRemote = true;
@@ -704,6 +704,40 @@ const DB = {
       return !!(res.ok && res.body && res.body.ok);
     } catch (e) {
       return false;
+    }
+  },
+
+  async replyComplaint(payload) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'जवाफ/समाधान पठाउन इन्टरनेट जडान चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/complaint/reply', {
+        method: 'POST',
+        body: JSON.stringify(payload || {})
+      });
+      if (res.ok && res.body && res.body.ok) {
+        if (res.body.version) this.setServerVersion(res.body.version);
+        if (res.body.data) this._applyServerPayload(res.body.data, null, res.body.version);
+        return res.body;
+      }
+      return { ok: false, error: (res.body && res.body.error) || 'जवाफ पठाउन सकिएन' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
+  },
+
+  async getSystemHealth(opts = {}) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'प्रणाली स्वास्थ्य जाँच्न इन्टरनेट चाहिन्छ' };
+    }
+    try {
+      const qs = opts && opts.background ? '?background=1' : '';
+      const res = await this.apiFetch('/system-health' + qs, { method: 'GET' });
+      if (res.ok && res.body && res.body.ok) return res.body;
+      return { ok: false, error: (res.body && res.body.error) || 'जाँच असफल' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
     }
   },
 

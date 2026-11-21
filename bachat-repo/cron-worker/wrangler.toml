@@ -3,8 +3,11 @@ main = "worker.js"
 compatibility_date = "2025-05-01"
 
 [triggers]
-# 12:15 UTC = 18:00 (6:00 PM) Nepal Standard Time (UTC+5:45) every Friday
-crons = ["15 12 * * 5"]
+# :15 UTC = exact :00 Nepal Standard Time (UTC+5:45) every hour:
+#  - 00:15 UTC (06:00 NPT): Morning System Health Check
+#  - Hourly while Health Check error is unacknowledged: push ONLY to Admin
+#  - 12:15 UTC (18:00 NPT) on BS 2nd Friday: Group Meeting Reminder
+crons = ["15 * * * *"]
 
 [[d1_databases]]
 binding = "DB"

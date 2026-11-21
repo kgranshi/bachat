@@ -165,8 +165,7 @@ const BS_CAL_DATA = {
 };
 
 function getNepalNow() {
-  const now = new Date();
-  return new Date(now.getTime() + (5 * 60 + 45) * 60000);
+  return new Date(Date.now() + (5 * 60 + 45) * 60000);
 }
 
 function adToBsParts(dt) {
@@ -202,33 +201,210 @@ function nthWeekdayOfBsMonth(year, monthIndex, weekday, n) {
   return day;
 }
 
+function normalizeMobile(m) {
+  const digits = String(m || '').replace(/\D/g, '');
+  return digits.length >= 7 ? digits : String(m || '').trim();
+}
+
+async function getSecretJson(db, key) {
+  try {
+    const row = await db.prepare('SELECT value FROM system_secrets WHERE key = ?').bind(key).first();
+    return row && row.value ? JSON.parse(row.value) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function setSecretJson(db, key, val) {
+  const nowIso = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO system_secrets (key, value, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`
+    )
+    .bind(key, JSON.stringify(val), nowIso)
+    .run();
+}
+
+async function evaluateCriticalHealthErrors(db) {
+  const errors = [];
+  let stateRow = null;
+  try {
+    stateRow = await db.prepare("SELECT version, data_json, updated_at FROM group_state WHERE id = 'main'").first();
+  } catch (e) {
+    errors.push({ code: 'db_read', title: 'D1 डाटाबेस पढ्न त्रुटि देखियो' });
+    return errors;
+  }
+  if (!stateRow || !stateRow.data_json) return errors;
+
+  let st = null;
+  try {
+    st = JSON.parse(stateRow.data_json);
+  } catch (e) {
+    errors.push({ code: 'state_json', title: 'मुख्य हिसाब डाटा (JSON) बिग्रिएको देखियो' });
+    return errors;
+  }
+
+  const members = Array.isArray(st.members) ? st.members : [];
+  const activeMembers = members.filter((m) => m && m.active !== false);
+  const months = Array.isArray(st.months) ? st.months : [];
+  const currentMonth = months.find((m) => m && m.id === st.currentMonthId) || null;
+
+  const sumMemberLoans = activeMembers.reduce((s, m) => s + (Number(m.outstandingLoan) || 0), 0);
+  const monthLoanTotal = currentMonth ? (Number(currentMonth.outstandingLoans) || 0) : sumMemberLoans;
+  const loanMismatch = currentMonth && currentMonth.status === 'closed'
+    ? Math.round((monthLoanTotal - sumMemberLoans) * 100) / 100
+    : 0;
+  if (Math.abs(loanMismatch) > 1) {
+    errors.push({ code: 'loan_mismatch', title: 'ऋण हिसाब फरक देखियो (रु. ' + loanMismatch + ')' });
+  }
+
+  if (currentMonth && typeof currentMonth.cashInHand === 'number' && currentMonth.cashInHand < -1) {
+    errors.push({ code: 'neg_cash', title: 'समूहको नगद मौज्दात ऋणात्मक देखियो' });
+  }
+
+  const mobCounts = new Map();
+  for (const m of activeMembers) {
+    const mob = normalizeMobile(m.mobile);
+    if (mob) mobCounts.set(mob, (mobCounts.get(mob) || 0) + 1);
+  }
+  const dupMob = Array.from(mobCounts.values()).filter((n) => n > 1).length;
+  if (dupMob > 0) {
+    errors.push({ code: 'dup_mobile', title: 'सक्रिय सदस्यको मोबाइल नम्बर दोहोरिएको देखियो' });
+  }
+
+  const stateBytes = String(stateRow.data_json || '').length;
+  if (stateBytes >= 2 * 1024 * 1024) {
+    errors.push({ code: 'state_size', title: 'मुख्य डाटा साइज सीमा नजिक पुग्यो (' + Math.round(stateBytes / 1024) + ' KB)' });
+  }
+  return errors;
+}
+
+async function sendAdminHealthPush(db, errors, countNum) {
+  const vapidRow = await db.prepare("SELECT value FROM system_secrets WHERE key = 'vapid_keys'").first();
+  if (!vapidRow || !vapidRow.value) return 0;
+  const vapid = JSON.parse(vapidRow.value);
+  const subs = await db.prepare("SELECT sub_key, endpoint, p256dh, auth FROM push_subscriptions WHERE user_key = 'admin'").all();
+  let sent = 0;
+  const firstTitle = (errors[0] && errors[0].title) || 'प्रणाली त्रुटि';
+  const payload = {
+    title: '🚨 प्रणाली स्वास्थ्यमा त्रुटि (' + errors.length + ')',
+    body: firstTitle + ' — नहेरेसम्म हरेक घण्टा अलर्ट आउनेछ (#' + countNum + ')। कृपया "प्रणाली स्वास्थ्य" खोल्नुहोस्।',
+    tag: 'admin-health-alert',
+    renotify: true,
+    requireInteraction: true,
+    data: { openHealth: true, url: './?open=health' }
+  };
+  for (const s of subs.results || []) {
+    try {
+      const res = await sendWebPush(s, payload, vapid);
+      if (res.ok) sent++;
+      if (res.gone) {
+        await db.prepare('DELETE FROM push_subscriptions WHERE sub_key = ?').bind(s.sub_key).run();
+      }
+    } catch (e) {}
+  }
+  return sent;
+}
+
 export default {
   async scheduled(event, env, ctx) {
     if (!env.DB) return;
     const nepal = getNepalNow();
+    const nepalHour = nepal.getUTCHours();
+    const nepalDate = nepal.toISOString().slice(0, 10);
+    const nowIso = new Date(Date.now()).toISOString();
     const bs = adToBsParts(nepal);
-    if (!bs) return;
 
+    // १. बिहानी प्रणाली स्वास्थ्य जाँच (बिहान ६ बजेदेखि NPT)
+    if (nepalHour >= 6) {
+      const morningKey = `health_morning_${nepalDate}`;
+      const morningDone = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(morningKey).first();
+      if (!morningDone) {
+        const errors = await evaluateCriticalHealthErrors(env.DB);
+        const errSig = errors.map((e) => e.code + ':' + e.title).join('|');
+        const curAlert = await getSecretJson(env.DB, 'health_alert_state');
+        if (errors.length > 0) {
+          const alreadyAckedToday = curAlert && curAlert.acknowledgedForDate === nepalDate && curAlert.acknowledgedSignature === errSig;
+          if (!alreadyAckedToday) {
+            const nextAlert = {
+              active: true,
+              alertDate: nepalDate,
+              detectedAt: (curAlert && curAlert.active && curAlert.detectedAt) || nowIso,
+              acknowledgedAt: null,
+              acknowledgedForDate: null,
+              acknowledgedSignature: null,
+              errorCount: errors.length,
+              errorSignature: errSig,
+              summary: errors[0].title,
+              lastNotifiedAt: nowIso,
+              notifyCount: 1
+            };
+            await sendAdminHealthPush(env.DB, errors, 1);
+            await setSecretJson(env.DB, 'health_alert_state', nextAlert);
+          }
+        } else if (curAlert && curAlert.active) {
+          await setSecretJson(env.DB, 'health_alert_state', Object.assign({}, curAlert, { active: false, autoClearedAt: nowIso }));
+        }
+        await env.DB
+          .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
+          .bind(morningKey, nowIso)
+          .run();
+      }
+    }
+
+    // २. स्वास्थ्य जाँचमा त्रुटि छ र Admin ले नहेरेसम्म हरेक घण्टा (Admin लाई मात्र) पुश सूचना
+    const alertState = await getSecretJson(env.DB, 'health_alert_state');
+    if (alertState && alertState.active && !alertState.acknowledgedAt) {
+      const lastMs = Date.parse(alertState.lastNotifiedAt || 0) || 0;
+      if (Date.now() - lastMs >= 55 * 60 * 1000) {
+        const errors = await evaluateCriticalHealthErrors(env.DB);
+        if (errors.length > 0) {
+          const nextCount = Number(alertState.notifyCount || 0) + 1;
+          await sendAdminHealthPush(env.DB, errors, nextCount);
+          await setSecretJson(
+            env.DB,
+            'health_alert_state',
+            Object.assign({}, alertState, {
+              errorCount: errors.length,
+              errorSignature: errors.map((e) => e.code + ':' + e.title).join('|'),
+              summary: errors[0].title,
+              lastNotifiedAt: nowIso,
+              notifyCount: nextCount
+            })
+          );
+        } else {
+          await setSecretJson(
+            env.DB,
+            'health_alert_state',
+            Object.assign({}, alertState, { active: false, autoClearedAt: nowIso })
+          );
+        }
+      }
+    }
+
+    // ३. दोस्रो शुक्रबार बेलुकी रिमाइन्डर (साँझ ६/७/८ बजे >= 18:00 NPT मात्र, बिहान होइन)
+    if (!bs) return;
     const secondFridayDay = nthWeekdayOfBsMonth(bs.year, bs.monthIndex, 5, 2);
     if (!secondFridayDay || bs.day !== secondFridayDay) return;
-    if (nepal.getUTCHours() < 18) return;
+    if (nepalHour < 18) return;
 
     const jobKey = `remind_${bs.year}_${bs.monthIndex}`;
     const already = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(jobKey).first();
     if (already) return;
 
-    const nowIso = new Date().toISOString();
+    const satDay = bs.day + 1;
     const msgText =
-      `🔔 बचत भेला रिमाइन्डर (${BS_MONTHS_NP[bs.monthIndex]} ${bs.year})\n\n` +
-      `भोलि नेपाली महिनाको दोस्रो शनिबार समूहको बचत भेला बस्ने छ।\n` +
-      `कृपया समयमै उपस्थित भई अनिवार्य रकम बुझाउनुहोला।`;
+      `🔔 दोस्रो शनिबार — बचत बैठक सूचना (${BS_MONTHS_NP[bs.monthIndex]} ${bs.year})\n` +
+      `भोलि (${BS_MONTHS_NP[bs.monthIndex]} ${satDay} गते, दोस्रो शनिबार) समूहको नियमित मासिक बचत बैठक बस्ने छ।\n` +
+      `सदस्यज्यूहरूले आफ्नो पासबुक हेरी तोकिएको समयमा अनिवार्य बचत, ब्याज तथा किस्ता रकमसहित उपस्थित भइदिनुहोला। धन्यवाद!`;
 
     await env.DB
       .prepare(
         `INSERT OR IGNORE INTO chat_messages (id, channel, from_id, from_name, from_role, text, type, bill_id, created_at)
          VALUES (?, 'group', 'system', 'समूह सूचना', 'system', ?, 'auto_group', NULL, ?)`
       )
-      .bind('rem_' + bs.year + '_' + bs.monthIndex + '_' + randomHex(3), msgText, nowIso)
+      .bind('rem_fri_' + bs.year + '_' + bs.monthIndex, msgText, nowIso)
       .run();
 
     const vapidRow = await env.DB.prepare("SELECT value FROM system_secrets WHERE key = 'vapid_keys'").first();
@@ -238,8 +414,8 @@ export default {
       for (const s of subs.results || []) {
         try {
           const res = await sendWebPush(s, {
-            title: '🔔 भोलि बचत भेला छ',
-            body: `${BS_MONTHS_NP[bs.monthIndex]} महिनाको दोस्रो शनिबार भेला — समयमै उपस्थित हुनुहोला।`,
+            title: '🔔 भोलि बचत बैठक छ',
+            body: `${BS_MONTHS_NP[bs.monthIndex]} ${satDay} गते (दोस्रो शनिबार) — समयमै उपस्थित हुनुहोला।`,
             tag: jobKey
           }, vapid);
           if (res.gone) {

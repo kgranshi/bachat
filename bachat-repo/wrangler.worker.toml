@@ -13,8 +13,10 @@ not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
 [triggers]
-# 12:15 UTC = 18:00 (6:00 PM) Nepal Standard Time (UTC+5:45) every Friday
-crons = ["15 12 * * 5"]
+# :15 UTC = exact :00 Nepal Standard Time (UTC+5:45) every hour:
+#  - 06:00 NPT: Morning System Health Check + hourly Admin alert if errors exist until viewed
+#  - 18:00 NPT (BS 2nd Friday evening): Meeting Reminder
+crons = ["15 * * * *"]
 
 # [[d1_databases]]
 # binding = "DB"

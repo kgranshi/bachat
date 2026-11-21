@@ -62,7 +62,7 @@ function defaultState() {
     ruleChangeLog: [],
     pendingRuleEdits: [],
     scheduleLog: {},
-    chat: { group: [], private: {} }
+    chat: { group: [] }
   };
 }
 
@@ -151,16 +151,41 @@ function stripSecretsFromState(data) {
   return clean;
 }
 
-function sanitizeStateForRole(state, user, pinFlags) {
+function sanitizeStateForRole(state, user, pinFlags, termsAcceptances) {
   const out = stripSecretsFromState(state);
-  if (pinFlags && Array.isArray(out.members)) {
+  if (Array.isArray(out.members)) {
     out.members = out.members.map((m) => {
       if (!m || !m.id) return m;
-      const flag = !!pinFlags[String(m.id)];
-      if (m.mustChangePin !== flag) {
-        return Object.assign({}, m, { mustChangePin: flag });
+      let next = m;
+      if (pinFlags) {
+        const flag = !!pinFlags[String(m.id)];
+        if (next.mustChangePin !== flag) {
+          next = Object.assign({}, next, { mustChangePin: flag });
+        }
       }
-      return m;
+      const ta = termsAcceptances && termsAcceptances['mem:' + String(m.id)];
+      if (user.role === 'member') {
+        if (String(m.id) === String(user.memberId)) {
+          if (ta && Number(ta.version) >= Number(next.termsAcceptedVersion || 0)) {
+            next = Object.assign({}, next, {
+              termsAcceptedVersion: Number(ta.version),
+              termsAcceptedAt: ta.acceptedAt || next.termsAcceptedAt || null
+            });
+          }
+        } else {
+          if (next.termsAcceptedVersion !== undefined || next.termsAcceptedAt !== undefined) {
+            next = Object.assign({}, next);
+            delete next.termsAcceptedVersion;
+            delete next.termsAcceptedAt;
+          }
+        }
+      } else if (ta && Number(ta.version) >= Number(next.termsAcceptedVersion || 0)) {
+        next = Object.assign({}, next, {
+          termsAcceptedVersion: Number(ta.version),
+          termsAcceptedAt: ta.acceptedAt || next.termsAcceptedAt || null
+        });
+      }
+      return next;
     });
   }
   if (user.role === 'member') {
@@ -279,6 +304,62 @@ async function setPinResetFlag(db, memberId, mustChange) {
     .run();
 }
 
+async function getTermsAcceptances(db) {
+  try {
+    const row = await db.prepare("SELECT value FROM system_secrets WHERE key = 'terms_acceptances'").first();
+    return row && row.value ? JSON.parse(row.value) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function recordTermsAcceptances(db, keys, record) {
+  const all = await getTermsAcceptances(db);
+  for (const k of keys) {
+    if (!k) continue;
+    all[String(k)] = record;
+  }
+  await db
+    .prepare(
+      `INSERT INTO system_secrets (key, value, created_at) VALUES ('terms_acceptances', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, created_at=excluded.created_at`
+    )
+    .bind(JSON.stringify(all), new Date().toISOString())
+    .run();
+  return all;
+}
+
+function getUserTermsAcceptance(allAcceptances, user) {
+  if (!allAcceptances || !user) return null;
+  const candidates = [];
+  if (user.memberId) candidates.push('mem:' + String(user.memberId));
+  const uk = userReadKey(user);
+  if (uk && !candidates.includes(uk)) candidates.push(uk);
+  let best = null;
+  for (const k of candidates) {
+    const rec = allAcceptances[k];
+    if (rec && (!best || Number(rec.version || 0) >= Number(best.version || 0))) {
+      best = rec;
+    }
+  }
+  return best;
+}
+
+function mergeTermsAcceptancesIntoMembers(members, allAcceptances) {
+  if (!Array.isArray(members) || !allAcceptances) return members;
+  return members.map((m) => {
+    if (!m || !m.id) return m;
+    const ta = allAcceptances['mem:' + String(m.id)];
+    if (ta && Number(ta.version || 0) >= Number(m.termsAcceptedVersion || 0)) {
+      return Object.assign({}, m, {
+        termsAcceptedVersion: Number(ta.version),
+        termsAcceptedAt: ta.acceptedAt || m.termsAcceptedAt || null
+      });
+    }
+    return m;
+  });
+}
+
 function userReadKey(user) {
   if (!user) return '';
   if (user.role === 'member' && user.memberId) return 'mem:' + String(user.memberId);
@@ -328,14 +409,13 @@ async function saveUserReadState(db, user, patch) {
   return next;
 }
 
-async function loadChatFromDb(db, user) {
+async function loadChatFromDb(db) {
   const rows = await db
-    .prepare('SELECT id, channel, from_id, from_name, from_role, text, type, bill_id, created_at FROM chat_messages ORDER BY created_at ASC LIMIT 800')
+    .prepare("SELECT id, channel, from_id, from_name, from_role, text, type, bill_id, created_at FROM chat_messages WHERE channel = 'group' ORDER BY created_at ASC LIMIT 800")
     .all();
   const group = [];
-  const privateMap = {};
   for (const r of rows.results || []) {
-    const msg = {
+    group.push({
       id: r.id,
       fromId: r.from_id,
       fromName: r.from_name,
@@ -344,18 +424,9 @@ async function loadChatFromDb(db, user) {
       type: r.type,
       billId: r.bill_id || undefined,
       time: r.created_at
-    };
-    if (r.channel === 'group') {
-      group.push(msg);
-    } else if (r.channel.startsWith('private:')) {
-      const mid = r.channel.slice('private:'.length);
-      if (user.role !== 'member' || user.memberId === mid) {
-        if (!privateMap[mid]) privateMap[mid] = [];
-        privateMap[mid].push(msg);
-      }
-    }
+    });
   }
-  return { group: group.slice(-500), private: privateMap };
+  return { group: group.slice(-500) };
 }
 
 async function syncCredentialsFromBackup(db, rawData) {
@@ -459,6 +530,343 @@ async function broadcastPush(env, payloadObj, excludeUserKey = null) {
   }
 }
 
+async function sendPushToUserKey(env, userKey, payloadObj) {
+  if (!userKey) return 0;
+  try {
+    const vapid = await getVapidKeys(env);
+    const rows = await env.DB
+      .prepare('SELECT sub_key, endpoint, p256dh, auth FROM push_subscriptions WHERE user_key = ?')
+      .bind(String(userKey))
+      .all();
+    let sent = 0;
+    for (const s of rows.results || []) {
+      try {
+        const res = await sendWebPush(s, payloadObj, vapid);
+        if (res.ok) sent++;
+        if (res.gone) {
+          await env.DB.prepare('DELETE FROM push_subscriptions WHERE sub_key = ?').bind(s.sub_key).run();
+        }
+      } catch (e) {}
+    }
+    return sent;
+  } catch (e) {
+    console.warn('sendPushToUserKey error', e);
+    return 0;
+  }
+}
+
+const BS_MONTHS_NP_API = ['बैशाख', 'जेठ', 'असार', 'साउन', 'भदौ', 'असोज', 'कार्तिक', 'मंसिर', 'पुस', 'माघ', 'फाल्गुन', 'चैत'];
+const BS_CAL_DATA_API = {
+  2080: { start: [2023, 4, 14], lens: [31, 31, 32, 31, 31, 31, 30, 29, 30, 29, 30, 30] },
+  2081: { start: [2024, 4, 13], lens: [31, 31, 32, 31, 31, 31, 30, 29, 30, 29, 30, 30] },
+  2082: { start: [2025, 4, 14], lens: [31, 32, 31, 32, 31, 30, 30, 30, 29, 30, 29, 31] },
+  2083: { start: [2026, 4, 14], lens: [31, 31, 32, 31, 31, 31, 30, 30, 29, 30, 30, 30] },
+  2084: { start: [2027, 4, 14], lens: [31, 32, 31, 32, 31, 30, 30, 30, 29, 30, 30, 30] },
+  2085: { start: [2028, 4, 13], lens: [31, 31, 32, 31, 31, 31, 30, 29, 30, 29, 30, 30] },
+  2086: { start: [2029, 4, 14], lens: [31, 32, 31, 32, 31, 30, 30, 30, 29, 30, 29, 31] }
+};
+
+function getNepalNowApi(nowMs = Date.now()) {
+  return new Date(nowMs + (5 * 60 + 45) * 60000);
+}
+
+function adToBsPartsApi(dt) {
+  const utc = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate());
+  for (const [yr, info] of Object.entries(BS_CAL_DATA_API)) {
+    const s = info.start;
+    const startUtc = Date.UTC(s[0], s[1] - 1, s[2]);
+    const yearLen = info.lens.reduce((a, b) => a + b, 0);
+    if (utc >= startUtc && utc < startUtc + yearLen * 86400000) {
+      let days = Math.round((utc - startUtc) / 86400000);
+      let bm = 0;
+      for (; bm < 12; bm++) {
+        if (days < info.lens[bm]) break;
+        days -= info.lens[bm];
+      }
+      return { year: parseInt(yr, 10), monthIndex: bm, day: days + 1 };
+    }
+  }
+  return null;
+}
+
+function nthWeekdayOfBsMonthApi(year, monthIndex, weekday, n) {
+  const info = BS_CAL_DATA_API[year];
+  if (!info) return null;
+  let days = 0;
+  for (let i = 0; i < monthIndex; i++) days += info.lens[i];
+  const s = info.start;
+  const first = new Date(Date.UTC(s[0], s[1] - 1, s[2]) + days * 86400000);
+  const firstWd = first.getUTCDay();
+  const day = 1 + ((weekday - firstWd + 7) % 7) + (n - 1) * 7;
+  if (day > info.lens[monthIndex]) return null;
+  return day;
+}
+
+async function getSecretJson(db, key) {
+  try {
+    const row = await db.prepare('SELECT value FROM system_secrets WHERE key = ?').bind(key).first();
+    return row && row.value ? JSON.parse(row.value) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function setSecretJson(db, key, val) {
+  const nowIso = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO system_secrets (key, value, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`
+    )
+    .bind(key, JSON.stringify(val), nowIso)
+    .run();
+}
+
+function evaluateHealthErrorsFromState(st, stateBytes = 0, d1UsedBytes = 0) {
+  const errors = [];
+  if (!st || typeof st !== 'object') {
+    errors.push({
+      code: 'state_json',
+      severity: 'error',
+      title: 'मुख्य हिसाब डाटा (JSON) पढ्न समस्या देखियो',
+      detail: 'सर्भरमा सुरक्षित गरिएको समूह हिसाब डाटा अमान्य छ।',
+      solution: 'ब्याकअप वा स्न्यापसट जाँच गरी डाटा पुनर्स्थापना गर्नुहोस्।',
+      action: 'audit'
+    });
+    return errors;
+  }
+  const members = Array.isArray(st.members) ? st.members : [];
+  const activeMembers = members.filter((m) => m && m.active !== false);
+  const months = Array.isArray(st.months) ? st.months : [];
+  const currentMonth = months.find((m) => m && m.id === st.currentMonthId) || null;
+
+  const sumMemberLoans = activeMembers.reduce((s, m) => s + (Number(m.outstandingLoan) || 0), 0);
+  const monthLoanTotal = currentMonth ? (Number(currentMonth.outstandingLoans) || 0) : sumMemberLoans;
+  const loanMismatch = currentMonth && currentMonth.status === 'closed'
+    ? Math.round((monthLoanTotal - sumMemberLoans) * 100) / 100
+    : 0;
+  if (Math.abs(loanMismatch) > 1) {
+    errors.push({
+      code: 'loan_mismatch',
+      severity: 'error',
+      title: 'ऋण हिसाब फरक देखियो (रु. ' + loanMismatch + ')',
+      detail: 'अन्तिम बन्द महिनाको कुल ऋण र सदस्यहरूको बाँकी ऋण योगमा फरक छ।',
+      solution: 'हिसाब मिलान अडिट खोली स्न्यापसट जाँच तथा मिलान गर्नुहोस्।',
+      action: 'audit'
+    });
+  }
+
+  if (currentMonth && typeof currentMonth.cashInHand === 'number' && currentMonth.cashInHand < -1) {
+    errors.push({
+      code: 'neg_cash',
+      severity: 'error',
+      title: 'समूहको नगद मौज्दात ऋणात्मक देखियो (रु. ' + Math.round(currentMonth.cashInHand) + ')',
+      detail: 'नगद मौज्दात शून्यभन्दा कम हुनु हिसाब प्रविष्टि त्रुटिको संकेत हो।',
+      solution: 'यस महिनाको कलेक्सन, खर्च र ऋण लगानी प्रविष्टि जाँच गर्नुहोस्।',
+      action: 'audit'
+    });
+  }
+
+  const mobCounts = new Map();
+  for (const m of activeMembers) {
+    const mob = normalizeMobile(m.mobile);
+    if (mob) mobCounts.set(mob, (mobCounts.get(mob) || 0) + 1);
+  }
+  const dupMob = Array.from(mobCounts.values()).filter((n) => n > 1).length;
+  if (dupMob > 0) {
+    errors.push({
+      code: 'dup_mobile',
+      severity: 'error',
+      title: 'सक्रिय सदस्यको मोबाइल नम्बर दोहोरिएको देखियो',
+      detail: 'दुई वा बढी सक्रिय सदस्यमा एउटै मोबाइल नम्बर प्रयोग भएको छ।',
+      solution: 'प्रोफाइल ट्याबबाट सदस्यको मोबाइल नम्बर सच्याउनुहोस्।',
+      action: 'nopin'
+    });
+  }
+
+  if (stateBytes >= 2 * 1024 * 1024 || d1UsedBytes >= Math.floor(4.5 * 1024 * 1024 * 1024)) {
+    errors.push({
+      code: 'storage_limit',
+      severity: 'error',
+      title: 'डाटाबेस/स्टेट साइज उच्च सीमामा पुग्यो',
+      detail: 'मुख्य डाटा साइज धेरै ठूलो भएकोले तत्काल मिडिया/R2 जाँच आवश्यक छ।',
+      solution: 'R2 मिडिया बकेट जोडेर फोटो/सहि अफलोड गर्नुहोस्।',
+      action: ''
+    });
+  }
+  return errors;
+}
+
+async function sendAdminHealthAlertPush(env, errors, notifyNum) {
+  if (!errors || !errors.length) return 0;
+  const firstTitle = errors[0].title || 'प्रणाली त्रुटि';
+  return sendPushToUserKey(env, 'admin', {
+    title: '🚨 प्रणाली स्वास्थ्यमा त्रुटि (' + errors.length + ')',
+    body: firstTitle + ' — नहेरेसम्म हरेक घण्टा अलर्ट आउनेछ (#' + notifyNum + ')। कृपया "प्रणाली स्वास्थ्य" खोल्नुहोस्।',
+    tag: 'admin-health-alert',
+    renotify: true,
+    requireInteraction: true,
+    data: { openHealth: true, url: './?open=health' }
+  });
+}
+
+let _lastScheduleTickMs = 0;
+async function runBackgroundHealthAndReminderTick(env, opts = {}) {
+  const nowMs = Number(opts.nowMs || Date.now());
+  if (!opts.force && nowMs - _lastScheduleTickMs < 120000) return;
+  _lastScheduleTickMs = nowMs;
+
+  const nepal = getNepalNowApi(nowMs);
+  const nepalHour = nepal.getUTCHours();
+  const nepalDate = nepal.toISOString().slice(0, 10);
+  const nowIso = new Date(nowMs).toISOString();
+  const bs = adToBsPartsApi(nepal);
+
+  const loadHealthErrors = async () => {
+    try {
+      const gs = await env.DB.prepare("SELECT version, data_json, updated_at FROM group_state WHERE id = 'main'").first();
+      if (!gs || !gs.data_json) return [];
+      const st = JSON.parse(gs.data_json);
+      return evaluateHealthErrorsFromState(st, String(gs.data_json || '').length, 0);
+    } catch (e) {
+      return evaluateHealthErrorsFromState(null, 0, 0);
+    }
+  };
+
+  // १. बिहानी प्रणाली स्वास्थ्य जाँच (बिहान ६ बजेदेखि NPT)
+  if (nepalHour >= 6) {
+    const morningKey = 'health_morning_' + nepalDate;
+    const morningDone = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(morningKey).first();
+    if (!morningDone) {
+      const errors = await loadHealthErrors();
+      const errSig = errors.map((e) => e.code + ':' + e.title).join('|');
+      const curAlert = await getSecretJson(env.DB, 'health_alert_state');
+      if (errors.length > 0) {
+        const alreadyAckedToday = curAlert && curAlert.acknowledgedForDate === nepalDate && curAlert.acknowledgedSignature === errSig;
+        if (!alreadyAckedToday) {
+          const nextAlert = {
+            active: true,
+            alertDate: nepalDate,
+            detectedAt: (curAlert && curAlert.active && curAlert.detectedAt) || nowIso,
+            acknowledgedAt: null,
+            acknowledgedForDate: null,
+            acknowledgedSignature: null,
+            errorCount: errors.length,
+            errorSignature: errSig,
+            summary: errors[0].title,
+            lastNotifiedAt: nowIso,
+            notifyCount: 1
+          };
+          await sendAdminHealthAlertPush(env, errors, 1);
+          await setSecretJson(env.DB, 'health_alert_state', nextAlert);
+        }
+      } else if (curAlert && curAlert.active) {
+        await setSecretJson(env.DB, 'health_alert_state', Object.assign({}, curAlert, { active: false, autoClearedAt: nowIso }));
+      }
+      await env.DB
+        .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
+        .bind(morningKey, nowIso)
+        .run();
+    }
+  }
+
+  // २. त्रुटि रहेमा Admin ले नहेरेसम्म हरेक घण्टा Admin लाई मात्र Background Push
+  const alertState = await getSecretJson(env.DB, 'health_alert_state');
+  if (alertState && alertState.active && !alertState.acknowledgedAt) {
+    const lastMs = Date.parse(alertState.lastNotifiedAt || 0) || 0;
+    if (nowMs - lastMs >= 55 * 60 * 1000) {
+      const errors = await loadHealthErrors();
+      if (errors.length > 0) {
+        const nextCount = Number(alertState.notifyCount || 0) + 1;
+        await sendAdminHealthAlertPush(env, errors, nextCount);
+        await setSecretJson(
+          env.DB,
+          'health_alert_state',
+          Object.assign({}, alertState, {
+            errorCount: errors.length,
+            errorSignature: errors.map((e) => e.code + ':' + e.title).join('|'),
+            summary: errors[0].title,
+            lastNotifiedAt: nowIso,
+            notifyCount: nextCount
+          })
+        );
+      } else {
+        await setSecretJson(
+          env.DB,
+          'health_alert_state',
+          Object.assign({}, alertState, { active: false, autoClearedAt: nowIso })
+        );
+      }
+    }
+  }
+
+  // ३. दोस्रो शुक्रबार बेलुकी रिमाइन्डर (साँझ ६/७/८ बजे >= 18:00 NPT मात्र, बिहान होइन)
+  if (bs) {
+    const secondFridayDay = nthWeekdayOfBsMonthApi(bs.year, bs.monthIndex, 5, 2);
+    if (secondFridayDay && bs.day === secondFridayDay && nepalHour >= 18) {
+      const jobKey = 'remind_' + bs.year + '_' + bs.monthIndex;
+      const already = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(jobKey).first();
+      if (!already) {
+        const satDay = bs.day + 1;
+        const mName = BS_MONTHS_NP_API[bs.monthIndex] || '';
+        const msgText =
+          `🔔 दोस्रो शनिबार — बचत बैठक सूचना (${mName} ${bs.year})\n` +
+          `भोलि (${mName} ${satDay} गते, दोस्रो शनिबार) समूहको नियमित मासिक बचत बैठक बस्ने छ।\n` +
+          `सदस्यज्यूहरूले आफ्नो पासबुक हेरी तोकिएको समयमा अनिवार्य बचत, ब्याज तथा किस्ता रकमसहित उपस्थित भइदिनुहोला। धन्यवाद!`;
+
+        await env.DB
+          .prepare(
+            `INSERT OR IGNORE INTO chat_messages (id, channel, from_id, from_name, from_role, text, type, bill_id, created_at)
+             VALUES (?, 'group', 'system', 'समूह सूचना', 'system', ?, 'auto_group', NULL, ?)`
+          )
+          .bind('rem_fri_' + bs.year + '_' + bs.monthIndex, msgText, nowIso)
+          .run();
+
+        await broadcastPush(env, {
+          title: '🔔 भोलि बचत बैठक छ',
+          body: `${mName} ${satDay} गते (दोस्रो शनिबार) — समयमै उपस्थित हुनुहोला।`,
+          tag: jobKey
+        });
+
+        await env.DB
+          .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
+          .bind(jobKey, nowIso)
+          .run();
+      }
+    }
+  }
+}
+
+function scanInlineMediaAndState(state) {
+  let inlineCount = 0;
+  let inlineBytes = 0;
+  const checkVal = (v) => {
+    if (typeof v === 'string' && v.startsWith('data:')) {
+      inlineCount++;
+      inlineBytes += v.length;
+    }
+  };
+  if (state && state.group) {
+    checkVal(state.group.logoImage);
+    checkVal(state.group.welcomeVideo);
+  }
+  if (state && state.settings && state.settings.theme) {
+    checkVal(state.settings.theme.photo);
+  }
+  for (const m of (state && state.members) || []) {
+    if (!m) continue;
+    checkVal(m.photo);
+    checkVal(m.idCardPhoto);
+  }
+  for (const mo of (state && state.months) || []) {
+    if (!mo || !Array.isArray(mo.loansGiven)) continue;
+    for (const l of mo.loansGiven) {
+      if (l) checkVal(l.signature);
+    }
+  }
+  return { inlineCount, inlineBytes };
+}
+
 async function authenticateRequest(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   if (!authHeader.startsWith('Bearer ')) return null;
@@ -524,9 +932,14 @@ export async function onRequest(context) {
     return json({ ok: false, error: 'D1 database binding (DB) missing in Cloudflare Pages settings' }, 500);
   }
 
+  const waitUntil = typeof context.waitUntil === 'function' ? context.waitUntil.bind(context) : () => {};
+
   try {
     if (!path.startsWith('/media/')) {
       await ensureSchema(env.DB);
+      if (path === '/state' || path === '/sync' || path === '/ping' || path === '/vapid-public-key') {
+        waitUntil(runBackgroundHealthAndReminderTick(env).catch(() => {}));
+      }
     }
 
     // 1. Health & setup status (public)
@@ -566,6 +979,14 @@ export async function onRequest(context) {
     if (path === '/push/vapid-public-key' && method === 'GET') {
       const vapid = await getVapidKeys(env);
       return json({ ok: true, publicKey: vapid.publicKey });
+    }
+
+    // 3b. Public Terms & Conditions (read-only for login footer before authentication)
+    if (path === '/terms' && method === 'GET') {
+      const state = await loadStateRow(env.DB);
+      const groupName = (state.data && state.data.group && state.data.group.name) || 'समूह बचत';
+      const terms = (state.data && state.data.settings && state.data.settings.terms) || null;
+      return json({ ok: true, groupName, terms });
     }
 
     // 4. First-time admin bootstrap (only if NO admin exists)
@@ -666,6 +1087,8 @@ export async function onRequest(context) {
       const stateRow = await loadStateRow(env.DB);
       const chat = await loadChatFromDb(env.DB, userObj);
       const readState = await getUserReadState(env.DB, userObj);
+      const termsAcceptances = await getTermsAcceptances(env.DB);
+      const termsAcceptance = getUserTermsAcceptance(termsAcceptances, userObj);
 
       return json({
         ok: true,
@@ -673,9 +1096,10 @@ export async function onRequest(context) {
         user: userObj,
         pinVerifier: matched.pin_hash || null,
         version: stateRow.version,
-        data: sanitizeStateForRole(stateRow.data, userObj, pinFlags),
+        data: sanitizeStateForRole(stateRow.data, userObj, pinFlags, termsAcceptances),
         chat,
-        readState
+        readState,
+        termsAcceptance
       });
     }
 
@@ -713,8 +1137,8 @@ export async function onRequest(context) {
       // 2) Offload any base64 signatures/photos to R2
       await offloadHeavyMediaToR2(env, working);
 
-      // 3) Migrate chat messages into chat_messages table
-      const chat = working.chat || { group: [], private: {} };
+      // 3) Migrate group chat messages into chat_messages table
+      const chat = working.chat || { group: [] };
       const chatStmts = [];
       for (const m of chat.group || []) {
         if (!m || !m.id) continue;
@@ -735,29 +1159,6 @@ export async function onRequest(context) {
               String(m.time || new Date().toISOString())
             )
         );
-      }
-      for (const [mid, list] of Object.entries(chat.private || {})) {
-        for (const m of list || []) {
-          if (!m || !m.id) continue;
-          chatStmts.push(
-            env.DB
-              .prepare(
-                `INSERT OR IGNORE INTO chat_messages (id, channel, from_id, from_name, from_role, text, type, bill_id, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-              )
-              .bind(
-                String(m.id),
-                'private:' + mid,
-                String(m.fromId || ''),
-                String(m.fromName || ''),
-                String(m.fromRole || 'system'),
-                String(m.text || ''),
-                String(m.type || 'text'),
-                m.billId ? String(m.billId) : null,
-                String(m.time || new Date().toISOString())
-              )
-          );
-        }
       }
       for (let i = 0; i < chatStmts.length; i += 50) {
         await env.DB.batch(chatStmts.slice(i, i + 50));
@@ -828,19 +1229,22 @@ export async function onRequest(context) {
     if (path === '/state' && method === 'GET') {
       const sinceVersion = Number(url.searchParams.get('sinceVersion') || -1);
       const stateRow = await loadStateRow(env.DB);
-      const chat = await loadChatFromDb(env.DB, user);
+      const chat = await loadChatFromDb(env.DB);
       const readState = await getUserReadState(env.DB, user);
+      const termsAcceptances = await getTermsAcceptances(env.DB);
+      const termsAcceptance = getUserTermsAcceptance(termsAcceptances, user);
       if (sinceVersion === stateRow.version) {
-        return json({ ok: true, unchanged: true, version: stateRow.version, chat, readState });
+        return json({ ok: true, unchanged: true, version: stateRow.version, chat, readState, termsAcceptance });
       }
       const pinFlags = await getPinResetFlags(env.DB);
       return json({
         ok: true,
         unchanged: false,
         version: stateRow.version,
-        data: sanitizeStateForRole(stateRow.data, user, pinFlags),
+        data: sanitizeStateForRole(stateRow.data, user, pinFlags, termsAcceptances),
         chat,
-        readState
+        readState,
+        termsAcceptance
       });
     }
 
@@ -875,9 +1279,13 @@ export async function onRequest(context) {
 
       await offloadHeavyMediaToR2(env, working);
       const pinFlags = await getPinResetFlags(env.DB);
+      const termsAcceptances = await getTermsAcceptances(env.DB);
       if (Array.isArray(working.members)) {
-        working.members = working.members.map((m) =>
-          m && m.id ? Object.assign({}, m, { mustChangePin: !!pinFlags[String(m.id)] }) : m
+        working.members = mergeTermsAcceptancesIntoMembers(
+          working.members.map((m) =>
+            m && m.id ? Object.assign({}, m, { mustChangePin: !!pinFlags[String(m.id)] }) : m
+          ),
+          termsAcceptances
         );
       }
       const cleanState = stripSecretsFromState(working);
@@ -896,7 +1304,7 @@ export async function onRequest(context) {
       return json({
         ok: true,
         version: nextVersion,
-        data: sanitizeStateForRole(cleanState, user, pinFlags)
+        data: sanitizeStateForRole(cleanState, user, pinFlags, termsAcceptances)
       });
     }
 
@@ -943,9 +1351,13 @@ export async function onRequest(context) {
       }
       await offloadHeavyMediaToR2(env, prepared);
       const pinFlags = await getPinResetFlags(env.DB);
+      const termsAcceptances = await getTermsAcceptances(env.DB);
       if (Array.isArray(prepared.members)) {
-        prepared.members = prepared.members.map((m) =>
-          m && m.id ? Object.assign({}, m, { mustChangePin: !!pinFlags[String(m.id)] }) : m
+        prepared.members = mergeTermsAcceptancesIntoMembers(
+          prepared.members.map((m) =>
+            m && m.id ? Object.assign({}, m, { mustChangePin: !!pinFlags[String(m.id)] }) : m
+          ),
+          termsAcceptances
         );
       }
       const cleanState = stripSecretsFromState(prepared);
@@ -1015,7 +1427,7 @@ export async function onRequest(context) {
       return json({
         ok: true,
         version: nextVersion,
-        data: sanitizeStateForRole(cleanState, user)
+        data: sanitizeStateForRole(cleanState, user, pinFlags, termsAcceptances)
       });
     }
 
@@ -1177,11 +1589,12 @@ export async function onRequest(context) {
           .run();
 
         const pinFlags = await getPinResetFlags(env.DB);
+        const termsAcceptances = await getTermsAcceptances(env.DB);
         return json({
           ok: true,
           treasurer: stData.treasurer,
           version: nextVer,
-          data: sanitizeStateForRole(stData, user, pinFlags)
+          data: sanitizeStateForRole(stData, user, pinFlags, termsAcceptances)
         });
       }
 
@@ -1273,7 +1686,7 @@ export async function onRequest(context) {
 
     // 11. Chat GET & POST
     if (path === '/chat' && method === 'GET') {
-      const chat = await loadChatFromDb(env.DB, user);
+      const chat = await loadChatFromDb(env.DB);
       return json({ ok: true, chat });
     }
 
@@ -1284,8 +1697,8 @@ export async function onRequest(context) {
         return json({ ok: false, error: 'सन्देश खाली छ' }, 400);
       }
       const ch = channel || 'group';
-      if (ch.startsWith('private:') && user.role !== 'admin') {
-        return json({ ok: false, error: 'अनुमति छैन' }, 403);
+      if (ch.startsWith('private:')) {
+        return json({ ok: false, error: 'व्यक्तिगत च्याट हटाइएको छ' }, 410);
       }
       const msgId = String(id || 'm' + Date.now() + '_' + randomHex(3));
       const fromId = user.role === 'admin'
@@ -1338,6 +1751,49 @@ export async function onRequest(context) {
       return json({ ok: true, readState: saved });
     }
 
+    // 11d. Terms & Conditions Acceptance (Member / Treasurer / Admin — conflict-free persistence)
+    if (path === '/terms/accept' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const cur = await loadStateRow(env.DB);
+      const state = cur.data || defaultState();
+      const currentTermsVer = (state.settings && state.settings.terms && Number(state.settings.terms.version)) || 1;
+      const ver = Math.max(1, Number((body && body.version) || currentTermsVer));
+      const now = new Date().toISOString();
+      const record = {
+        version: ver,
+        acceptedAt: (body && body.acceptedAt) || now,
+        name: user.name || user.username || 'User',
+        role: user.role,
+        memberId: user.memberId || null
+      };
+      const keys = [];
+      if (user.memberId) keys.push('mem:' + String(user.memberId));
+      const uk = userReadKey(user);
+      if (uk && !keys.includes(uk)) keys.push(uk);
+      const allAcceptances = await recordTermsAcceptances(env.DB, keys, record);
+
+      let nextVer = cur.version || 1;
+      if (user.memberId && Array.isArray(state.members)) {
+        const idx = state.members.findIndex((m) => m && m.id === user.memberId);
+        if (idx >= 0) {
+          state.members[idx].termsAcceptedVersion = ver;
+          state.members[idx].termsAcceptedAt = record.acceptedAt;
+          nextVer = (cur.version || 0) + 1;
+          await env.DB
+            .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+            .bind(nextVer, JSON.stringify(stripSecretsFromState(state)), now)
+            .run();
+        }
+      }
+
+      return json({
+        ok: true,
+        acceptance: record,
+        termsAcceptance: getUserTermsAcceptance(allAcceptances, user),
+        version: nextVer
+      });
+    }
+
     // 12. Member Feedback / Complaints / Suggestions / PIN Requests (appends safely without Admin write lock)
     if (path === '/feedback' && method === 'POST') {
       const body = await request.json();
@@ -1383,7 +1839,96 @@ export async function onRequest(context) {
         .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
         .bind(nextVersion, JSON.stringify(stripSecretsFromState(state)), now)
         .run();
+      if (!body.auto && body.kind !== 'pin_request') {
+        const senderName = user.name || 'सदस्य';
+        const pushPayload = {
+          title: body.kind === 'suggestion' ? '💡 सदस्यको नयाँ सुझाव' : '📢 सदस्यको नयाँ गुनासो',
+          body: senderName + ': ' + String(body.text || '').slice(0, 90),
+          tag: 'feedback-' + (body.id || Date.now())
+        };
+        await sendPushToUserKey(env, 'admin', pushPayload);
+        await sendPushToUserKey(env, 'treasurer', pushPayload);
+      } else if (body.kind === 'pin_request') {
+        await sendPushToUserKey(env, 'admin', {
+          title: '🔢 नयाँ PIN अनुरोध',
+          body: (user.name || body.memberName || 'सदस्य') + ' ले PIN अनुरोध पठाउनुभयो।',
+          tag: 'pin-req'
+        });
+      }
       return json({ ok: true, version: nextVersion });
+    }
+
+    // 12b. Reply / Resolve Complaint (Primary Admin OR Active Treasurer)
+    if (path === '/complaint/reply' && method === 'POST') {
+      const canManage = user.role === 'admin' || (user.role === 'treasurer' && user.accountsWriter);
+      if (!canManage) {
+        return json({ ok: false, error: 'Admin वा कोषाध्यक्षलाई मात्र गुनासो समाधान गर्ने अधिकार छ' }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const complaintId = String((body && body.complaintId) || '').trim();
+      const replyText = String((body && body.replyText) || '').trim();
+      const hasResolveFlag = body && typeof body.resolve === 'boolean';
+      if (!complaintId || (!replyText && !hasResolveFlag)) {
+        return json({ ok: false, error: 'गुनासो ID र जवाफ वा समाधान स्थिति आवश्यक छ' }, 400);
+      }
+
+      const cur = await loadStateRow(env.DB);
+      const state = cur.data || defaultState();
+      const c = (state.complaints || []).find((x) => x && String(x.id) === complaintId);
+      if (!c) {
+        return json({ ok: false, error: 'गुनासो फेला परेन' }, 404);
+      }
+
+      const now = new Date().toISOString();
+      const senderRole = user.role === 'treasurer' ? 'treasurer' : 'admin';
+      const senderLabel = user.role === 'treasurer' ? 'कोषाध्यक्ष' : 'Admin';
+      c.replies = Array.isArray(c.replies) ? c.replies : [];
+      if (replyText) {
+        c.replies.push({
+          id: 'rep_' + Date.now() + '_' + randomHex(2),
+          from: senderRole,
+          fromName: senderLabel,
+          text: replyText,
+          time: now,
+          readByMember: false
+        });
+      }
+      c.read = true;
+      if (hasResolveFlag) {
+        c.resolved = !!body.resolve;
+        if (body.resolve) {
+          c.resolvedAt = now;
+          c.resolvedBy = senderLabel;
+        } else {
+          delete c.resolvedAt;
+          delete c.resolvedBy;
+        }
+      }
+
+      const nextVersion = (cur.version || 0) + 1;
+      await env.DB
+        .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+        .bind(nextVersion, JSON.stringify(stripSecretsFromState(state)), now)
+        .run();
+
+      if (c.memberId) {
+        await sendPushToUserKey(env, c.memberId, {
+          title: c.resolved ? '✅ तपाईंको गुनासो समाधान भयो' : '💬 गुनासोको जवाफ आयो',
+          body: replyText
+            ? (senderLabel + ': ' + replyText.slice(0, 100))
+            : (senderLabel + ' ले तपाईंको गुनासो समाधान गर्नुभएको छ।'),
+          tag: 'complaint-' + c.id
+        });
+      }
+
+      const pinFlags = await getPinResetFlags(env.DB);
+      const termsAcceptances = await getTermsAcceptances(env.DB);
+      return json({
+        ok: true,
+        version: nextVersion,
+        complaint: c,
+        data: sanitizeStateForRole(state, user, pinFlags, termsAcceptances)
+      });
     }
 
     // 13. Direct R2 Media Upload
@@ -1545,10 +2090,10 @@ export async function onRequest(context) {
       return json({ ok: true, sent, totalDevices: subs.length });
     }
 
-    // 16. Closed Month Snapshots (D1 + R2)
+    // 16. Closed Month Snapshots (D1 + R2 — Admin ONLY)
     if (path === '/snapshots' && method === 'GET') {
-      if (user.role !== 'admin' && user.role !== 'treasurer' && user.role !== 'admin_ro') {
-        return json({ ok: false, error: 'Admin वा कोषाध्यक्ष मात्र' }, 403);
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'स्न्यापसट ब्याकअप Admin लाई मात्र उपलब्ध छ' }, 403);
       }
       const rows = await env.DB
         .prepare('SELECT month_id, name, year_bs, month_index, r2_backup_key, closed_at FROM month_snapshots ORDER BY closed_at DESC LIMIT 36')
@@ -1557,8 +2102,8 @@ export async function onRequest(context) {
     }
 
     if (path.startsWith('/snapshot/') && method === 'GET') {
-      if (user.role !== 'admin' && user.role !== 'treasurer' && user.role !== 'admin_ro') {
-        return json({ ok: false, error: 'Admin वा कोषाध्यक्ष मात्र' }, 403);
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'स्न्यापसट ब्याकअप Admin लाई मात्र उपलब्ध छ' }, 403);
       }
       const monthId = decodeURIComponent(path.slice('/snapshot/'.length));
       const row = await env.DB
@@ -1591,9 +2136,287 @@ export async function onRequest(context) {
         return json({ ok: false, error: 'Admin वा कोषाध्यक्ष मात्र' }, 403);
       }
       const stateRow = await loadStateRow(env.DB);
-      const chat = await loadChatFromDb(env.DB, user);
+      const chat = await loadChatFromDb(env.DB);
       const full = Object.assign({}, stateRow.data, { chat });
       return json({ ok: true, backup: full });
+    }
+
+    // 18. System Health, Real Cloudflare Quota Usage, Diagnostics & Activity Log (Primary Admin ONLY)
+    if (path === '/system-health' && method === 'GET') {
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'प्रणाली स्वास्थ्य जाँच Admin लाई मात्र उपलब्ध छ' }, 403);
+      }
+
+      const stateRow = await loadStateRow(env.DB);
+      const st = stateRow.data || defaultState();
+      const pinFlags = await getPinResetFlags(env.DB);
+      const termsAcceptances = await getTermsAcceptances(env.DB);
+
+      // Real SQLite / D1 size via PRAGMA page_count * page_size + per-table byte measurements
+      let pageCount = 0, pageSize = 4096;
+      try {
+        const pc = await env.DB.prepare('PRAGMA page_count').first();
+        const ps = await env.DB.prepare('PRAGMA page_size').first();
+        pageCount = Number((pc && (pc.page_count ?? Object.values(pc)[0])) || 0);
+        pageSize = Number((ps && (ps.page_size ?? Object.values(ps)[0])) || 4096);
+      } catch (e) {}
+
+      const gsStats = await env.DB.prepare("SELECT LENGTH(data_json) AS bytes, updated_at FROM group_state WHERE id='main'").first().catch(() => null);
+      const chatStats = await env.DB.prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(LENGTH(text) + LENGTH(id) + LENGTH(from_name)), 0) AS bytes FROM chat_messages").first().catch(() => null);
+      const snapStats = await env.DB.prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(LENGTH(month_json)), 0) AS bytes FROM month_snapshots").first().catch(() => null);
+      const credStats = await env.DB.prepare("SELECT COUNT(*) AS cnt FROM auth_credentials WHERE active = 1").first().catch(() => null);
+      const pushStats = await env.DB.prepare("SELECT COUNT(*) AS cnt, COUNT(DISTINCT user_key) AS users FROM push_subscriptions").first().catch(() => null);
+      const txnStats = await env.DB.prepare("SELECT COUNT(*) AS cnt FROM processed_txns").first().catch(() => null);
+      const secStats = await env.DB.prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(LENGTH(value)), 0) AS bytes FROM system_secrets").first().catch(() => null);
+
+      const d1UsedBytes = pageCount > 0 ? (pageCount * pageSize) : (
+        Number((gsStats && gsStats.bytes) || 0) +
+        Number((chatStats && chatStats.bytes) || 0) +
+        Number((snapStats && snapStats.bytes) || 0) +
+        Number((secStats && secStats.bytes) || 0)
+      );
+      const d1LimitBytes = 5 * 1024 * 1024 * 1024; // Cloudflare D1 Free Plan 5 GB
+
+      // Honest R2 check
+      let r2 = { enabled: false, objectCount: 0, totalBytes: 0, truncated: false, limitBytes: 10 * 1024 * 1024 * 1024 };
+      if (env.MEDIA && typeof env.MEDIA.list === 'function') {
+        r2.enabled = true;
+        try {
+          const listed = await env.MEDIA.list({ limit: 1000 });
+          const objs = (listed && listed.objects) || [];
+          r2.objectCount = objs.length;
+          r2.totalBytes = objs.reduce((s, o) => s + (Number(o && o.size) || 0), 0);
+          r2.truncated = !!(listed && listed.truncated);
+        } catch (e) {
+          r2.error = e && e.message ? e.message : String(e);
+        }
+      }
+
+      const inlineScan = scanInlineMediaAndState(st);
+
+      // Real health & accounting diagnostics
+      const members = Array.isArray(st.members) ? st.members : [];
+      const activeMembers = members.filter((m) => m && m.active !== false);
+      const months = Array.isArray(st.months) ? st.months : [];
+      const openComplaints = (st.complaints || []).filter((c) => c && !c.auto && !c.resolved);
+      const pendingPins = (st.pinRequests || []).filter((r) => r && r.status === 'pending');
+      const noPinMembers = activeMembers.filter((m) => !(m.hasPin || m.pin));
+      const curTermsVer = (st.settings && st.settings.terms && Number(st.settings.terms.version)) || 1;
+      const agreedMembers = activeMembers.filter((m) => {
+        const ta = termsAcceptances['mem:' + String(m.id)];
+        const ver = Math.max(Number(m.termsAcceptedVersion || 0), Number((ta && ta.version) || 0));
+        return ver >= curTermsVer;
+      });
+      const currentMonth = months.find((m) => m && m.id === st.currentMonthId) || null;
+      const sumMemberLoans = activeMembers.reduce((s, m) => s + (Number(m.outstandingLoan) || 0), 0);
+      const monthLoanTotal = currentMonth ? (Number(currentMonth.outstandingLoans) || 0) : sumMemberLoans;
+      const loanMismatch = currentMonth && currentMonth.status === 'closed'
+        ? Math.round((monthLoanTotal - sumMemberLoans) * 100) / 100
+        : 0;
+
+      const isBackgroundScan = url.searchParams.get('background') === '1';
+      const criticalErrors = evaluateHealthErrorsFromState(st, Number((gsStats && gsStats.bytes) || 0), d1UsedBytes);
+      const issues = criticalErrors.map((errItem) => ({
+        severity: 'error',
+        title: errItem.title,
+        detail: errItem.detail,
+        solution: errItem.solution,
+        action: errItem.action || ''
+      }));
+      if (openComplaints.length > 0) {
+        issues.push({
+          severity: 'warn',
+          title: openComplaints.length + ' वटा सदस्य गुनासो समाधान बाँकी',
+          detail: 'सदस्यहरूले पठाएका गुनासो/सुझावमा जवाफ वा समाधान चिन्ह बाँकी छ।',
+          solution: 'गुनासो सूची खोली जवाफ पठाएर ✅ समाधान भयो चिन्ह लगाउनुहोस्।',
+          action: 'complaints'
+        });
+      }
+      if (pendingPins.length > 0) {
+        issues.push({
+          severity: 'warn',
+          title: pendingPins.length + ' वटा PIN अनुरोध पेन्डिङ',
+          detail: 'सदस्यहरूले लगइन PIN रिसेटको लागि अनुरोध पठाएका छन्।',
+          solution: 'PIN अनुरोध खोली अस्थायी PIN सेट गरी सदस्यलाई पठाउनुहोस्।',
+          action: 'pins'
+        });
+      }
+      if (noPinMembers.length > 0) {
+        issues.push({
+          severity: 'warn',
+          title: noPinMembers.length + ' जना सक्रिय सदस्यको PIN सेट छैन',
+          detail: 'PIN सेट नभएका सदस्यले मोबाइलबाट एप खोल्न सक्दैनन्।',
+          solution: 'प्रोफाइल सूचीमा "PIN छैन" फिल्टर गरी अस्थायी PIN बनाइदिनुहोस्।',
+          action: 'nopin'
+        });
+      }
+      if (inlineScan.inlineCount > 0 && !r2.enabled) {
+        issues.push({
+          severity: 'warn',
+          title: 'R2 बाइन्डिङ नभएकोले ' + inlineScan.inlineCount + ' वटा मिडिया D1 भित्रै बसेका छन्',
+          detail: 'अहिले ' + Math.round(inlineScan.inlineBytes / 1024) + ' KB फोटो/सहि D1 डाटाबेसमा छ (Free Plan 5 GB मा अति थोरै % मात्र छ, समस्या छैन; धेरै सदस्य बढ्दा R2 जोड्न सकिन्छ)।',
+          solution: 'भविष्यमा R2 सक्षम भएपछि डेटा सिंक गर्दा ती फाइलहरू स्वतः R2 मा सर्छन्।',
+          action: ''
+        });
+      }
+      if (agreedMembers.length < activeMembers.length) {
+        issues.push({
+          severity: 'warn',
+          title: (activeMembers.length - agreedMembers.length) + ' जना सदस्यले सर्त v' + curTermsVer + ' मञ्जुरी गर्न बाँकी',
+          detail: 'यी सदस्यले अर्को पटक एप खोल्दा मञ्जुरी स्क्रिन देख्नेछन्।',
+          solution: 'सर्त तथा मञ्जुरी ट्र्याकिङबाट सूची हेर्नुहोस्।',
+          action: 'terms'
+        });
+      }
+      if (!st.treasurer || !st.treasurer.username) {
+        issues.push({
+          severity: 'warn',
+          title: 'कोषाध्यक्ष नियुक्त भएको छैन',
+          detail: 'हिसाब लेख्न सक्रिय सदस्यबाट कोषाध्यक्ष नियुक्त गर्नुपर्छ।',
+          solution: 'सेटिङ → कोषाध्यक्ष बाट नियुक्त गर्नुहोस्।',
+          action: 'treasurer'
+        });
+      }
+      if (issues.length === 0) {
+        issues.push({
+          severity: 'ok',
+          title: 'सबै प्रणाली र हिसाब १००% स्वस्थ छ',
+          detail: 'डाटाबेस, ऋण मिलान, सदस्य PIN, गुनासो र कोषाध्यक्ष व्यवस्था सबै ठीक छ।',
+          solution: 'कुनै मर्मत वा एक्सन आवश्यक छैन।',
+          action: ''
+        });
+      }
+
+      // Real chronological activity log (from processed_txns + recent complaints + months + chat announcements)
+      const recentTxns = await env.DB
+        .prepare('SELECT txn_id, actor, action, applied_version, created_at FROM processed_txns ORDER BY created_at DESC LIMIT 15')
+        .all()
+        .catch(() => ({ results: [] }));
+      const recentSysChat = await env.DB
+        .prepare("SELECT id, text, type, created_at FROM chat_messages WHERE channel = 'group' AND (type = 'auto_group' OR from_role = 'system') ORDER BY created_at DESC LIMIT 10")
+        .all()
+        .catch(() => ({ results: [] }));
+
+      const activities = [];
+      for (const tx of recentTxns.results || []) {
+        activities.push({
+          kind: tx.action === 'close_month' ? 'month' : 'sync',
+          title: tx.action === 'close_month' ? '🔒 महिना बन्द र स्न्यापसट सेभ' : '💾 हिसाब डाटा सिंक',
+          detail: (tx.actor || 'कोषाध्यक्ष') + ' · v' + (tx.applied_version || ''),
+          time: tx.created_at
+        });
+      }
+      for (const c of (st.complaints || []).slice(-10)) {
+        if (!c || c.auto) continue;
+        const mem = members.find((m) => m && m.id === c.memberId);
+        activities.push({
+          kind: 'complaint',
+          title: c.resolved ? '✅ गुनासो समाधान' : '📢 सदस्य गुनासो प्राप्त',
+          detail: (mem ? mem.name : c.memberId) + ': ' + String(c.text || '').slice(0, 60),
+          time: c.resolvedAt || c.time
+        });
+      }
+      for (const pr of (st.pinRequests || []).slice(-6)) {
+        if (!pr) continue;
+        activities.push({
+          kind: 'pin',
+          title: pr.status === 'pending' ? '🔢 नयाँ PIN अनुरोध' : '✅ PIN अनुरोध स्वीकृत',
+          detail: (pr.memberName || pr.memberId) + ' (' + (pr.mobile || '') + ')',
+          time: pr.time
+        });
+      }
+      for (const chm of recentSysChat.results || []) {
+        activities.push({
+          kind: 'chat',
+          title: '💬 समूह सूचना पोस्ट',
+          detail: String(chm.text || '').split('\\n')[0].slice(0, 65),
+          time: chm.created_at
+        });
+      }
+      activities.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
+
+      const nepalNow = getNepalNowApi();
+      const nepalDate = nepalNow.toISOString().slice(0, 10);
+      const nowIso = new Date().toISOString();
+      const errSig = criticalErrors.map((e) => e.code + ':' + e.title).join('|');
+      let healthAlertState = await getSecretJson(env.DB, 'health_alert_state');
+      let alertAcknowledged = false;
+
+      if (!isBackgroundScan) {
+        if (healthAlertState && healthAlertState.active) alertAcknowledged = true;
+        healthAlertState = Object.assign({}, healthAlertState || {}, {
+          active: false,
+          acknowledgedAt: nowIso,
+          acknowledgedBy: user.username || 'admin',
+          acknowledgedForDate: nepalDate,
+          acknowledgedSignature: errSig
+        });
+        await setSecretJson(env.DB, 'health_alert_state', healthAlertState);
+      } else if (criticalErrors.length > 0) {
+        const alreadyAckedToday = healthAlertState && healthAlertState.acknowledgedForDate === nepalDate && healthAlertState.acknowledgedSignature === errSig;
+        if (!alreadyAckedToday && !(healthAlertState && healthAlertState.active)) {
+          healthAlertState = {
+            active: true,
+            alertDate: nepalDate,
+            detectedAt: nowIso,
+            acknowledgedAt: null,
+            acknowledgedForDate: null,
+            acknowledgedSignature: null,
+            errorCount: criticalErrors.length,
+            errorSignature: errSig,
+            summary: criticalErrors[0].title,
+            lastNotifiedAt: nowIso,
+            notifyCount: 1
+          };
+          await sendAdminHealthAlertPush(env, criticalErrors, 1);
+          await setSecretJson(env.DB, 'health_alert_state', healthAlertState);
+        }
+      }
+
+      return json({
+        ok: true,
+        alertAcknowledged,
+        healthAlertState,
+        checkedAt: nowIso,
+        version: stateRow.version,
+        stateUpdatedAt: stateRow.updatedAt,
+        cloudflareFreeLimits: {
+          plan: 'Cloudflare Free Plan',
+          d1StorageBytes: d1LimitBytes,
+          d1DailyReads: 5000000,
+          d1DailyWrites: 100000,
+          r2StorageBytes: 10 * 1024 * 1024 * 1024,
+          pagesDailyRequests: 100000
+        },
+        d1: {
+          usedBytes: d1UsedBytes,
+          limitBytes: d1LimitBytes,
+          groupStateBytes: Number((gsStats && gsStats.bytes) || 0),
+          chatCount: Number((chatStats && chatStats.cnt) || 0),
+          chatBytes: Number((chatStats && chatStats.bytes) || 0),
+          snapshotCount: Number((snapStats && snapStats.cnt) || 0),
+          snapshotBytes: Number((snapStats && snapStats.bytes) || 0),
+          credentialsCount: Number((credStats && credStats.cnt) || 0),
+          pushDevices: Number((pushStats && pushStats.cnt) || 0),
+          pushUsers: Number((pushStats && pushStats.users) || 0),
+          processedTxns: Number((txnStats && txnStats.cnt) || 0)
+        },
+        r2,
+        inlineMedia: inlineScan,
+        stats: {
+          activeMembers: activeMembers.length,
+          totalMembers: members.length,
+          closedMonths: months.filter((m) => m && m.status === 'closed').length,
+          currentMonth: currentMonth ? (currentMonth.name + ' (' + currentMonth.status + ')') : 'कुनै महिना खुल्ला छैन',
+          openComplaints: openComplaints.length,
+          pendingPins: pendingPins.length,
+          noPinMembers: noPinMembers.length,
+          termsVersion: curTermsVer,
+          termsAgreed: agreedMembers.length
+        },
+        issues,
+        activities: activities.slice(0, 25)
+      });
     }
 
     return json({ ok: false, error: 'Route not found: ' + path }, 404);
@@ -1602,3 +2425,4 @@ export async function onRequest(context) {
     return json({ ok: false, error: err && err.message ? err.message : String(err) }, 500);
   }
 }
+

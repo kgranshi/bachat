@@ -1430,12 +1430,10 @@ tr:active { background: #f0f7ff; }
   padding-top: 8px;
   background: #fff;
 }
-.loan-sig-sticky .sig-pad-wrap,
-.loan-sig-sticky .loan-sbx-sig-wrap {
+.loan-sig-sticky .sig-pad-wrap {
   margin: 4px 0 6px 0;
 }
-.loan-sig-sticky #sig-canvas,
-.loan-sig-sticky #sbx-sig-canvas {
+.loan-sig-sticky #sig-canvas {
   height: 122px !important;
 }
 
@@ -1561,47 +1559,70 @@ tr:active { background: #f0f7ff; }
   }
 }
 
-/* ===== TEMPORARY LOAN SANDBOX ===== */
-.loan-sbx-banner {
-  background: #fffbeb;
-  border: 1.5px dashed #f59e0b;
-  border-radius: 12px;
-  padding: 10px 12px;
-  margin-bottom: 10px;
+/* ===== Masked PIN/Password without Browser Password-Save Prompt ===== */
+.masked-secret {
+  -webkit-text-security: disc;
+  text-security: disc;
 }
-.loan-sbx-sig-wrap {
-  border: 2px dashed #cbd5e1;
-  border-radius: 12px;
-  overflow: hidden;
-  background: #fafafa;
-  margin: 8px 0;
+
+/* ===== Complaint Status Pills ===== */
+.complaint-pill-open {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: #fff3cd;
+  color: #997404;
+  border: 1px solid #ffe69c;
+  padding: 2px 7px;
+  border-radius: 6px;
 }
-#sbx-sig-canvas {
+.complaint-pill-resolved {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: #d1e7dd;
+  color: #0f5132;
+  border: 1px solid #badbcc;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+/* ===== System Health & Cloudflare Quota Cards ===== */
+.sys-health-bar-track {
   width: 100%;
-  height: 150px;
-  display: block;
-  touch-action: none;
-  cursor: crosshair;
+  height: 8px;
+  background: #e9ecef;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-top: 5px;
 }
-.loan-sbx-step {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+.sys-health-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  background: #0d6efd;
+  transition: width 0.25s ease;
+}
+.sys-health-issue {
   border-radius: 10px;
   padding: 9px 11px;
   margin-bottom: 8px;
-  font-size: 0.81rem;
-  line-height: 1.48;
-  color: #1e293b;
-}
-.loan-sbx-code {
-  background: #0f172a;
-  color: #e2e8f0;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   line-height: 1.45;
-  overflow-x: auto;
-  margin-top: 6px;
+  border: 1px solid #dee2e6;
+}
+.sys-health-issue.ok {
+  background: #d1e7dd;
+  border-color: #badbcc;
+  color: #0f5132;
+}
+.sys-health-issue.warn {
+  background: #fff3cd;
+  border-color: #ffe69c;
+  color: #664d03;
+}
+.sys-health-issue.error {
+  background: #f8d7da;
+  border-color: #f5c2c7;
+  color: #842029;
 }
 

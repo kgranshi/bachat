@@ -1,5 +1,5 @@
 /* समूह बचत — Single Unified Service Worker (Offline Cache + Standard Web Push) */
-const CACHE = 'samuha-cf-v14';
+const CACHE = 'samuha-cf-v16';
 const ASSETS = [
   './',
   './index.html',
@@ -8,12 +8,12 @@ const ASSETS = [
   './icon-512.png',
   './logo-group.png',
   './owner-photo.jpg',
-  './css/styles.css?v=14',
-  './js/db.js?v=14',
-  './js/accounting.js?v=14',
-  './js/auth.js?v=14',
-  './js/ui.js?v=14',
-  './js/app.js?v=14'
+  './css/styles.css?v=16',
+  './js/db.js?v=16',
+  './js/accounting.js?v=16',
+  './js/auth.js?v=16',
+  './js/ui.js?v=16',
+  './js/app.js?v=16'
 ];
 
 self.addEventListener('install', (e) => {
@@ -71,6 +71,8 @@ self.addEventListener('push', (e) => {
     icon: './icon-192.png',
     badge: './icon-192.png',
     tag: payload.tag || 'samuha-push',
+    renotify: !!payload.renotify,
+    requireInteraction: !!payload.requireInteraction,
     data: payload.data || {}
   };
   e.waitUntil(self.registration.showNotification(title, options));
@@ -78,12 +80,20 @@ self.addEventListener('push', (e) => {
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
+  const data = (e.notification && e.notification.data) || {};
+  const openHealth = !!data.openHealth;
+  const targetUrl = data.url || (openHealth ? './?open=health' : './');
   e.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       for (let i = 0; i < list.length; i++) {
-        if (list[i].url && 'focus' in list[i]) return list[i].focus();
+        if (list[i].url && 'focus' in list[i]) {
+          if (openHealth && typeof list[i].postMessage === 'function') {
+            try { list[i].postMessage({ type: 'OPEN_HEALTH_CHECK' }); } catch (err) {}
+          }
+          return list[i].focus();
+        }
       }
-      if (clients.openWindow) return clients.openWindow('./');
+      if (clients.openWindow) return clients.openWindow(targetUrl);
     })
   );
 });
