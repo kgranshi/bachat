@@ -34,7 +34,20 @@ const UI = {
       this._modalStack = [];
     }
 
-    if (!options.root && !options.replace && isOpen && !options.back && !this._modalBack) {
+    if (options.push && isOpen) {
+      this._modalStack = this._modalStack || [];
+      const box = document.getElementById('modal-box');
+      this._modalStack.push({
+        title: document.getElementById('modal-title').textContent,
+        body: document.getElementById('modal-body').innerHTML,
+        footer: document.getElementById('modal-footer').innerHTML,
+        back: this._modalBack || null,
+        full: !!(box && box.classList.contains('modal-full')),
+        passbook: !!(box && box.classList.contains('modal-passbook')),
+        loanSign: !!(box && box.classList.contains('modal-loan-sign'))
+      });
+      this._modalBack = null;
+    } else if (!options.root && !options.replace && isOpen && !options.back && !this._modalBack) {
       const curTitle = document.getElementById('modal-title').textContent;
       if (curTitle !== title) {
         this._modalStack = this._modalStack || [];
@@ -45,7 +58,8 @@ const UI = {
           footer: document.getElementById('modal-footer').innerHTML,
           back: null,
           full: !!(box && box.classList.contains('modal-full')),
-          passbook: !!(box && box.classList.contains('modal-passbook'))
+          passbook: !!(box && box.classList.contains('modal-passbook')),
+          loanSign: !!(box && box.classList.contains('modal-loan-sign'))
         });
       }
     }
@@ -57,6 +71,7 @@ const UI = {
     if (modalBox) {
       modalBox.classList.toggle('modal-full', !!options.full);
       modalBox.classList.toggle('modal-passbook', !!options.passbook);
+      modalBox.classList.toggle('modal-loan-sign', !!options.loanSign);
     }
     const closeBtn = overlay.querySelector('.modal-close');
     this._noClose = !!options.noClose;
@@ -73,7 +88,7 @@ const UI = {
       this._modalStack = [];
       this._modalBack = null;
       const box = document.getElementById('modal-box');
-      if (box) box.classList.remove('modal-full', 'modal-passbook');
+      if (box) box.classList.remove('modal-full', 'modal-passbook', 'modal-loan-sign');
       document.getElementById('modal-overlay').classList.add('hidden');
       setTimeout(() => {
         if (typeof askComplaintAfterView === 'function') {
@@ -88,7 +103,7 @@ const UI = {
       this._modalBack = null;
       this._modalStack = [];
       const box = document.getElementById('modal-box');
-      if (box) box.classList.remove('modal-full', 'modal-passbook');
+      if (box) box.classList.remove('modal-full', 'modal-passbook', 'modal-loan-sign');
       if (typeof fnName === 'function') { fnName(); return; }
       if (typeof window[fnName] === 'function') { window[fnName](); return; }
     }
@@ -103,13 +118,14 @@ const UI = {
       if (box) {
         box.classList.toggle('modal-full', !!prev.full);
         box.classList.toggle('modal-passbook', !!prev.passbook);
+        box.classList.toggle('modal-loan-sign', !!prev.loanSign);
       }
       this._modalBack = prev.back || null;
       return;
     }
 
     const box = document.getElementById('modal-box');
-    if (box) box.classList.remove('modal-full', 'modal-passbook');
+    if (box) box.classList.remove('modal-full', 'modal-passbook', 'modal-loan-sign');
     document.getElementById('modal-overlay').classList.add('hidden');
   },
 

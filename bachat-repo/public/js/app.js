@@ -1747,13 +1747,17 @@ function openLoans() {
   // This month's loans
   if (month && month.loansGiven && month.loansGiven.length) {
     html += '<div class="section-title mt-2">यस महिना दिइएका ऋण</div>';
-    month.loansGiven.forEach(l => {
+    month.loansGiven.forEach((l, idx) => {
       const m = data.members.find(x => x.id === l.memberId);
-      const noteLine = l.note ? `<div class="member-meta">📝 ${l.note}</div>` : '';
-      html += `<div class="member-item">
+      const noteLine = l.note ? `<div class="member-meta">📝 ${escapeHtmlChat(l.note)}</div>` : '';
+      const loanKey = l.id ? String(l.id) : String(idx);
+      html += `<div class="member-item" style="align-items:center">
         <div class="member-info"><div class="member-name">${m ? m.name : l.memberId}</div>
         <div class="member-meta">${new Date(l.time).toLocaleString('ne-NP')}</div>${noteLine}</div>
-        <div class="fw-bold">${Accounting.formatNum(l.amount)}</div>
+        <div style="text-align:right">
+          <div class="fw-bold">${Accounting.formatNum(l.amount)}</div>
+          <button type="button" class="btn btn-light btn-sm" style="margin-top:4px;padding:3px 8px;font-size:0.72rem;border:1px solid #fdba74;color:#9a3412;background:#fff7ed" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(month.id))}','${escapeHtmlChat(String(l.memberId))}',false,'${escapeHtmlChat(loanKey)}')">📄 सम्झौता</button>
+        </div>
       </div>`;
     });
   }
@@ -1788,32 +1792,303 @@ function filterLoanList() {
   document.getElementById('loan-member-list').innerHTML = UI.renderMemberList(filtered, 'selectLoanMember');
 }
 
-function selectLoanMember(memberId) {
+let _realLoanDraft = null;
+
+function formatNepaliTodayDateStr(dateInput) {
+  let dt = null;
+  try {
+    if (dateInput) {
+      dt = new Date(dateInput);
+    } else if (typeof getNepalNow === 'function') {
+      dt = getNepalNow();
+    } else {
+      dt = new Date();
+    }
+  } catch (e) {
+    dt = new Date();
+  }
+  const days = ['आइतबार', 'सोमबार', 'मंगलबार', 'बुधबार', 'बिहिबार', 'शुक्रबार', 'शनिबार'];
+  try {
+    const bs = typeof adToBsParts === 'function' ? adToBsParts(dt) : null;
+    if (bs && typeof BS_MONTHS_NP !== 'undefined' && BS_MONTHS_NP[bs.monthIndex]) {
+      return bs.year + ' ' + BS_MONTHS_NP[bs.monthIndex] + ' ' + bs.day + ' गते · ' + days[dt.getDay()];
+    }
+  } catch (e) {}
+  return dt.toLocaleDateString('ne-NP');
+}
+
+function buildLoanMemberDeclarationParagraphs(ctx) {
+  const gName = escapeHtmlChat(ctx.groupName || 'समूह बचत');
+  const mName = escapeHtmlChat(ctx.memberName || '');
+  const dStr = escapeHtmlChat(ctx.dateStr || formatNepaliTodayDateStr());
+  const prevStr = Accounting.formatNum(ctx.prevLoan || 0);
+  const amtStr = Accounting.formatNum(ctx.amount || 0);
+  const totStr = Accounting.formatNum(ctx.newTotalLoan || ((ctx.prevLoan || 0) + (ctx.amount || 0)));
+  const rateStr = (ctx.interestRate != null ? ctx.interestRate : 0);
+  const noteHtml = ctx.note ? `<p><strong>उद्देश्य / म्याद / साक्षी:</strong> ${escapeHtmlChat(ctx.note)}</p>` : '';
+
+  return `
+    <p>म <strong>${gName}</strong> को सदस्य <strong>${mName}</strong>, आज मिति <strong>${dStr}</strong> मा यो ऋण स्वीकारोक्ति पत्रमा हस्ताक्षर गर्दछु कि आजभन्दा पहिले मैले समूहमा तिर्न बाँकी रहेको ऋणको सावाँ <strong>रु. ${prevStr}</strong> थियो। आज घर–परिवारको सल्लाह र सहमतिमा मैले समूहबाट थप <strong>रु. ${amtStr}</strong> ऋण लिएको छु। यसअनुसार आजबाट मैले समूहलाई तिर्नुपर्ने जम्मा ऋणको सावाँ <strong>रु. ${totStr}</strong> कायम भएको छ।</p>
+    <p>उक्त ऋणको ब्याज समूहले पारित गरेको मासिक <strong>${rateStr}%</strong> ब्याजदरका आधारमा प्रत्येक महिना अनिवार्य रूपमा बुझाउने छु र सावाँ रकम समूहको नियम तथा विधानभित्र रही नियमित किस्ताबन्दीमा तिर्दै जानेछु। यो ऋण मैले लिएको होइन भनी कुनै पनि किसिमको झूठो दाबी गर्ने छैन। यदि समयमा सावाँ तथा ब्याज नतिरेमा समूहको निर्णय र प्रचलित नेपाल कानुनअनुसार हुने सजाय तथा कारबाही भोग्न मञ्जुर भई राजीखुसीले यो डिजिटल सहि–छाप गरेको छु।</p>
+    ${noteHtml}
+  `;
+}
+
+function buildLoanTreasurerApprovalParagraphs(ctx) {
+  const gName = escapeHtmlChat(ctx.groupName || 'समूह बचत');
+  const mName = escapeHtmlChat(ctx.memberName || '');
+  const dStr = escapeHtmlChat(ctx.dateStr || formatNepaliTodayDateStr());
+  const amtStr = Accounting.formatNum(ctx.amount || 0);
+  const cashBeforeStr = Accounting.formatNum(ctx.cashBefore || 0);
+  const cashAfterStr = Accounting.formatNum(Math.max(0, (ctx.cashBefore || 0) - (ctx.amount || 0)));
+  const totStr = Accounting.formatNum(ctx.newTotalLoan || ((ctx.prevLoan || 0) + (ctx.amount || 0)));
+
+  return `
+    <p>आज मिति <strong>${dStr}</strong> मा <strong>${gName}</strong> का सदस्य <strong>${mName}</strong> ले पेस गर्नुभएको <strong>रु. ${amtStr}</strong> ऋण मागउपर छलफल गर्दा समूहको कोषमा हाल <strong>रु. ${cashBeforeStr}</strong> नगद मौज्दात उपलब्ध रहेको यकिन भयो। समूहको नियम र उपलब्ध नगदअनुसार निज सदस्यलाई <strong>रु. ${amtStr}</strong> ऋण लगानी गर्ने निर्णय पारित गरियो।</p>
+    <p>सदस्यबाट ऋण स्वीकारोक्ति तथा डिजिटल सहि बुझी आजको मितिमा <strong>रु. ${amtStr}</strong> नगद भुक्तानी गरी निजको नाममा जम्मा ऋण सावाँ <strong>रु. ${totStr}</strong> कायम गरी दर्ता गरिएको प्रमाणित गरिन्छ। <em>(भुक्तानी पश्चात कोषमा बाँकी नगद: रु. ${cashAfterStr})</em></p>
+  `;
+}
+
+function buildLoanAgreementRecord(ctx) {
+  const prevLoan = Number(ctx.prevLoan) || 0;
+  const amount = Number(ctx.amount) || 0;
+  const newTotalLoan = prevLoan + amount;
+  const cashBefore = Number(ctx.cashBefore) || 0;
+  const cashAfter = Math.max(0, cashBefore - amount);
+  const interestRate = Number(ctx.interestRate) || 0;
+  const dateStr = ctx.dateStr || formatNepaliTodayDateStr();
+
+  return {
+    dateStr,
+    groupName: ctx.groupName || 'समूह बचत',
+    memberName: ctx.memberName || '',
+    prevLoan,
+    amount,
+    newTotalLoan,
+    interestRate,
+    cashBefore,
+    cashAfter,
+    note: ctx.note || '',
+    authorityLabel: 'कोषाध्यक्ष',
+    memberStatementHtml: buildLoanMemberDeclarationParagraphs({
+      groupName: ctx.groupName,
+      memberName: ctx.memberName,
+      dateStr,
+      prevLoan,
+      amount,
+      newTotalLoan,
+      interestRate,
+      note: ctx.note
+    }),
+    treasurerStatementHtml: buildLoanTreasurerApprovalParagraphs({
+      groupName: ctx.groupName,
+      memberName: ctx.memberName,
+      dateStr,
+      prevLoan,
+      amount,
+      newTotalLoan,
+      cashBefore
+    })
+  };
+}
+
+function selectLoanMember(memberId, presetDraft) {
   const data = DB.load();
   const member = data.members.find(m => m.id === memberId);
+  if (!member) return UI.toast('सदस्य भेटिएन', 'error');
+  const month = Accounting.getCurrentMonth(data);
+  if (month) Accounting.recalcMonth(month, data);
+  const availCash = month ? (Number(month.cashInHand) || 0) : 0;
+  const prevLoan = Number(member.outstandingLoan) || 0;
+  const presetAmt = presetDraft && presetDraft.memberId === memberId ? presetDraft.amount : '';
+  const presetNote = presetDraft && presetDraft.memberId === memberId ? (presetDraft.note || '') : '';
+
   const html = `
-    <div class="section-title">${member.name}</div>
+    <div class="loan-step-badge">चरण १ / ३ · रकम र विवरण</div>
+    <div class="loan-summary-strip">
+      <div class="loan-summary-chip"><div class="k">सदस्य</div><div class="v">${escapeHtmlChat(member.name)}</div></div>
+      <div class="loan-summary-chip"><div class="k">पहिलेको सावाँ</div><div class="v" style="color:#dc3545">रु. ${Accounting.formatNum(prevLoan)}</div></div>
+      <div class="loan-summary-chip"><div class="k">कोषमा नगद</div><div class="v" style="color:#198754">रु. ${Accounting.formatNum(availCash)}</div></div>
+    </div>
     <div class="form-group">
       <label>💵 ऋण रकम</label>
-      <input type="number" id="loan-amount" placeholder="रकम">
+      <input type="number" id="loan-amount" placeholder="जस्तै: 5000" value="${presetAmt}">
     </div>
     <div class="form-group">
       <label>📝 उद्देश्य / म्याद / साक्षी (वैकल्पिक)</label>
-      <input type="text" id="loan-note" placeholder="जस्तै: पसल/खेती · ६ महिना · साक्षी ...">
+      <input type="text" id="loan-note" placeholder="जस्तै: पसल/खेती · ६ महिना · साक्षी ..." value="${escapeHtmlChat(presetNote)}">
+    </div>
+    <button type="button" class="btn btn-orange btn-block" onclick="proceedToRealLoanAcceptance('${escapeHtmlChat(String(memberId))}')">अगाडि बढ्नुहोस् (स्वीकारोक्ति फारम) →</button>
+  `;
+  UI.showModal('🤝 ऋण लगानी - ' + member.name, html, '<button class="btn btn-outline" onclick="showGiveLoan()">← फर्कनुहोस्</button>', { replace: true, back: 'showGiveLoan' });
+}
+
+function proceedToRealLoanAcceptance(memberId) {
+  if (!Auth.isAccountsWriter()) return UI.toast('Read-only: ऋण लगानी गर्ने अधिकार कोषाध्यक्षलाई मात्र छ', 'error');
+  const amount = parseFloat((document.getElementById('loan-amount') && document.getElementById('loan-amount').value) || 0) || 0;
+  if (amount <= 0) return UI.toast('रकम लेख्नुहोस्', 'error');
+  const note = ((document.getElementById('loan-note') && document.getElementById('loan-note').value) || '').trim();
+
+  const data = DB.load();
+  const month = Accounting.getCurrentMonth(data);
+  const member = data.members.find(m => m.id === memberId);
+  if (!month || !member) return UI.toast('महिना वा सदस्य भेटिएन', 'error');
+  Accounting.recalcMonth(month, data);
+  const cashBefore = Number(month.cashInHand) || 0;
+  if (amount > cashBefore) {
+    return UI.toast('नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(cashBefore) + ')', 'error');
+  }
+
+  _realLoanDraft = {
+    memberId,
+    memberName: member.name,
+    groupName: (data.group && data.group.name) || 'समूह बचत',
+    prevLoan: Number(member.outstandingLoan) || 0,
+    amount,
+    newTotalLoan: (Number(member.outstandingLoan) || 0) + amount,
+    interestRate: (data.settings && data.settings.interestRate) || 0,
+    cashBefore,
+    note,
+    dateStr: formatNepaliTodayDateStr(),
+    signature: ''
+  };
+  openLoanMemberAcceptanceStep();
+}
+
+function backToRealLoanStep1() {
+  if (!_realLoanDraft) return showGiveLoan();
+  selectLoanMember(_realLoanDraft.memberId, _realLoanDraft);
+}
+
+function openLoanMemberAcceptanceStep() {
+  if (!_realLoanDraft) return showGiveLoan();
+  const d = _realLoanDraft;
+  const html = `
+    <div class="loan-step-badge">चरण २ / ३ · सदस्य स्वीकारोक्ति र डिजिटल सहि</div>
+    <div class="loan-agree-scroll">
+      <div class="loan-summary-strip">
+        <div class="loan-summary-chip"><div class="k">पहिलेको सावाँ</div><div class="v">रु. ${Accounting.formatNum(d.prevLoan)}</div></div>
+        <div class="loan-summary-chip"><div class="k">आज थप ऋण</div><div class="v" style="color:#c2410c">+रु. ${Accounting.formatNum(d.amount)}</div></div>
+        <div class="loan-summary-chip"><div class="k">आजबाट जम्मा सावाँ</div><div class="v" style="color:#dc3545">रु. ${Accounting.formatNum(d.newTotalLoan)}</div></div>
+      </div>
+      <div class="loan-doc-paper">
+        ${buildLoanMemberDeclarationParagraphs(d)}
+      </div>
+    </div>
+    <div class="loan-sig-sticky">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <label style="font-size:0.82rem;font-weight:700;margin:0">✍️ सदस्यको सहि (तल कोर्नुहोस्)</label>
+        <button type="button" class="btn btn-light btn-sm" style="padding:3px 9px;font-size:0.74rem" onclick="clearSignature()">🗑️ मेट्नुहोस्</button>
+      </div>
+      <div class="sig-pad-wrap">
+        <canvas id="sig-canvas" width="340" height="122"></canvas>
+      </div>
+      <button type="button" class="btn btn-orange btn-block" onclick="saveRealLoanAcceptanceStep()">✅ सहि सेभ गरी अर्को चरणमा जानुहोस् →</button>
+    </div>
+  `;
+  UI.showModal('✍️ ऋण स्वीकारोक्ति - ' + d.memberName, html, '<button class="btn btn-outline" onclick="backToRealLoanStep1()">← रकम सच्याउनुहोस्</button>', { loanSign: true, replace: true, back: 'backToRealLoanStep1' });
+  initSignaturePad();
+}
+
+function saveRealLoanAcceptanceStep() {
+  if (!_realLoanDraft) return showGiveLoan();
+  if (!sigPad || !sigPad.hasDrawn) return UI.toast('सदस्यको सहि कोर्न अनिवार्य छ', 'error');
+  _realLoanDraft.signature = compressSignatureFromPad(sigPad);
+  _realLoanDraft.dateStr = formatNepaliTodayDateStr();
+  openLoanTreasurerApprovalStep();
+}
+
+function openLoanTreasurerApprovalStep() {
+  if (!_realLoanDraft) return showGiveLoan();
+  const d = _realLoanDraft;
+  const html = `
+    <div class="loan-step-badge">चरण ३ / ३ · कोषाध्यक्ष निर्णय र PIN पुष्टि</div>
+    <div class="loan-doc-paper" style="background:#f8fbff;border-color:#bfdbfe;margin-bottom:10px">
+      <div style="font-weight:700;color:#0a58ca;margin-bottom:6px;border-bottom:1px solid #dbeafe;padding-bottom:4px">🏛️ कोषाध्यक्षको निर्णय तथा रकम भुक्तानी विवरण</div>
+      ${buildLoanTreasurerApprovalParagraphs(d)}
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-top:8px;padding-top:8px;border-top:1px dashed #cbd5e1;flex-wrap:wrap">
+        <div>
+          <div style="font-size:0.72rem;color:#475569;margin-bottom:2px">सदस्यको डिजिटल सहि:</div>
+          ${renderTinySignature(d.signature, true)}
+        </div>
+        <div style="text-align:right;font-size:0.8rem">
+          <div style="color:#64748b">समूहको तर्फबाट:</div>
+          <strong>कोषाध्यक्ष</strong>
+        </div>
+      </div>
     </div>
     <div class="form-group">
-      <label>✍️ सदस्यको सहि (अनिवार्य)</label>
-      <div class="sig-pad-wrap">
-        <canvas id="sig-canvas" width="320" height="160"></canvas>
-      </div>
-      <div class="sig-actions">
-        <button class="btn btn-light btn-sm" onclick="clearSignature()">🗑️ मेट्नुहोस्</button>
-      </div>
+      <label>🔢 कोषाध्यक्षको ४-अंकको PIN प्रविष्ट गर्नुहोस्</label>
+      <input type="password" id="real-loan-pin" maxlength="4" inputmode="numeric" placeholder="४ अंकको PIN" class="pin-input" onkeydown="if(event.key==='Enter')finalizeRealLoanDisbursement()">
     </div>
-    <button class="btn btn-orange btn-block" onclick="saveLoan('${memberId}')">✅ ऋण लगानी गर्नुहोस्</button>
+    <button type="button" id="real-loan-submit-btn" class="btn btn-orange btn-block" onclick="finalizeRealLoanDisbursement()">🔒 PIN दिई ऋण लगानी दर्ता गर्नुहोस्</button>
   `;
-  UI.showModal('🤝 ऋण - ' + member.name, html, '<button class="btn btn-outline" onclick="showGiveLoan()">← फर्कनुहोस्</button>', { replace: true, back: 'showGiveLoan' });
-  initSignaturePad();
+  UI.showModal('🏛️ कोषाध्यक्ष निर्णय - ' + d.memberName, html, '<button class="btn btn-outline" onclick="openLoanMemberAcceptanceStep()">← अघिल्लो फारम</button>', { replace: true, back: 'openLoanMemberAcceptanceStep' });
+  setTimeout(() => { const p = document.getElementById('real-loan-pin'); if (p) p.focus(); }, 180);
+}
+
+async function finalizeRealLoanDisbursement() {
+  if (!Auth.isAccountsWriter()) return UI.toast('Read-only: ऋण लगानी गर्ने अधिकार कोषाध्यक्षलाई मात्र छ', 'error');
+  if (!_realLoanDraft) return showGiveLoan();
+  const pinEl = document.getElementById('real-loan-pin');
+  const pin = ((pinEl && pinEl.value) || '').trim();
+  if (!pin) return UI.toast('PIN हाल्नुहोस्', 'error');
+
+  const btn = document.getElementById('real-loan-submit-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ जाँच हुँदैछ...'; }
+  const ok = await Auth.verifyUserPin(pin);
+  if (!ok) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔒 PIN दिई ऋण लगानी दर्ता गर्नुहोस्'; }
+    return UI.toast('PIN गलत छ', 'error');
+  }
+
+  const d = _realLoanDraft;
+  const data = DB.load();
+  const month = Accounting.getCurrentMonth(data);
+  const member = data.members.find(m => m.id === d.memberId);
+  if (!month || !member) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔒 PIN दिई ऋण लगानी दर्ता गर्नुहोस्'; }
+    return UI.toast('महिना वा सदस्य भेटिएन', 'error');
+  }
+  Accounting.recalcMonth(month, data);
+  const cashBefore = Number(month.cashInHand) || 0;
+  if (d.amount > cashBefore) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔒 PIN दिई ऋण लगानी दर्ता गर्नुहोस्'; }
+    return UI.toast('नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(cashBefore) + ')', 'error');
+  }
+
+  const prevLoanNow = Number(member.outstandingLoan) || 0;
+  const agreement = buildLoanAgreementRecord({
+    groupName: (data.group && data.group.name) || 'समूह बचत',
+    memberName: member.name,
+    prevLoan: prevLoanNow,
+    amount: d.amount,
+    interestRate: (data.settings && data.settings.interestRate) || 0,
+    cashBefore,
+    note: d.note,
+    dateStr: d.dateStr || formatNepaliTodayDateStr()
+  });
+
+  const loanId = 'ln_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const entry = {
+    id: loanId,
+    memberId: member.id,
+    amount: d.amount,
+    signature: d.signature,
+    time: new Date().toISOString(),
+    agreement
+  };
+  if (d.note) entry.note = d.note;
+
+  month.loansGiven = month.loansGiven || [];
+  month.loansGiven.push(entry);
+  member.outstandingLoan = prevLoanNow + d.amount;
+  Accounting.recalcMonth(month, data);
+  notifyLoanPrivate(data, member, d.amount);
+  DB.save(data);
+  _realLoanDraft = null;
+  UI.toast('ऋण लगानी र डिजिटल सम्झौता दर्ता भयो', 'success');
+  showMemberLoanAgreement(month.id, member.id, false, loanId, { replaceToLoans: true });
 }
 
 let sigPad = null;
@@ -1901,34 +2176,6 @@ function renderTinySignature(sig, forPrint) {
     return '<span style="font-size:0.78rem;color:#198754">✓ सहि भएको</span>';
   }
   return '<span class="text-muted" style="font-size:0.75rem">—</span>';
-}
-
-function saveLoan(memberId) {
-  if (!Auth.isAccountsWriter()) return UI.toast('Read-only: ऋण लगानी गर्ने अधिकार कोषाध्यक्षलाई मात्र छ', 'error');
-  const amount = parseFloat(document.getElementById('loan-amount').value) || 0;
-  if (amount <= 0) return UI.toast('रकम लेख्नुहोस्', 'error');
-  if (!sigPad || !sigPad.hasDrawn) return UI.toast('सहि अनिवार्य छ', 'error');
-
-  const note = (document.getElementById('loan-note') && document.getElementById('loan-note').value || '').trim();
-  const signature = compressSignatureFromPad(sigPad);
-  UI.showPinModal('⚠️ ऋण लगानी गर्न PIN चाहिन्छ। रकम: ' + amount, () => {
-    const data = DB.load();
-    const month = Accounting.getCurrentMonth(data);
-    const member = data.members.find(m => m.id === memberId);
-    Accounting.recalcMonth(month, data);
-    if (amount > month.cashInHand) {
-      return UI.toast('नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(month.cashInHand) + ')', 'error');
-    }
-    const entry = { memberId, amount, signature, time: new Date().toISOString() };
-    if (note) entry.note = note;
-    month.loansGiven.push(entry);
-    member.outstandingLoan = (member.outstandingLoan || 0) + amount;
-    Accounting.recalcMonth(month, data);
-    notifyLoanPrivate(data, member, amount);
-    DB.save(data);
-    UI.toast('ऋण लगानी भयो', 'success');
-    openLoans();
-  });
 }
 
 function doCloseMonth() {
@@ -2284,11 +2531,28 @@ function printReportImage(elementId) {
       thead{display:table-header-group} tr{page-break-inside:avoid}
       h2{text-align:center;margin:0 0 4px} .print-meta{text-align:center;margin-bottom:12px;color:#555;font-size:12px}
       .passbook-print-only{display:block!important}
+      .pb-agreement-pill,.no-print{display:none!important}
+      .pb-loan-link{color:#000!important;text-decoration:none!important;font-weight:600!important}
       .passbook-two-grid,.passbook-box,.passbook-box-scroll{display:block!important;overflow:visible!important;height:auto!important;max-height:none!important}
       .passbook-box{margin-bottom:14px;border:1px solid #bbb;border-radius:6px;overflow:visible!important}
       .passbook-box-head{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:#f3f4f6;border-bottom:1px solid #bbb;font-weight:700;font-size:13px}
       .passbook-box-metric{font-weight:700;font-size:12px}
       .pb-latest-row{background:#f0f7ff;font-weight:600}
+      .loan-voucher{background:#fff;border:2px solid #1e293b;border-radius:10px;padding:14px;color:#0f172a;font-size:12.5px;line-height:1.58}
+      .loan-voucher-head{text-align:center;border-bottom:1.5px dashed #94a3b8;padding-bottom:8px;margin-bottom:10px}
+      .loan-voucher-head h2{margin:0 0 2px 0;font-size:16px}
+      .loan-voucher-head .sub{font-size:12.5px;font-weight:700;color:#9a3412}
+      .loan-voucher-head .meta{font-size:11px;color:#475569;margin-top:2px}
+      .loan-summary-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}
+      .loan-summary-chip{border:1px solid #cbd5e1;border-radius:6px;padding:5px 6px;text-align:center}
+      .loan-summary-chip .k{font-size:10px;color:#64748b}
+      .loan-summary-chip .v{font-size:12px;font-weight:700}
+      .loan-voucher-sec{border:1px solid #cbd5e1;border-radius:8px;padding:10px 12px;margin-bottom:10px;page-break-inside:avoid}
+      .loan-voucher-sec-title{font-weight:700;font-size:12.5px;border-bottom:1px solid #e2e8f0;padding-bottom:4px;margin-bottom:6px}
+      .loan-voucher-sig-row{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-top:10px;padding-top:8px;border-top:1px dashed #cbd5e1}
+      .loan-voucher-sig-box{text-align:center}
+      .loan-voucher-sig-img{max-width:190px!important;max-height:72px!important;height:58px!important;object-fit:contain;border:1px solid #94a3b8;border-radius:4px;background:#fff;padding:3px;display:block;margin:0 auto 3px}
+      .loan-voucher-auth-box{margin-left:auto;text-align:right;font-size:12px}
       img{max-width:110px;max-height:36px;object-fit:contain;background:#fff;vertical-align:middle}
       button{display:none!important}
     </style></head><body>${el.innerHTML}</body></html>`;
@@ -3121,6 +3385,7 @@ async function submitComplaintAfter(memberId, source) {
 }
 
 function buildPassbookTwoBoxHtml(data, member, options = {}) {
+  const isSandbox = !!options.sandbox;
   const myAssets = Accounting.memberAssets(data, member);
   const curMonth = options.monthOverride !== undefined ? options.monthOverride : Accounting.getCurrentMonth(data);
   const effLoan = Accounting.getEffectiveMemberLoan(data, member, curMonth);
@@ -3132,6 +3397,7 @@ function buildPassbookTwoBoxHtml(data, member, options = {}) {
   if (curMonth && curMonth.status !== 'closed') {
     const prevA = assetRows.length ? assetRows[assetRows.length - 1].total : 0;
     assetRows.push({
+      monthId: curMonth.id,
       monthName: curMonth.name + ' (चलिरहेको)',
       prev: prevA,
       added: myAssets - prevA,
@@ -3142,6 +3408,7 @@ function buildPassbookTwoBoxHtml(data, member, options = {}) {
     const prevL = loanRows.length ? loanRows[loanRows.length - 1].balance
       : (effLoan - taken + repaid);
     loanRows.push({
+      monthId: curMonth.id,
       monthName: curMonth.name + ' (चलिरहेको)',
       prev: prevL,
       taken,
@@ -3149,6 +3416,16 @@ function buildPassbookTwoBoxHtml(data, member, options = {}) {
       balance: effLoan
     });
   }
+
+  const resolveMonthId = (h) => {
+    if (h && h.monthId) return h.monthId;
+    if (!h || !h.monthName) return '';
+    const cleanName = String(h.monthName).replace(/\s*\(चलिरहेको\)\s*$/, '').trim();
+    const list = (data && Array.isArray(data.months)) ? data.months.slice() : [];
+    if (curMonth && !list.some(m => m && m.id === curMonth.id)) list.push(curMonth);
+    const found = list.find(m => m && (m.name === cleanName || m.name === h.monthName));
+    return found ? found.id : '';
+  };
 
   const assetRowsDesc = assetRows.slice().reverse();
   const loanRowsDesc = loanRows.slice().reverse();
@@ -3159,7 +3436,7 @@ function buildPassbookTwoBoxHtml(data, member, options = {}) {
   } else {
     assetBody = assetRowsDesc.map((h, i) => `
       <tr class="${i === 0 ? 'pb-latest-row' : ''}">
-        <td>${h.monthName}</td>
+        <td>${escapeHtmlChat(h.monthName || '')}</td>
         <td>${Accounting.formatNum(h.prev)}</td>
         <td>${Accounting.formatNum(h.added)}</td>
         <td class="fw-bold">${Accounting.formatNum(h.total)}</td>
@@ -3170,14 +3447,21 @@ function buildPassbookTwoBoxHtml(data, member, options = {}) {
   if (!loanRowsDesc.length) {
     loanBody = '<tr><td colspan="5" style="text-align:center;color:#64748b;padding:16px">अहिलेसम्म रेकर्ड छैन</td></tr>';
   } else {
-    loanBody = loanRowsDesc.map((h, i) => `
+    loanBody = loanRowsDesc.map((h, i) => {
+      const mId = resolveMonthId(h);
+      const canOpenAgreement = (Number(h.taken) || 0) > 0 && !!mId;
+      const monthCell = canOpenAgreement
+        ? `<span class="pb-loan-link" role="button" tabindex="0" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(mId))}','${escapeHtmlChat(String(member.id))}',${isSandbox ? 'true' : 'false'})">${escapeHtmlChat(h.monthName || '')} <span class="pb-agreement-pill">📄 सम्झौता</span></span>`
+        : escapeHtmlChat(h.monthName || '');
+      return `
       <tr class="${i === 0 ? 'pb-latest-row' : ''}">
-        <td>${h.monthName}</td>
+        <td>${monthCell}</td>
         <td>${Accounting.formatNum(h.prev)}</td>
         <td>${Accounting.formatNum(h.taken)}</td>
         <td>${Accounting.formatNum(h.repaid)}</td>
         <td class="fw-bold">${Accounting.formatNum(h.balance)}</td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   }
 
   return `<div class="print-area passbook-root" id="print-passbook">
@@ -3226,6 +3510,138 @@ function renderPassbookContent(memberId) {
   `;
 
   UI.showModal('📖 पासबुक - ' + member.name, html, footerHtml, { passbook: true });
+}
+
+function showMemberLoanAgreement(monthId, memberId, isSandbox = false, selectedLoanKey = '', opts = {}) {
+  let data = null;
+  let month = null;
+  if (isSandbox && typeof getOrInitLoanSandbox === 'function') {
+    const sbx = getOrInitLoanSandbox();
+    data = sbx.data;
+    if (sbx.month && sbx.month.id === monthId) {
+      month = sbx.month;
+    } else {
+      month = (data.months || []).find(m => m && m.id === monthId) || sbx.month;
+    }
+  } else {
+    data = DB.load();
+    month = (data.months || []).find(m => m && m.id === monthId);
+  }
+  const member = (data && data.members || []).find(m => m && m.id === memberId);
+  if (!month || !member) return UI.toast('ऋण सम्झौता विवरण भेटिएन', 'error');
+
+  const loans = (month.loansGiven || []).filter(l => l && l.memberId === memberId);
+  if (!loans.length) return UI.toast('यस महिनामा ऋण सम्झौता भेटिएन', 'error');
+
+  let activeIdx = 0;
+  if (selectedLoanKey !== '' && selectedLoanKey != null) {
+    const byId = loans.findIndex(l => l.id && String(l.id) === String(selectedLoanKey));
+    if (byId >= 0) {
+      activeIdx = byId;
+    } else {
+      const globalIdx = (month.loansGiven || []).indexOf(loans[0]);
+      const byPassedNum = loans.findIndex((l) => String((month.loansGiven || []).indexOf(l)) === String(selectedLoanKey));
+      if (byPassedNum >= 0) activeIdx = byPassedNum;
+      else if (globalIdx < 0) activeIdx = 0;
+    }
+  } else if (loans.length > 1) {
+    activeIdx = loans.length - 1;
+  }
+
+  const loan = loans[activeIdx] || loans[0];
+  let agr = loan.agreement;
+  if (!agr) {
+    // Synthesize agreement cleanly for older loans recorded before the agreement form upgrade
+    const histRow = (member.loanHistory || []).find(h => h && h.monthId === month.id);
+    const totalTakenInMonth = loans.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+    const basePrev = histRow ? (Number(histRow.prev) || 0)
+      : Math.max(0, (Number(member.outstandingLoan) || 0) - totalTakenInMonth);
+    const priorSameMonth = loans.slice(0, activeIdx).reduce((s, l) => s + (Number(l.amount) || 0), 0);
+    const prevLoan = basePrev + priorSameMonth;
+    const cashAfterSnap = Number(month.cashInHand) || 0;
+    agr = buildLoanAgreementRecord({
+      groupName: (data.group && data.group.name) || 'समूह बचत',
+      memberName: member.name,
+      prevLoan,
+      amount: Number(loan.amount) || 0,
+      interestRate: (data.settings && data.settings.interestRate) || 0,
+      cashBefore: cashAfterSnap + (Number(loan.amount) || 0),
+      note: loan.note || '',
+      dateStr: formatNepaliTodayDateStr(loan.time)
+    });
+  }
+
+  let switcherHtml = '';
+  if (loans.length > 1) {
+    switcherHtml = '<div class="loan-tab-strip no-print">' +
+      loans.map((l, idx) => {
+        const key = l.id ? String(l.id) : String((month.loansGiven || []).indexOf(l));
+        const activeCls = idx === activeIdx ? ' active' : '';
+        return `<button type="button" class="loan-tab-pill${activeCls}" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(month.id))}','${escapeHtmlChat(String(member.id))}',${isSandbox ? 'true' : 'false'},'${escapeHtmlChat(key)}',{noPush:true})">ऋण ${idx + 1}: रु. ${Accounting.formatNum(l.amount)}</button>`;
+      }).join('') +
+      '</div>';
+  }
+
+  const sigImgHtml = loan.signature
+    ? `<img src="${loan.signature}" alt="सदस्यको सहि" class="loan-voucher-sig-img">`
+    : `<div class="text-muted" style="font-size:0.75rem;padding:12px 0">सहि उपलब्ध छैन</div>`;
+
+  const memberSectionHtml = agr.memberStatementHtml || buildLoanMemberDeclarationParagraphs(agr);
+  const treasurerSectionHtml = agr.treasurerStatementHtml || buildLoanTreasurerApprovalParagraphs(agr);
+  const timeTxt = loan.time ? new Date(loan.time).toLocaleString('ne-NP') : '';
+
+  const html = `
+    ${isSandbox ? '<div class="loan-sbx-banner no-print" style="padding:7px 10px;font-size:0.76rem;color:#78350f">🧪 यो अभ्यास (Test) ऋण सम्झौता हो — रियल डाटामा सेभ गरिएको छैन।</div>' : ''}
+    ${switcherHtml}
+    <div class="print-area loan-voucher" id="print-loan-agreement">
+      <div class="loan-voucher-head">
+        <h2>${escapeHtmlChat(agr.groupName || ((data.group && data.group.name) || 'समूह बचत'))}</h2>
+        <div class="sub">📜 डिजिटल ऋण सम्झौता तथा भुक्तानी प्रमाण पत्र</div>
+        <div class="meta">महिना: <strong>${escapeHtmlChat(month.name || '')}</strong> · मिति: <strong>${escapeHtmlChat(agr.dateStr || '')}</strong></div>
+      </div>
+
+      <div class="loan-summary-strip">
+        <div class="loan-summary-chip"><div class="k">पहिलेको सावाँ</div><div class="v">रु. ${Accounting.formatNum(agr.prevLoan || 0)}</div></div>
+        <div class="loan-summary-chip"><div class="k">आज थप ऋण</div><div class="v" style="color:#c2410c">+रु. ${Accounting.formatNum(agr.amount || loan.amount || 0)}</div></div>
+        <div class="loan-summary-chip"><div class="k">जम्मा सावाँ (${agr.interestRate != null ? agr.interestRate : ((data.settings && data.settings.interestRate) || 0)}%)</div><div class="v" style="color:#dc3545">रु. ${Accounting.formatNum(agr.newTotalLoan || ((agr.prevLoan || 0) + (loan.amount || 0)))}</div></div>
+      </div>
+
+      <div class="loan-voucher-sec">
+        <div class="loan-voucher-sec-title">खण्ड १ · सदस्यको ऋण स्वीकारोक्ति तथा सहि–छाप</div>
+        <div>${memberSectionHtml}</div>
+        <div class="loan-voucher-sig-row">
+          <div class="loan-voucher-sig-box">
+            ${sigImgHtml}
+            <div style="font-size:0.76rem;font-weight:700">${escapeHtmlChat(member.name)}</div>
+            <div style="font-size:0.68rem;color:#64748b">सदस्यको डिजिटल सहि${timeTxt ? ' · ' + escapeHtmlChat(timeTxt) : ''}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="loan-voucher-sec">
+        <div class="loan-voucher-sec-title">खण्ड २ · कोषाध्यक्षको निर्णय तथा रकम भुक्तानी प्रमाण</div>
+        <div>${treasurerSectionHtml}</div>
+        <div class="loan-voucher-sig-row">
+          <div style="font-size:0.73rem;color:#475569">सन्दर्भ नं: <code>${escapeHtmlChat(String(loan.id || (month.id + '-' + (activeIdx + 1))))}</code></div>
+          <div class="loan-voucher-auth-box">
+            <div style="font-size:0.72rem;color:#64748b">समूहको तर्फबाट प्रमाणित गर्ने:</div>
+            <div style="font-weight:700;font-size:0.88rem;color:#0f172a">कोषाध्यक्ष</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <button type="button" class="btn btn-primary btn-block mt-2" onclick="printReportImage('print-loan-agreement')">🖨️ / PDF सेभ</button>
+  `;
+
+  if (opts && opts.replaceToLoans) {
+    UI.showModal('📜 ऋण सम्झौता - ' + member.name, html, '<button class="btn btn-outline" onclick="openLoans()">← ऋण मेनु</button>', { replace: true, back: 'openLoans' });
+  } else if (opts && opts.replaceToSandbox) {
+    UI.showModal('🧪 अभ्यास ऋण सम्झौता - ' + member.name, html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← अभ्यासमा फर्कनुहोस्</button>', { replace: true, back: 'openLoanSandbox' });
+  } else if (opts && opts.noPush) {
+    UI.showModal('📜 ऋण सम्झौता - ' + member.name, html, '<button class="btn btn-outline" onclick="closeModal()">← फर्कनुहोस्</button>');
+  } else {
+    UI.showModal('📜 ऋण सम्झौता - ' + member.name, html, '<button class="btn btn-outline" onclick="closeModal()">← फर्कनुहोस्</button>', { push: true });
+  }
 }
 
 function showMemberMonthPaymentDetail(monthId, memberId) {
@@ -6803,19 +7219,22 @@ function openLoanSandbox() {
           </div>
         </div>
         <div class="loan-sbx-step">
-          <strong>२) डाटाबेस (D1) मा बस्ने रेकर्ड:</strong>
-          <div style="font-size:0.75rem;margin-top:2px">• <code>month.loansGiven</code> भित्र थपिन्छ र <code>member.outstandingLoan</code> मा रु. <strong>${Accounting.formatNum(last.entry.amount)}</strong> जोडिन्छ, अनि कोसको नगद <code>cashInHand</code> घट्छ।</div>
+          <strong>२) डाटाबेस (D1) मा बस्ने रेकर्ड (सम्झौता विवरण सहित):</strong>
+          <div style="font-size:0.75rem;margin-top:2px">• <code>month.loansGiven</code> भित्र <code>agreement</code> (सदस्य बयान + कोषाध्यक्ष निर्णय) सहित थपिन्छ, <code>member.outstandingLoan</code> मा रु. <strong>${Accounting.formatNum(last.entry.amount)}</strong> जोडिन्छ, र नगद घट्छ।</div>
           <pre class="loan-sbx-code">${jsonPreview}</pre>
         </div>
         <div class="loan-sbx-step">
-          <strong>३) सदस्यलाई जाने व्यक्तिगत सन्देश (Private Chat + Push):</strong>
+          <strong>३) सदस्यलाई जाने व्यक्तिगत सन्देश र पासबुकमा सम्झौता लिंक:</strong>
           <div style="font-size:0.76rem;color:#0f5132;background:#d1e7dd;padding:6px 8px;border-radius:8px;margin-top:4px">
             "तपाईंलाई रु. ${Accounting.formatNum(last.entry.amount)} ऋण लगानी गरियो। हालको बाँकी ऋण: रु. ${Accounting.formatNum(last.newBalance)}"
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
-          <button type="button" class="btn btn-purple btn-sm" onclick="openLoanSandboxPassbook('${last.entry.memberId}')">📖 अभ्यास पासबुक हेर्नुहोस्</button>
-          <button type="button" class="btn btn-info btn-sm" onclick="openLoanSandboxCollectionPreview()">📋 सारांशमा सहि हेर्नुहोस्</button>
+          <button type="button" class="btn btn-orange btn-sm" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(sbx.month.id))}','${escapeHtmlChat(String(last.entry.memberId))}',true,'${escapeHtmlChat(String(last.entry.id || ''))}',{push:true})">📄 अभ्यास सम्झौता / PDF</button>
+          <button type="button" class="btn btn-purple btn-sm" onclick="openLoanSandboxPassbook('${escapeHtmlChat(String(last.entry.memberId))}')">📖 अभ्यास पासबुक हेर्नुहोस्</button>
+        </div>
+        <div style="margin-top:6px">
+          <button type="button" class="btn btn-info btn-sm btn-block" onclick="openLoanSandboxCollectionPreview()">📋 सारांशमा सहि हेर्नुहोस्</button>
         </div>
       </div>`;
   }
@@ -6823,14 +7242,18 @@ function openLoanSandbox() {
   let sbxListHtml = '';
   if (loans.length) {
     sbxListHtml = '<div class="section-title mt-2">🧪 अभ्यासमा दिइएका ऋण (' + loans.length + ')</div>' +
-      loans.map((l) => {
+      loans.map((l, idx) => {
         const mem = sbx.data.members.find(x => x.id === l.memberId);
+        const key = l.id ? String(l.id) : String(idx);
         return `<div class="member-item" style="align-items:center">
           <div class="member-info">
             <div class="member-name">${mem ? mem.name : l.memberId} · रु. ${Accounting.formatNum(l.amount)}</div>
             <div class="member-meta">${l.note ? '📝 ' + escapeHtmlChat(l.note) + ' · ' : ''}${new Date(l.time).toLocaleTimeString('ne-NP')}</div>
           </div>
-          <div>${renderTinySignature(l.signature)}</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            ${renderTinySignature(l.signature)}
+            <button type="button" class="btn btn-light btn-sm" style="padding:3px 7px;font-size:0.71rem;border:1px solid #fdba74;color:#9a3412" onclick="showMemberLoanAgreement('${escapeHtmlChat(String(sbx.month.id))}','${escapeHtmlChat(String(l.memberId))}',true,'${escapeHtmlChat(key)}',{push:true})">📄</button>
+          </div>
         </div>`;
       }).join('');
   }
@@ -6850,11 +7273,11 @@ function openLoanSandbox() {
     ${lastInspectHtml}
     ${sbxListHtml}
     <div class="section-card mt-2" style="padding:10px 12px;background:#f8fafc">
-      <div class="section-title" style="font-size:0.86rem;margin-bottom:6px">📌 रियल ऋण लगानी हुँदा के–के हुन्छ र कहाँ बस्छ?</div>
+      <div class="section-title" style="font-size:0.86rem;margin-bottom:6px">📌 रियल ऋण लगानी प्रक्रिया र डाटा भण्डारण (३ चरण):</div>
       <div style="font-size:0.78rem;line-height:1.5;color:#334155">
-        <div><strong>१. को र कहिले:</strong> केवल <strong>कोषाध्यक्ष</strong>ले <strong>कलेक्सन बन्द</strong> भएपछि मात्र ऋण दिन मिल्छ।</div>
-        <div><strong>२. के माग्छ:</strong> रकम (&gt; ०), वैकल्पिक उद्देश्य/साक्षी, <strong>अनिवार्य सहि</strong>, कोषाध्यक्ष <strong>PIN</strong> र पर्याप्त नगद जाँच।</div>
-        <div><strong>३. कहाँ बस्छ:</strong> सहि फोटो हल्का JPEG बनेर <strong>Cloudflare R2</strong> (<code>/api/media/signatures/...</code>) मा, ऋण रेकर्ड <strong>D1</strong> (<code>month.loansGiven</code> र <code>member.outstandingLoan</code>) मा, सदस्यको <strong>पासबुक</strong>, <strong>कलेक्सन सारांश</strong> (बुझिलिने सहि सहित), <strong>मासिक रसिद</strong> र <strong>निजी सूचना</strong> मा बस्छ।</div>
+        <div><strong>१. चरण १ (रकम र उद्देश्य):</strong> सदस्य छानेर ऋण रकम, वैकल्पिक उद्देश्य/साक्षी र कोषमा उपलब्ध नगद जाँच हुन्छ।</div>
+        <div><strong>२. चरण २ (सदस्य स्वीकारोक्ति + सहि):</strong> ऋण स्वीकारोक्ति बयान पढेर तलकै स्थिर बाकसमा सदस्यको डिजिटल सहि सेभ गरिन्छ।</div>
+        <div><strong>३. चरण ३ (कोषाध्यक्ष निर्णय + PIN):</strong> निर्णय प्रमाण पत्रसँगै कोषाध्यक्षको ४-अंकको PIN पुष्टि भएपछि <strong>Cloudflare R2</strong> मा सहि र <strong>D1</strong> मा सम्झौता सहित ऋण बस्छ — जुन सदस्यको <strong>पासबुकको ऋण बाकस</strong> बाट क्लिक गरी PDF सेभ गर्न सकिन्छ।</div>
       </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
@@ -6888,37 +7311,98 @@ function filterLoanSandboxMembers() {
   if (box) box.innerHTML = UI.renderMemberList(filtered, 'selectLoanSandboxMember');
 }
 
-function selectLoanSandboxMember(memberId) {
+function selectLoanSandboxMember(memberId, presetDraft) {
   const sbx = getOrInitLoanSandbox();
   const member = (sbx.data.members || []).find(m => m.id === memberId);
   if (!member) return;
   const availCash = getLoanSandboxCash(sbx);
+  const prevLoan = Number(member.outstandingLoan) || 0;
+  const presetAmt = (presetDraft && presetDraft.memberId === memberId) ? presetDraft.amount : (availCash >= 5000 ? 5000 : '');
+  const presetNote = (presetDraft && presetDraft.memberId === memberId) ? (presetDraft.note || '') : '';
 
   const html = `
     <div class="loan-sbx-banner" style="padding:7px 10px;font-size:0.76rem;color:#78350f">
-      🧪 अभ्यास मोड · उपलब्ध अभ्यास नगद: <strong>रु. ${Accounting.formatNum(availCash)}</strong>
+      🧪 अभ्यास मोड · चरण १ / ३ · उपलब्ध अभ्यास नगद: <strong>रु. ${Accounting.formatNum(availCash)}</strong>
     </div>
-    <div class="section-title">${member.name} (बाँकी ऋण: रु. ${Accounting.formatNum(member.outstandingLoan || 0)})</div>
+    <div class="loan-summary-strip">
+      <div class="loan-summary-chip"><div class="k">सदस्य</div><div class="v">${escapeHtmlChat(member.name)}</div></div>
+      <div class="loan-summary-chip"><div class="k">पहिलेको सावाँ</div><div class="v" style="color:#dc3545">रु. ${Accounting.formatNum(prevLoan)}</div></div>
+      <div class="loan-summary-chip"><div class="k">अभ्यास नगद</div><div class="v" style="color:#198754">रु. ${Accounting.formatNum(availCash)}</div></div>
+    </div>
     <div class="form-group">
       <label>💵 ऋण रकम</label>
-      <input type="number" id="sbx-loan-amount" placeholder="जस्तै: 5000" value="${availCash >= 5000 ? 5000 : ''}">
+      <input type="number" id="sbx-loan-amount" placeholder="जस्तै: 5000" value="${presetAmt}">
     </div>
     <div class="form-group">
       <label>📝 उद्देश्य / म्याद / साक्षी (वैकल्पिक)</label>
-      <input type="text" id="sbx-loan-note" placeholder="जस्तै: व्यापार · ६ महिना · साक्षी राम">
+      <input type="text" id="sbx-loan-note" placeholder="जस्तै: व्यापार · ६ महिना · साक्षी राम" value="${escapeHtmlChat(presetNote)}">
     </div>
-    <div class="form-group">
-      <label>✍️ सदस्यको सहि (अनिवार्य — औंला वा माउसले कोर्नुहोस्)</label>
-      <div class="loan-sbx-sig-wrap">
-        <canvas id="sbx-sig-canvas" width="320" height="150"></canvas>
-      </div>
-      <div class="sig-actions">
-        <button type="button" class="btn btn-light btn-sm" onclick="clearLoanSandboxSignature()">🗑️ सहि मेट्नुहोस्</button>
-      </div>
-    </div>
-    <button type="button" class="btn btn-orange btn-block" onclick="submitLoanSandbox('${memberId}')">✅ अभ्यास ऋण लगानी गरी रेकर्ड हेर्नुहोस्</button>
+    <button type="button" class="btn btn-orange btn-block" onclick="proceedToLoanSandboxAcceptance('${escapeHtmlChat(String(memberId))}')">अगाडि बढ्नुहोस् (अभ्यास स्वीकारोक्ति फारम) →</button>
   `;
   UI.showModal('🧪 अभ्यास ऋण — ' + member.name, html, '<button class="btn btn-outline" onclick="showLoanSandboxMemberPick()">← फर्कनुहोस्</button>', { replace: true, back: 'showLoanSandboxMemberPick' });
+}
+
+function proceedToLoanSandboxAcceptance(memberId) {
+  const amount = parseFloat((document.getElementById('sbx-loan-amount') && document.getElementById('sbx-loan-amount').value) || 0) || 0;
+  if (amount <= 0) return UI.toast('रकम लेख्नुहोस्', 'error');
+  const note = ((document.getElementById('sbx-loan-note') && document.getElementById('sbx-loan-note').value) || '').trim();
+
+  const sbx = getOrInitLoanSandbox();
+  const member = (sbx.data.members || []).find(m => m.id === memberId);
+  if (!member) return UI.toast('सदस्य भेटिएन', 'error');
+  const availCash = getLoanSandboxCash(sbx);
+  if (amount > availCash) {
+    return UI.toast('अभ्यास नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(availCash) + ' — +रु. ५०,००० थप्नुहोस्)', 'error');
+  }
+
+  _loanSbxPendingDraft = {
+    memberId,
+    memberName: member.name,
+    groupName: (sbx.data.group && sbx.data.group.name) || 'समूह बचत',
+    prevLoan: Number(member.outstandingLoan) || 0,
+    amount,
+    newTotalLoan: (Number(member.outstandingLoan) || 0) + amount,
+    interestRate: (sbx.data.settings && sbx.data.settings.interestRate) || 0,
+    cashBefore: availCash,
+    note,
+    dateStr: formatNepaliTodayDateStr(),
+    signature: ''
+  };
+  openLoanSandboxAcceptanceStep();
+}
+
+function backToLoanSandboxStep1() {
+  if (!_loanSbxPendingDraft) return openLoanSandbox();
+  selectLoanSandboxMember(_loanSbxPendingDraft.memberId, _loanSbxPendingDraft);
+}
+
+function openLoanSandboxAcceptanceStep() {
+  if (!_loanSbxPendingDraft) return openLoanSandbox();
+  const d = _loanSbxPendingDraft;
+  const html = `
+    <div class="loan-step-badge">🧪 अभ्यास चरण २ / ३ · सदस्य स्वीकारोक्ति र सहि</div>
+    <div class="loan-agree-scroll">
+      <div class="loan-summary-strip">
+        <div class="loan-summary-chip"><div class="k">पहिलेको सावाँ</div><div class="v">रु. ${Accounting.formatNum(d.prevLoan)}</div></div>
+        <div class="loan-summary-chip"><div class="k">आज थप ऋण</div><div class="v" style="color:#c2410c">+रु. ${Accounting.formatNum(d.amount)}</div></div>
+        <div class="loan-summary-chip"><div class="k">आजबाट जम्मा सावाँ</div><div class="v" style="color:#dc3545">रु. ${Accounting.formatNum(d.newTotalLoan)}</div></div>
+      </div>
+      <div class="loan-doc-paper">
+        ${buildLoanMemberDeclarationParagraphs(d)}
+      </div>
+    </div>
+    <div class="loan-sig-sticky">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <label style="font-size:0.82rem;font-weight:700;margin:0">✍️ सदस्यको सहि (तल कोर्नुहोस्)</label>
+        <button type="button" class="btn btn-light btn-sm" style="padding:3px 9px;font-size:0.74rem" onclick="clearLoanSandboxSignature()">🗑️ मेट्नुहोस्</button>
+      </div>
+      <div class="loan-sbx-sig-wrap">
+        <canvas id="sbx-sig-canvas" width="340" height="122"></canvas>
+      </div>
+      <button type="button" class="btn btn-orange btn-block" onclick="submitLoanSandbox('${escapeHtmlChat(String(d.memberId))}')">✅ सहि सेभ गरी अर्को चरणमा जानुहोस् →</button>
+    </div>
+  `;
+  UI.showModal('🧪 अभ्यास स्वीकारोक्ति - ' + d.memberName, html, '<button class="btn btn-outline" onclick="backToLoanSandboxStep1()">← रकम सच्याउनुहोस्</button>', { loanSign: true, replace: true, back: 'backToLoanSandboxStep1' });
   initLoanSandboxSignaturePad();
 }
 
@@ -6959,46 +7443,43 @@ function clearLoanSandboxSignature() {
 }
 
 function submitLoanSandbox(memberId) {
-  const amount = parseFloat((document.getElementById('sbx-loan-amount') && document.getElementById('sbx-loan-amount').value) || 0) || 0;
-  if (amount <= 0) return UI.toast('रकम लेख्नुहोस्', 'error');
+  if (!_loanSbxPendingDraft) return openLoanSandbox();
   if (!_loanSbxSigPad || !_loanSbxSigPad.hasDrawn) return UI.toast('सदस्यको सहि कोर्न अनिवार्य छ', 'error');
-
-  const note = ((document.getElementById('sbx-loan-note') && document.getElementById('sbx-loan-note').value) || '').trim();
-  const signature = compressSignatureFromPad(_loanSbxSigPad);
-
-  const sbx = getOrInitLoanSandbox();
-  const availCash = getLoanSandboxCash(sbx);
-  if (amount > availCash) {
-    return UI.toast('अभ्यास नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(availCash) + ' — माथि +रु. ५०,००० थप्नुहोस्)', 'error');
-  }
-
-  _loanSbxPendingDraft = { memberId, amount, note, signature };
+  _loanSbxPendingDraft.signature = compressSignatureFromPad(_loanSbxSigPad);
+  _loanSbxPendingDraft.dateStr = formatNepaliTodayDateStr();
   showLoanSandboxPinConfirm();
 }
 
 function showLoanSandboxPinConfirm() {
   if (!_loanSbxPendingDraft) return openLoanSandbox();
   const d = _loanSbxPendingDraft;
-  const sbx = getOrInitLoanSandbox();
-  const member = (sbx.data.members || []).find(m => m.id === d.memberId);
-  const mName = member ? member.name : d.memberId;
 
   const html = `
-    <div class="loan-sbx-banner" style="padding:8px 10px;font-size:0.78rem;color:#78350f">
-      रियल ऋण लगानीमा यहाँ <strong>कोषाध्यक्षको ४-अंकको PIN</strong> अनिवार्य जाँच हुन्छ। अभ्यासमा तपाईंको रियल PIN वा कुनै पनि ४-अंक (उदा: <code>1234</code>) हालेर जाँच्न सक्नुहुन्छ।
+    <div class="loan-step-badge">🧪 अभ्यास चरण ३ / ३ · कोषाध्यक्ष निर्णय र PIN</div>
+    <div class="loan-doc-paper" style="background:#f8fbff;border-color:#bfdbfe;margin-bottom:10px">
+      <div style="font-weight:700;color:#0a58ca;margin-bottom:6px;border-bottom:1px solid #dbeafe;padding-bottom:4px">🏛️ कोषाध्यक्षको निर्णय तथा रकम भुक्तानी विवरण (अभ्यास)</div>
+      ${buildLoanTreasurerApprovalParagraphs(d)}
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;margin-top:8px;padding-top:8px;border-top:1px dashed #cbd5e1;flex-wrap:wrap">
+        <div>
+          <div style="font-size:0.72rem;color:#475569;margin-bottom:2px">सदस्यको डिजिटल सहि:</div>
+          ${renderTinySignature(d.signature, true)}
+        </div>
+        <div style="text-align:right;font-size:0.8rem">
+          <div style="color:#64748b">समूहको तर्फबाट:</div>
+          <strong>कोषाध्यक्ष</strong>
+        </div>
+      </div>
     </div>
-    <div class="report-card mb-2" style="padding:10px 12px">
-      <div class="report-row"><span class="label">सदस्य</span><span class="value">${escapeHtmlChat(mName)}</span></div>
-      <div class="report-row"><span class="label">अभ्यास ऋण रकम</span><span class="value fw-bold">रु. ${Accounting.formatNum(d.amount)}</span></div>
-      <div class="report-row"><span class="label">सहि Preview</span><span class="value">${renderTinySignature(d.signature)}</span></div>
+    <div class="loan-sbx-banner" style="padding:7px 10px;font-size:0.76rem;color:#78350f">
+      रियल ऋण लगानीमा कोषाध्यक्षको वास्तविक PIN जाँच हुन्छ। अभ्यासमा कुनै पनि ४-अंक (उदा: <code>1234</code>) हालेर जाँच्न सक्नुहुन्छ।
     </div>
     <div class="form-group">
       <label>🔢 ४-अंकको अभ्यास PIN हाल्नुहोस्</label>
       <input type="password" id="sbx-pin-input" maxlength="4" inputmode="numeric" value="1234" class="pin-input" onkeydown="if(event.key==='Enter')confirmLoanSandboxPin()">
     </div>
-    <button type="button" class="btn btn-orange btn-block" onclick="confirmLoanSandboxPin()">✅ PIN पुष्टि गरी अभ्यास ऋण सेभ गर्नुहोस्</button>
+    <button type="button" class="btn btn-orange btn-block" onclick="confirmLoanSandboxPin()">✅ PIN पुष्टि गरी अभ्यास ऋण र सम्झौता सेभ गर्नुहोस्</button>
   `;
-  UI.showModal('🔢 अभ्यास PIN जाँच', html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← अभ्यासमा फर्कनुहोस्</button>', { replace: true, back: 'openLoanSandbox' });
+  UI.showModal('🧪 अभ्यास कोषाध्यक्ष निर्णय - ' + d.memberName, html, '<button class="btn btn-outline" onclick="openLoanSandboxAcceptanceStep()">← अघिल्लो फारम</button>', { replace: true, back: 'openLoanSandboxAcceptanceStep' });
 }
 
 function confirmLoanSandboxPin() {
@@ -7013,12 +7494,33 @@ function confirmLoanSandboxPin() {
   const member = (curSbx.data.members || []).find(m => m.id === d.memberId);
   if (!member) return UI.toast('सदस्य भेटिएन', 'error');
 
+  const cashBefore = getLoanSandboxCash(curSbx);
+  const prevLoanNow = Number(member.outstandingLoan) || 0;
+  const agreement = buildLoanAgreementRecord({
+    groupName: (curSbx.data.group && curSbx.data.group.name) || 'समूह बचत',
+    memberName: member.name,
+    prevLoan: prevLoanNow,
+    amount: d.amount,
+    interestRate: (curSbx.data.settings && curSbx.data.settings.interestRate) || 0,
+    cashBefore,
+    note: d.note,
+    dateStr: d.dateStr || formatNepaliTodayDateStr()
+  });
+
   const idx = (curSbx.month.loansGiven || []).length;
-  const entry = { memberId: d.memberId, amount: d.amount, signature: d.signature, time: new Date().toISOString() };
+  const loanId = 'sbx_ln_' + Date.now() + '_' + idx;
+  const entry = {
+    id: loanId,
+    memberId: d.memberId,
+    amount: d.amount,
+    signature: d.signature,
+    time: new Date().toISOString(),
+    agreement
+  };
   if (d.note) entry.note = d.note;
   curSbx.month.loansGiven = curSbx.month.loansGiven || [];
   curSbx.month.loansGiven.push(entry);
-  member.outstandingLoan = (Number(member.outstandingLoan) || 0) + d.amount;
+  member.outstandingLoan = prevLoanNow + d.amount;
   Accounting.recalcMonth(curSbx.month, curSbx.data);
 
   curSbx.lastRecord = {
@@ -7029,7 +7531,7 @@ function confirmLoanSandboxPin() {
   };
   _loanSbxPendingDraft = null;
   persistLoanSandbox(curSbx);
-  UI.toast('🧪 अभ्यास ऋण रेकर्ड भयो (रियल डाटा छोइएको छैन)', 'success');
+  UI.toast('🧪 अभ्यास ऋण र सम्झौता रेकर्ड भयो (रियल डाटा छोइएको छैन)', 'success');
   openLoanSandbox();
 }
 
@@ -7037,7 +7539,7 @@ function openLoanSandboxPassbook(memberId) {
   const sbx = getOrInitLoanSandbox();
   const member = (sbx.data.members || []).find(m => m.id === memberId);
   if (!member) return UI.toast('सदस्य भेटिएन', 'error');
-  const html = buildPassbookTwoBoxHtml(sbx.data, member, { monthOverride: sbx.month });
+  const html = buildPassbookTwoBoxHtml(sbx.data, member, { monthOverride: sbx.month, sandbox: true });
   UI.showModal('🧪 अभ्यास पासबुक - ' + member.name, html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← अभ्यासमा फर्कनुहोस्</button>', { passbook: true, replace: true, back: 'openLoanSandbox' });
 }
 

@@ -1,5 +1,5 @@
 /* समूह बचत — Single Unified Service Worker (Offline Cache + Standard Web Push) */
-const CACHE = 'samuha-cf-v13';
+const CACHE = 'samuha-cf-v14';
 const ASSETS = [
   './',
   './index.html',
@@ -8,12 +8,12 @@ const ASSETS = [
   './icon-512.png',
   './logo-group.png',
   './owner-photo.jpg',
-  './css/styles.css?v=13',
-  './js/db.js?v=13',
-  './js/accounting.js?v=13',
-  './js/auth.js?v=13',
-  './js/ui.js?v=13',
-  './js/app.js?v=13'
+  './css/styles.css?v=14',
+  './js/db.js?v=14',
+  './js/accounting.js?v=14',
+  './js/auth.js?v=14',
+  './js/ui.js?v=14',
+  './js/app.js?v=14'
 ];
 
 self.addEventListener('install', (e) => {

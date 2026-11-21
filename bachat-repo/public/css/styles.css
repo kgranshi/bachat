@@ -1307,9 +1307,244 @@ tr:active { background: #f0f7ff; }
   background: #f0f7ff;
   font-weight: 600;
 }
+.pb-loan-link {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  color: #0a58ca;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.pb-agreement-pill {
+  display: inline-block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  background: #fff3cd;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+  border-radius: 6px;
+  padding: 1px 5px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* ===== Loan Step-2 (Member Declaration Scroll + Always-Visible Signature) ===== */
+.modal.modal-loan-sign {
+  height: 92vh;
+  height: 92dvh;
+  max-height: 92dvh;
+  max-width: 640px;
+  border-radius: 16px 16px 0 0;
+}
+@media (min-width: 768px) {
+  .modal.modal-loan-sign {
+    height: 88dvh;
+    max-height: 88dvh;
+    margin: auto;
+    border-radius: 16px;
+  }
+}
+.modal.modal-loan-sign .modal-header {
+  padding: 11px 15px;
+  flex-shrink: 0;
+}
+.modal.modal-loan-sign .modal-body {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.modal.modal-loan-sign .modal-footer {
+  padding: 9px 14px;
+  flex-shrink: 0;
+}
+.loan-step-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #084298;
+  background: #e7f1ff;
+  border: 1px solid #b6d4fe;
+  border-radius: 8px;
+  padding: 4px 10px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.loan-agree-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 2px;
+  margin-bottom: 8px;
+}
+.loan-doc-paper {
+  background: #fffdf7;
+  border: 1px solid #e5dcc5;
+  border-radius: 10px;
+  padding: 11px 12px;
+  font-size: 0.85rem;
+  line-height: 1.65;
+  color: #1e293b;
+}
+.loan-doc-paper p {
+  margin: 0 0 8px 0;
+}
+.loan-doc-paper p:last-child {
+  margin-bottom: 0;
+}
+.loan-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.loan-summary-chip {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 5px 7px;
+  text-align: center;
+}
+.loan-summary-chip .k {
+  font-size: 0.67rem;
+  color: #64748b;
+}
+.loan-summary-chip .v {
+  font-size: 0.81rem;
+  font-weight: 700;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.loan-sig-sticky {
+  flex-shrink: 0;
+  border-top: 1.5px solid #e2e8f0;
+  padding-top: 8px;
+  background: #fff;
+}
+.loan-sig-sticky .sig-pad-wrap,
+.loan-sig-sticky .loan-sbx-sig-wrap {
+  margin: 4px 0 6px 0;
+}
+.loan-sig-sticky #sig-canvas,
+.loan-sig-sticky #sbx-sig-canvas {
+  height: 122px !important;
+}
+
+/* ===== Two-Section Printable Loan Agreement Voucher ===== */
+.loan-voucher {
+  background: #fff;
+  border: 2px solid #1e293b;
+  border-radius: 12px;
+  padding: 14px;
+  color: #0f172a;
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+.loan-voucher-head {
+  text-align: center;
+  border-bottom: 1.5px dashed #94a3b8;
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+.loan-voucher-head h2 {
+  margin: 0 0 2px 0;
+  font-size: 1.04rem;
+  color: #0f172a;
+}
+.loan-voucher-head .sub {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #9a3412;
+}
+.loan-voucher-head .meta {
+  font-size: 0.74rem;
+  color: #475569;
+  margin-top: 2px;
+}
+.loan-voucher-sec {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fcfcfd;
+  margin-bottom: 10px;
+}
+.loan-voucher-sec:last-child {
+  margin-bottom: 0;
+}
+.loan-voucher-sec-title {
+  font-weight: 700;
+  font-size: 0.83rem;
+  color: #0f172a;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 5px;
+  margin-bottom: 7px;
+}
+.loan-voucher-sig-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #cbd5e1;
+  flex-wrap: wrap;
+}
+.loan-voucher-sig-box {
+  text-align: center;
+  min-width: 145px;
+}
+.loan-voucher-sig-img {
+  height: 58px;
+  max-width: 175px;
+  object-fit: contain;
+  border: 1px solid #94a3b8;
+  border-radius: 6px;
+  background: #fff;
+  padding: 3px;
+  display: block;
+  margin: 0 auto 3px auto;
+}
+.loan-voucher-auth-box {
+  margin-left: auto;
+  text-align: right;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+.loan-tab-strip {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.loan-tab-pill {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.loan-tab-pill.active {
+  background: #0d6efd;
+  border-color: #0d6efd;
+  color: #fff;
+}
 
 @media print {
   .passbook-print-only { display: block !important; }
+  .pb-agreement-pill, .no-print { display: none !important; }
+  .pb-loan-link { color: #000 !important; text-decoration: none !important; font-weight: 600 !important; }
   .passbook-root,
   .passbook-two-grid,
   .passbook-box,
