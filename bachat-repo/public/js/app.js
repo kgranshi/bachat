@@ -6671,6 +6671,7 @@ window.fixDuplicateMembersNow = fixDuplicateMembersNow;
 // ========== TEMPORARY ISOLATED LOAN SANDBOX (REMOVE AFTER TESTING) ==========
 const LOAN_SBX_STORAGE_KEY = 'gs_loan_sandbox_temp_v1';
 let _loanSbxSigPad = null;
+let _loanSbxPendingDraft = null;
 
 function getOrInitLoanSandbox() {
   try {
@@ -6730,11 +6731,11 @@ function getOrInitLoanSandbox() {
     lastRecord: null,
     createdAt: new Date().toISOString()
   };
-  saveLoanSandbox(sbx);
+  persistLoanSandbox(sbx);
   return sbx;
 }
 
-function saveLoanSandbox(sbx) {
+function persistLoanSandbox(sbx) {
   try {
     sessionStorage.setItem(LOAN_SBX_STORAGE_KEY, JSON.stringify(sbx));
   } catch (e) {}
@@ -6743,6 +6744,7 @@ function saveLoanSandbox(sbx) {
 function clearLoanSandbox(stayInLoans = true) {
   try { sessionStorage.removeItem(LOAN_SBX_STORAGE_KEY); } catch (e) {}
   _loanSbxSigPad = null;
+  _loanSbxPendingDraft = null;
   UI.toast('अभ्यास डाटा सुरक्षित हटाइयो (रियल हिसाब जस्ताको तस्तै छ)', 'success');
   if (stayInLoans) openLoans();
 }
@@ -6750,13 +6752,14 @@ function clearLoanSandbox(stayInLoans = true) {
 function resetLoanSandbox() {
   try { sessionStorage.removeItem(LOAN_SBX_STORAGE_KEY); } catch (e) {}
   _loanSbxSigPad = null;
+  _loanSbxPendingDraft = null;
   openLoanSandbox();
 }
 
 function addLoanSandboxTestCash(amount) {
   const sbx = getOrInitLoanSandbox();
   sbx.extraCash = (sbx.extraCash || 0) + (Number(amount) || 50000);
-  saveLoanSandbox(sbx);
+  persistLoanSandbox(sbx);
   UI.toast('अभ्यास नगद +' + Accounting.formatNum(amount) + ' थपियो', 'success');
   openLoanSandbox();
 }
@@ -6820,7 +6823,7 @@ function openLoanSandbox() {
   let sbxListHtml = '';
   if (loans.length) {
     sbxListHtml = '<div class="section-title mt-2">🧪 अभ्यासमा दिइएका ऋण (' + loans.length + ')</div>' +
-      loans.map((l, idx) => {
+      loans.map((l) => {
         const mem = sbx.data.members.find(x => x.id === l.memberId);
         return `<div class="member-item" style="align-items:center">
           <div class="member-info">
@@ -6913,7 +6916,7 @@ function selectLoanSandboxMember(memberId) {
         <button type="button" class="btn btn-light btn-sm" onclick="clearLoanSandboxSignature()">🗑️ सहि मेट्नुहोस्</button>
       </div>
     </div>
-    <button type="button" class="btn btn-orange btn-block" onclick="saveLoanSandbox('${memberId}')">✅ अभ्यास ऋण लगानी गरी रेकर्ड हेर्नुहोस्</button>
+    <button type="button" class="btn btn-orange btn-block" onclick="submitLoanSandbox('${memberId}')">✅ अभ्यास ऋण लगानी गरी रेकर्ड हेर्नुहोस्</button>
   `;
   UI.showModal('🧪 अभ्यास ऋण — ' + member.name, html, '<button class="btn btn-outline" onclick="showLoanSandboxMemberPick()">← फर्कनुहोस्</button>', { replace: true, back: 'showLoanSandboxMemberPick' });
   initLoanSandboxSignaturePad();
@@ -6955,7 +6958,7 @@ function clearLoanSandboxSignature() {
   _loanSbxSigPad.hasDrawn = false;
 }
 
-function saveLoanSandbox(memberId) {
+function submitLoanSandbox(memberId) {
   const amount = parseFloat((document.getElementById('sbx-loan-amount') && document.getElementById('sbx-loan-amount').value) || 0) || 0;
   if (amount <= 0) return UI.toast('रकम लेख्नुहोस्', 'error');
   if (!_loanSbxSigPad || !_loanSbxSigPad.hasDrawn) return UI.toast('सदस्यको सहि कोर्न अनिवार्य छ', 'error');
@@ -6969,28 +6972,65 @@ function saveLoanSandbox(memberId) {
     return UI.toast('अभ्यास नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(availCash) + ' — माथि +रु. ५०,००० थप्नुहोस्)', 'error');
   }
 
-  UI.showPinModal('🧪 अभ्यास PIN जाँच (तपाईंको रियल PIN वा Test PIN): रु. ' + Accounting.formatNum(amount), () => {
-    const curSbx = getOrInitLoanSandbox();
-    const member = (curSbx.data.members || []).find(m => m.id === memberId);
-    if (!member) return;
-    const idx = (curSbx.month.loansGiven || []).length;
-    const entry = { memberId, amount, signature, time: new Date().toISOString() };
-    if (note) entry.note = note;
-    curSbx.month.loansGiven = curSbx.month.loansGiven || [];
-    curSbx.month.loansGiven.push(entry);
-    member.outstandingLoan = (Number(member.outstandingLoan) || 0) + amount;
-    Accounting.recalcMonth(curSbx.month, curSbx.data);
+  _loanSbxPendingDraft = { memberId, amount, note, signature };
+  showLoanSandboxPinConfirm();
+}
 
-    curSbx.lastRecord = {
-      entry,
-      newBalance: member.outstandingLoan,
-      signatureDataUrl: signature,
-      simulatedR2Path: '/api/media/signatures/' + curSbx.month.id + '-' + memberId + '-' + idx + '.jpg'
-    };
-    saveLoanSandbox(curSbx);
-    UI.toast('🧪 अभ्यास ऋण रेकर्ड भयो (रियल डाटा छोइएको छैन)', 'success');
-    openLoanSandbox();
-  });
+function showLoanSandboxPinConfirm() {
+  if (!_loanSbxPendingDraft) return openLoanSandbox();
+  const d = _loanSbxPendingDraft;
+  const sbx = getOrInitLoanSandbox();
+  const member = (sbx.data.members || []).find(m => m.id === d.memberId);
+  const mName = member ? member.name : d.memberId;
+
+  const html = `
+    <div class="loan-sbx-banner" style="padding:8px 10px;font-size:0.78rem;color:#78350f">
+      रियल ऋण लगानीमा यहाँ <strong>कोषाध्यक्षको ४-अंकको PIN</strong> अनिवार्य जाँच हुन्छ। अभ्यासमा तपाईंको रियल PIN वा कुनै पनि ४-अंक (उदा: <code>1234</code>) हालेर जाँच्न सक्नुहुन्छ।
+    </div>
+    <div class="report-card mb-2" style="padding:10px 12px">
+      <div class="report-row"><span class="label">सदस्य</span><span class="value">${escapeHtmlChat(mName)}</span></div>
+      <div class="report-row"><span class="label">अभ्यास ऋण रकम</span><span class="value fw-bold">रु. ${Accounting.formatNum(d.amount)}</span></div>
+      <div class="report-row"><span class="label">सहि Preview</span><span class="value">${renderTinySignature(d.signature)}</span></div>
+    </div>
+    <div class="form-group">
+      <label>🔢 ४-अंकको अभ्यास PIN हाल्नुहोस्</label>
+      <input type="password" id="sbx-pin-input" maxlength="4" inputmode="numeric" value="1234" class="pin-input" onkeydown="if(event.key==='Enter')confirmLoanSandboxPin()">
+    </div>
+    <button type="button" class="btn btn-orange btn-block" onclick="confirmLoanSandboxPin()">✅ PIN पुष्टि गरी अभ्यास ऋण सेभ गर्नुहोस्</button>
+  `;
+  UI.showModal('🔢 अभ्यास PIN जाँच', html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← अभ्यासमा फर्कनुहोस्</button>', { replace: true, back: 'openLoanSandbox' });
+}
+
+function confirmLoanSandboxPin() {
+  const pin = ((document.getElementById('sbx-pin-input') && document.getElementById('sbx-pin-input').value) || '').trim();
+  if (!/^\d{4}$/.test(pin)) {
+    return UI.toast('ठीक ४ अंकको PIN हाल्नुहोस् (जस्तै: 1234)', 'error');
+  }
+  const d = _loanSbxPendingDraft;
+  if (!d) return openLoanSandbox();
+
+  const curSbx = getOrInitLoanSandbox();
+  const member = (curSbx.data.members || []).find(m => m.id === d.memberId);
+  if (!member) return UI.toast('सदस्य भेटिएन', 'error');
+
+  const idx = (curSbx.month.loansGiven || []).length;
+  const entry = { memberId: d.memberId, amount: d.amount, signature: d.signature, time: new Date().toISOString() };
+  if (d.note) entry.note = d.note;
+  curSbx.month.loansGiven = curSbx.month.loansGiven || [];
+  curSbx.month.loansGiven.push(entry);
+  member.outstandingLoan = (Number(member.outstandingLoan) || 0) + d.amount;
+  Accounting.recalcMonth(curSbx.month, curSbx.data);
+
+  curSbx.lastRecord = {
+    entry,
+    newBalance: member.outstandingLoan,
+    signatureDataUrl: d.signature,
+    simulatedR2Path: '/api/media/signatures/' + curSbx.month.id + '-' + d.memberId + '-' + idx + '.jpg'
+  };
+  _loanSbxPendingDraft = null;
+  persistLoanSandbox(curSbx);
+  UI.toast('🧪 अभ्यास ऋण रेकर्ड भयो (रियल डाटा छोइएको छैन)', 'success');
+  openLoanSandbox();
 }
 
 function openLoanSandboxPassbook(memberId) {
