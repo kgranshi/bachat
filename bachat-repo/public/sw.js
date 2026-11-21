@@ -1,5 +1,5 @@
 /* समूह बचत — Single Unified Service Worker (Offline Cache + Standard Web Push) */
-const CACHE = 'samuha-cf-v8';
+const CACHE = 'samuha-cf-v10';
 const ASSETS = [
   './',
   './index.html',

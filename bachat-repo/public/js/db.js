@@ -12,6 +12,7 @@ const DB = {
   VERSION_KEY: 'gs_server_version',
   PENDING_KEY: 'gs_pending_sync',
   PENDING_CHAT_KEY: 'gs_pending_chat',
+  PENDING_TERMS_KEY: 'gs_pending_terms_accept',
 
   _cache: null,
   _cloud: false,
@@ -405,6 +406,7 @@ const DB = {
       if (this.getPendingQueue().length > 0) return false;
     }
     await this.flushChatQueue();
+    await this.flushPendingTermsAccept();
     try {
       const since = force ? -1 : this.getServerVersion();
       const res = await this.apiFetch('/state?sinceVersion=' + encodeURIComponent(since), { method: 'GET' });
@@ -418,6 +420,9 @@ const DB = {
 
       if (res.body.readState) {
         this.applyUserReadState(res.body.readState);
+      }
+      if (res.body.termsAcceptance) {
+        this.applyUserTermsAcceptance(res.body.termsAcceptance);
       }
 
       if (!res.body.unchanged && res.body.data) {
@@ -506,6 +511,89 @@ const DB = {
       } catch (e) {}
     }
     return merged;
+  },
+
+  getUserTermsAcceptance(userObj) {
+    const key = this.getUserReadKey(userObj);
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem('gs_terms_acc_' + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  },
+
+  applyUserTermsAcceptance(rec, userObj) {
+    const key = this.getUserReadKey(userObj);
+    if (!key || !rec || typeof rec !== 'object') return null;
+    const prev = this.getUserTermsAcceptance(userObj);
+    if (prev && Number(prev.version || 0) > Number(rec.version || 0)) {
+      return prev;
+    }
+    const next = {
+      version: Number(rec.version || 0),
+      acceptedAt: rec.acceptedAt || new Date().toISOString()
+    };
+    try { localStorage.setItem('gs_terms_acc_' + key, JSON.stringify(next)); } catch (e) {}
+    return next;
+  },
+
+  async flushPendingTermsAccept() {
+    if (!this.getToken() || !navigator.onLine) return false;
+    let pending = null;
+    try {
+      const raw = localStorage.getItem(this.PENDING_TERMS_KEY);
+      pending = raw ? JSON.parse(raw) : null;
+    } catch (e) { pending = null; }
+    if (!pending || !pending.version) return true;
+    try {
+      const res = await this.apiFetch('/terms/accept', {
+        method: 'POST',
+        body: JSON.stringify(pending)
+      });
+      if (res.ok && res.body && res.body.ok) {
+        try { localStorage.removeItem(this.PENDING_TERMS_KEY); } catch (e) {}
+        if (res.body.termsAcceptance) this.applyUserTermsAcceptance(res.body.termsAcceptance);
+        if (res.body.version) this.setServerVersion(res.body.version);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  },
+
+  async acceptTerms(version) {
+    const ver = Math.max(1, Number(version) || 1);
+    const acceptedAt = new Date().toISOString();
+    const rec = this.applyUserTermsAcceptance({ version: ver, acceptedAt });
+    const mid = typeof Auth !== 'undefined' && Auth.currentUser && Auth.currentUser.memberId;
+    if (mid) {
+      const data = this.load();
+      const mem = (data.members || []).find((m) => m && m.id === mid);
+      if (mem) {
+        mem.termsAcceptedVersion = ver;
+        mem.termsAcceptedAt = acceptedAt;
+        this.save(data, { localOnly: true });
+      }
+    }
+    if (!this.getToken() || !navigator.onLine) {
+      try { localStorage.setItem(this.PENDING_TERMS_KEY, JSON.stringify({ version: ver, acceptedAt })); } catch (e) {}
+      return { ok: true, queued: true, acceptance: rec };
+    }
+    try {
+      const res = await this.apiFetch('/terms/accept', {
+        method: 'POST',
+        body: JSON.stringify({ version: ver, acceptedAt })
+      });
+      if (res.ok && res.body && res.body.ok) {
+        try { localStorage.removeItem(this.PENDING_TERMS_KEY); } catch (e) {}
+        if (res.body.termsAcceptance) this.applyUserTermsAcceptance(res.body.termsAcceptance);
+        if (res.body.version) this.setServerVersion(res.body.version);
+        return { ok: true, acceptance: res.body.acceptance || rec };
+      }
+    } catch (e) {}
+    try { localStorage.setItem(this.PENDING_TERMS_KEY, JSON.stringify({ version: ver, acceptedAt })); } catch (e) {}
+    return { ok: true, queued: true, acceptance: rec };
   },
 
   async initCloud(onRemoteChange) {
@@ -731,6 +819,7 @@ const DB = {
     window.addEventListener('online', () => {
       this._updatePendingIndicator();
       this.flushChatQueue().catch(() => {});
+      this.flushPendingTermsAccept().catch(() => {});
       this.flushPending().then((ok) => {
         if (ok && typeof UI !== 'undefined' && UI.toast) {
           UI.toast('नेट आयो · हिसाब सुरक्षित सिंक भयो ✅', 'success');

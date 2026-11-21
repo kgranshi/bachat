@@ -164,13 +164,16 @@ const Auth = {
       if (!res.ok || !res.body || !res.body.ok) {
         return { ok: false, msg: (res.body && res.body.error) || 'लगइन मिलेन' };
       }
-      const { token, user, pinVerifier, version, data, chat, readState } = res.body;
+      const { token, user, pinVerifier, version, data, chat, readState, termsAcceptance } = res.body;
       DB.setToken(token);
       this.currentUser = user;
       this.setPinVerifier(pinVerifier || '');
       this.saveSession();
       if (typeof DB.applyUserReadState === 'function') {
         DB.applyUserReadState(readState || {}, user);
+      }
+      if (termsAcceptance && typeof DB.applyUserTermsAcceptance === 'function') {
+        DB.applyUserTermsAcceptance(termsAcceptance, user);
       }
       DB._applyServerPayload(data, chat, version);
       return { ok: true };

@@ -125,17 +125,22 @@ function showMainApp() {
   setTimeout(function () {
     if (Auth.isMember && Auth.isMember()) {
       runMemberOnboardingGate();
-    } else if (typeof syncWebPushSubscription === 'function' && typeof Notification !== 'undefined') {
-      if (Notification.permission === 'granted') {
-        syncWebPushSubscription(true).catch(function () {});
-      } else if (Notification.permission === 'default' && 'PushManager' in window && navigator.serviceWorker) {
-        try {
-          const prompted = sessionStorage.getItem('gs_push_hint');
-          if (!prompted) {
-            sessionStorage.setItem('gs_push_hint', '1');
-            UI.toast('🔔 बचत सूचनाका लागि सेटिङ → पुश सूचना खोल्नुहोस्', '');
-          }
-        } catch (e) {}
+    } else {
+      if (Auth.isTreasurer && Auth.isTreasurer()) {
+        checkTreasurerTermsGate();
+      }
+      if (typeof syncWebPushSubscription === 'function' && typeof Notification !== 'undefined') {
+        if (Notification.permission === 'granted') {
+          syncWebPushSubscription(true).catch(function () {});
+        } else if (Notification.permission === 'default' && 'PushManager' in window && navigator.serviceWorker) {
+          try {
+            const prompted = sessionStorage.getItem('gs_push_hint');
+            if (!prompted) {
+              sessionStorage.setItem('gs_push_hint', '1');
+              UI.toast('🔔 बचत सूचनाका लागि सेटिङ → पुश सूचना खोल्नुहोस्', '');
+            }
+          } catch (e) {}
+        }
       }
     }
   }, 900);
@@ -154,7 +159,7 @@ function showMainApp() {
   }
 }
 
-// ===== सदस्य अनबोर्डिङ (१. अनिवार्य Temp PIN परिवर्तन → २. अनिवार्य Push अनुमति/चेतावनी → ३. Skip मिल्ने गाइड) =====
+// ===== सदस्य अनबोर्डिङ (१. Temp PIN परिवर्तन → २. नियम तथा सर्त सहमति/परिमार्जन → ३. Push अनुमति → ४. Skip मिल्ने गाइड) =====
 function runMemberOnboardingGate() {
   if (!Auth.isMember || !Auth.isMember() || !Auth.currentUser) return;
   const mid = Auth.currentUser.memberId || 'm';
@@ -163,7 +168,13 @@ function runMemberOnboardingGate() {
     showMandatoryPinChangeModal();
     return;
   }
-  // २. पुश नोटिफिकेसन अनुमति गेट
+  // २. नियम, सर्त तथा गोपनीयता नीति अनिवार्य सहमति (पहिलो पटक वा सर्त परिमार्जन हुँदा)
+  const termsStatus = hasAcceptedCurrentTerms(DB.load());
+  if (!termsStatus.accepted) {
+    openTermsModal({ gate: true, isUpdated: termsStatus.isUpdated });
+    return;
+  }
+  // ३. पुश नोटिफिकेसन अनुमति गेट
   const pushAckKey = 'gs_push_gate_done_' + mid;
   const perm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
   if (perm === 'granted') {
@@ -173,7 +184,7 @@ function runMemberOnboardingGate() {
     showPushPermissionGateModal();
     return;
   }
-  // ३. पहिलो पटक सदस्य एप गाइड (Skip गर्न मिल्ने)
+  // ४. पहिलो पटक सदस्य एप गाइड (Skip गर्न मिल्ने)
   const tourKey = 'gs_member_tour_done_' + mid;
   if (!localStorage.getItem(tourKey)) {
     showMemberGuideTour(0, false);
@@ -1240,8 +1251,6 @@ function openCollection() {
         <div class="icon">📅</div>
         <p>कुनै महिना खुल्ला छैन</p>
         ${canWrite ? `<button class="btn btn-primary btn-block mt-2" onclick="startNewMonth()">▶️ नयाँ महिना सुरु गर्नुहोस्</button>` : ''}
-        <button class="btn btn-warning btn-block mt-2" onclick="openSandboxCollection()">🧪 अस्थायी अभ्यास मासिक असुली (Test Mode)</button>
-        <p class="text-muted mt-1" style="font-size:0.76rem">अभ्यास मोडले वास्तविक हिसाब वा सर्भरमा कुनै असर गर्दैन — हेरेर अन्त्यमा मेटाउन मिल्छ।</p>
       </div>
     `;
   } else {
@@ -1281,9 +1290,6 @@ function openCollection() {
       }
     }
     html += `<button class="btn btn-outline btn-block mt-1" onclick="openCashTallyModal()">💵 नगद गन्ने / मिलान (Cash Tally)</button>`;
-    if (month.status === 'closed') {
-      html += `<button class="btn btn-warning btn-block mt-1" onclick="openSandboxCollection()">🧪 अस्थायी अभ्यास मासिक असुली (Test Mode)</button>`;
-    }
   }
 
   UI.showModal('📥 मासिक कलेक्सन', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>', { root: true });
@@ -1424,18 +1430,17 @@ function renderCollectStatusList(members, month, dataObj, selectFnName) {
   }).join('');
 }
 
-function filterCollectMemberList(isSandbox) {
-  const inpId = isSandbox ? 'sb-collect-search' : 'collect-search';
-  const listId = isSandbox ? 'sb-collect-member-list' : 'collect-member-list';
-  const q = ((document.getElementById(inpId) && document.getElementById(inpId).value) || '').trim().toLowerCase();
-  const data = isSandbox ? _ensureSandboxData() : DB.load();
+function filterCollectMemberList() {
+  const inp = document.getElementById('collect-search');
+  const q = ((inp && inp.value) || '').trim().toLowerCase();
+  const data = DB.load();
   const month = Accounting.getCurrentMonth(data);
   if (!month) return;
   const filtered = (data.members || []).filter(m =>
     m && m.active && (!q || (m.name || '').toLowerCase().includes(q) || (m.mobile || '').toLowerCase().includes(q))
   );
-  const el = document.getElementById(listId);
-  if (el) el.innerHTML = renderCollectStatusList(filtered, month, data, isSandbox ? 'sandboxSelectCollectMember' : 'selectCollectMember');
+  const el = document.getElementById('collect-member-list');
+  if (el) el.innerHTML = renderCollectStatusList(filtered, month, data, 'selectCollectMember');
 }
 
 function showCollectMember(preselectId) {
@@ -1462,7 +1467,7 @@ function showCollectMember(preselectId) {
       <span class="text-muted fw-bold">${collected}/${active.length} जना</span>
     </div>
     <div class="search-box">
-      <input type="text" id="collect-search" placeholder="सदस्यको नाम वा मोबाइल खोज्नुहोस्..." oninput="filterCollectMemberList(false)">
+      <input type="text" id="collect-search" placeholder="सदस्यको नाम वा मोबाइल खोज्नुहोस्..." oninput="filterCollectMemberList()">
     </div>
     <div id="collect-member-list">${renderCollectStatusList(active, month, data, 'selectCollectMember')}</div>
   `;
@@ -1677,327 +1682,6 @@ function doCloseCollection() {
     UI.updateHeader(data);
     openCollection();
   });
-}
-
-// ========== TEMPORARY DUPLICATE MONTHLY COLLECTION (ISOLATED SANDBOX) ==========
-window._sandboxData = null;
-
-function _ensureSandboxData() {
-  if (!window._sandboxData) {
-    const clone = JSON.parse(JSON.stringify(DB.load()));
-    clone.chat = { group: [], private: {} };
-    window._sandboxData = clone;
-  }
-  return window._sandboxData;
-}
-
-function _sandboxBannerHtml() {
-  return `<div style="background:#fff3cd;border:1px solid #ffda6a;border-left:4px solid #fd7e14;padding:8px 10px;border-radius:8px;font-size:0.78rem;margin-bottom:10px;color:#664d03;display:flex;justify-content:space-between;align-items:center;gap:8px">
-    <div>🧪 <strong>अस्थायी अभ्यास मोड</strong> — वास्तविक हिसाब/सर्भरमा जाँदैन</div>
-    <button type="button" class="btn btn-danger btn-sm" style="padding:3px 8px;font-size:0.72rem;white-space:nowrap" onclick="sandboxDelete()">🗑️ मेटाउनुहोस्</button>
-  </div>`;
-}
-
-function openSandboxCollection() {
-  if (!Auth.isAdmin()) return;
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  let html = _sandboxBannerHtml();
-
-  if (!month) {
-    html += `
-      <div class="empty-state" style="padding:16px 10px">
-        <div class="icon">🧪</div>
-        <p>अस्थायी अभ्यास महिना सुरु गर्नुहोस् (वास्तविक डेटामा असर पर्दैन)</p>
-        <button class="btn btn-primary btn-block mt-2" onclick="sandboxStartMonth()">▶️ अभ्यास महिना सुरु गर्नुहोस्</button>
-        <button class="btn btn-danger btn-block mt-1" onclick="sandboxDelete()">🗑️ अभ्यास मेटाउनुहोस् / फर्कनुहोस्</button>
-      </div>
-    `;
-  } else {
-    Accounting.recalcMonth(month, data);
-    const collected = Object.keys(month.collections || {}).length;
-    const total = (data.members || []).filter(m => m.active).length;
-
-    html += `
-      <div class="collection-header">
-        <div class="stat-pill"><div class="num">${month.name}</div><div class="lbl">अभ्यास महिना</div></div>
-        <div class="stat-pill"><div class="num">${collected}/${total}</div><div class="lbl">कलेक्सन</div></div>
-        <div class="stat-pill"><div class="num">${month.status === 'open' ? '🟢 खुल्ला' : month.status === 'collection_closed' ? '🟡 बन्द' : '🔴 सकियो'}</div><div class="lbl">स्थिति</div></div>
-      </div>
-      <div class="report-card mb-2">
-        <div class="report-row"><span class="label">सुरु मौज्दात</span><span class="value fw-bold">${Accounting.formatNum(month.startAssets)}</span></div>
-        <div class="report-row"><span class="label">अन्तिम मौज्दात</span><span class="value">${Accounting.formatNum(month.finalAssets)}</span></div>
-        <div class="report-row"><span class="label">नगद (अभ्यास)</span><span class="value">${Accounting.formatNum(month.cashInHand)}</span></div>
-        <div class="report-row"><span class="label">प्रति कित्ता</span><span class="value">${Accounting.formatNum(Accounting.perKittaValue(data, month))}</span></div>
-      </div>
-    `;
-
-    if (month.status === 'open') {
-      html += `
-        <button class="btn btn-success btn-block mb-1" onclick="sandboxShowCollectMember()">📥 कलेक्सन गर्नुहोस् (अभ्यास)</button>
-        <button class="btn btn-danger btn-block mb-1" onclick="sandboxShowExpenseForm()">💸 खर्च लेख्नुहोस् (अभ्यास)</button>
-        <button class="btn btn-primary btn-block mb-1" onclick="sandboxShowOtherIncomeForm()">💰 अन्य आम्दानी (अभ्यास)</button>
-        <button class="btn btn-warning btn-block mb-1" onclick="sandboxCloseCollection()">🔒 कलेक्सन बन्द गर्नुहोस् (अभ्यास)</button>
-      `;
-    } else if (month.status === 'collection_closed') {
-      html += `
-        <button class="btn btn-danger btn-block mb-1" onclick="sandboxShowExpenseForm()">💸 खर्च लेख्नुहोस् (अभ्यास)</button>
-        <button class="btn btn-primary btn-block mb-1" onclick="sandboxShowOtherIncomeForm()">💰 अन्य आम्दानी (अभ्यास)</button>
-        <button class="btn btn-orange btn-block mb-1" onclick="sandboxOpenLoans()">🤝 ऋण लगानी (अभ्यास)</button>
-        <button class="btn btn-danger btn-block mb-1" onclick="sandboxCloseMonth()">🔒 अभ्यास महिना बन्द गर्नुहोस्</button>
-      `;
-    }
-    html += `<button class="btn btn-outline btn-danger btn-block mt-2" onclick="sandboxDelete()">🗑️ अस्थायी अभ्यास डेटा मेटाउनुहोस्</button>`;
-  }
-
-  UI.showModal('🧪 अभ्यास मासिक असुली', html, '<button class="btn btn-outline" onclick="openCollection()">← वास्तविक मासिक असुली</button>', { replace: true });
-}
-
-function sandboxStartMonth() {
-  const data = _ensureSandboxData();
-  if (data.currentMonthId) return openSandboxCollection();
-  let monthIndex = 0, yearBS = 2083;
-  const closed = Accounting.getClosedMonthsSorted(data);
-  if (closed.length > 0) {
-    const last = closed[closed.length - 1];
-    Accounting.recalcMonth(last, data);
-    monthIndex = (last.monthIndex + 1) % 12;
-    yearBS = last.yearBS;
-    if (monthIndex === 0) yearBS++;
-  } else {
-    const bsNow = typeof adToBsParts === 'function' ? adToBsParts(getNepalNow()) : null;
-    if (bsNow) { yearBS = bsNow.year; monthIndex = bsNow.monthIndex; }
-  }
-  const month = Accounting.createMonth(data, monthIndex, yearBS);
-  month.name = month.name + ' (अभ्यास)';
-  data.months.push(month);
-  data.currentMonthId = month.id;
-  if (closed.length === 0 && data.migrationDone) {
-    Accounting.applyMigration(data);
-  }
-  Accounting.rebuildMonthChain(data);
-  UI.toast('अभ्यास महिना सुरु भयो (अस्थायी) ✅', 'success');
-  openSandboxCollection();
-}
-
-function sandboxShowCollectMember(preselectId) {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  if (!month || month.status !== 'open') return UI.toast('अभ्यास कलेक्सन खुल्ला छैन', 'error');
-  const active = (data.members || []).filter(m => m.active);
-  const collected = Object.keys(month.collections || {}).length;
-  const html = _sandboxBannerHtml() + `
-    <div style="font-size:0.75rem;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <span style="color:#198754;font-weight:700">● बचत भएको</span>
-        <span style="color:#0d6efd;font-weight:700">● अग्रिमले पुग्छ</span>
-        <span style="color:#dc3545;font-weight:700">● तिर्नुपर्ने</span>
-      </div>
-      <span class="text-muted fw-bold">${collected}/${active.length} जना</span>
-    </div>
-    <div class="search-box">
-      <input type="text" id="sb-collect-search" placeholder="सदस्यको नाम वा मोबाइल खोज्नुहोस्..." oninput="filterCollectMemberList(true)">
-    </div>
-    <div id="sb-collect-member-list">${renderCollectStatusList(active, month, data, 'sandboxSelectCollectMember')}</div>
-  `;
-  UI.showModal('🧪 अभ्यास कलेक्सन', html, '<button class="btn btn-outline" onclick="openSandboxCollection()">← फर्कनुहोस्</button>', { replace: true, full: true });
-  if (preselectId) sandboxSelectCollectMember(preselectId);
-}
-
-function sandboxSelectCollectMember(memberId) {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  const member = (data.members || []).find(m => m.id === memberId);
-  if (!member || !month) return;
-  const mandatory = Accounting.calcMandatory(member, data, month);
-  const already = (month.collections || {})[memberId];
-  const defaultAmt = already ? already.totalPaid : mandatory.total;
-  const html = _sandboxBannerHtml() + `
-    <div class="section-title">${member.name} · ${member.kitta} कित्ता</div>
-    <div class="pay-summary">
-      <div class="pay-row"><span>💾 बचत</span><span class="amount">${Accounting.formatNum(mandatory.saving)}</span></div>
-      <div class="pay-row"><span>📈 ब्याज</span><span class="amount">${Accounting.formatNum(mandatory.interest)}</span></div>
-      <div class="pay-row"><span>⚠️ जरिवाना</span><span class="amount">${Accounting.formatNum(mandatory.fine)}</span></div>
-      <div class="pay-row"><span>📉 अघिल्लो बाँकी</span><span class="amount">${Accounting.formatNum(mandatory.previousDue)}</span></div>
-      <div class="pay-row"><span>💚 अग्रिम कट्टा</span><span class="amount" style="color:#0d6efd">− ${Accounting.formatNum(mandatory.advanceCover)}</span></div>
-      <div class="pay-row total"><span>💵 नगद तिर्नुपर्ने</span><span class="amount" style="color:#0d6efd">${Accounting.formatNum(mandatory.total)}</span></div>
-      <div class="pay-row"><span>🤝 बाँकी ऋण</span><span class="amount">${Accounting.formatNum(member.outstandingLoan || 0)}</span></div>
-      <div class="pay-row"><span>💚 बाँकी अग्रिम</span><span class="amount">${Accounting.formatNum(member.advance || 0)}</span></div>
-    </div>
-    ${already ? `<button class="btn btn-danger btn-block mb-1" onclick="sandboxRemoveCollection('${memberId}')">🗑️ अभ्यास कलेक्सन हटाउनुहोस्</button>` : ''}
-    <div class="form-group">
-      <label>💵 यो पटक तिरेको नगद रकम (अभ्यास)</label>
-      <input type="number" id="sb-pay-amount" value="${defaultAmt}">
-    </div>
-    <button class="btn btn-success btn-block" onclick="sandboxSaveCollection('${memberId}')">✅ अभ्यासमा बचत गर्नुहोस्</button>
-  `;
-  UI.showModal('🧪 अभ्यास कलेक्सन - ' + member.name, html, '<button class="btn btn-outline" onclick="sandboxShowCollectMember()">← फर्कनुहोस्</button>', { replace: true });
-}
-
-function sandboxSaveCollection(memberId) {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  const amount = parseFloat(document.getElementById('sb-pay-amount').value) || 0;
-  if (!month || month.status !== 'open' || amount < 0) return;
-  if (amount === 0) {
-    delete month.collections[memberId];
-    Accounting.recalcMonth(month, data);
-    UI.toast('अभ्यास कलेक्सन रद्द', 'success');
-    return sandboxShowCollectMember();
-  }
-  const member = data.members.find(m => m.id === memberId);
-  const mandatory = Accounting.calcMandatory(member, data, month);
-  const allocated = Accounting.allocatePayment(
-    member,
-    amount,
-    { saving: mandatory.saving, interest: mandatory.interest, fine: mandatory.fine, previousDue: mandatory.previousDue, total: mandatory.totalGross },
-    (member.outstandingLoan || 0) > 0,
-    mandatory.advanceCover
-  );
-  if (mandatory.advanceCover > 0) allocated.coveredByAdvance = true;
-  month.collections[memberId] = { ...allocated, time: new Date().toISOString() };
-  Accounting.recalcMonth(month, data);
-  UI.toast('अभ्यास कलेक्सन सेभ (अस्थायी) ✅', 'success');
-  sandboxShowCollectMember();
-}
-
-function sandboxRemoveCollection(memberId) {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  if (!month || month.status !== 'open') return;
-  delete month.collections[memberId];
-  Accounting.recalcMonth(month, data);
-  UI.toast('अभ्यास कलेक्सन हटाइयो', 'success');
-  sandboxShowCollectMember();
-}
-
-function sandboxShowExpenseForm() {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  if (!month || month.status === 'closed') return;
-  const list = (month.expenseDetails || []).map(d =>
-    `<div class="report-row"><span class="label">${d.note || 'खर्च'}</span><span class="value" style="color:#dc3545">− ${Accounting.formatNum(d.amount)}</span></div>`
-  ).join('') || '<div class="text-muted text-center">अहिलेसम्म खर्च छैन</div>';
-  const html = _sandboxBannerHtml() + `
-    <div class="report-card mb-2">${list}</div>
-    <div class="form-group"><label>रकम</label><input type="number" id="sb-exp-amt" placeholder="खर्च रकम"></div>
-    <div class="form-group"><label>कैफियत</label><input type="text" id="sb-exp-note" placeholder="कारण"></div>
-    <button class="btn btn-danger btn-block" onclick="sandboxSaveExpense()">✅ अभ्यास खर्च सेभ</button>
-  `;
-  UI.showModal('🧪 अभ्यास खर्च', html, '<button class="btn btn-outline" onclick="openSandboxCollection()">← फर्कनुहोस्</button>', { replace: true });
-}
-
-function sandboxSaveExpense() {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  const amount = parseFloat(document.getElementById('sb-exp-amt').value) || 0;
-  const note = (document.getElementById('sb-exp-note').value || '').trim();
-  if (amount <= 0 || !note) return UI.toast('रकम र कैफियत हाल्नुहोस्', 'error');
-  month.expenseDetails = month.expenseDetails || [];
-  month.expenseDetails.push({ type: 'general', amount, note, time: new Date().toISOString() });
-  Accounting.recalcMonth(month, data);
-  UI.toast('अभ्यास खर्च सेभ भयो ✅', 'success');
-  sandboxShowExpenseForm();
-}
-
-function sandboxShowOtherIncomeForm() {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  if (!month || month.status === 'closed') return;
-  const list = (month.otherIncomeDetails || []).map(d =>
-    `<div class="report-row"><span class="label">${d.note || 'अन्य'}</span><span class="value" style="color:#198754">+ ${Accounting.formatNum(d.amount)}</span></div>`
-  ).join('') || '<div class="text-muted text-center">अहिलेसम्म अन्य आम्दानी छैन</div>';
-  const html = _sandboxBannerHtml() + `
-    <div class="report-card mb-2">${list}</div>
-    <div class="form-group"><label>रकम</label><input type="number" id="sb-oi-amt" placeholder="आम्दानी रकम"></div>
-    <div class="form-group"><label>कैफियत</label><input type="text" id="sb-oi-note" placeholder="स्रोत"></div>
-    <button class="btn btn-primary btn-block" onclick="sandboxSaveOtherIncome()">✅ अभ्यास आम्दानी सेभ</button>
-  `;
-  UI.showModal('🧪 अभ्यास अन्य आम्दानी', html, '<button class="btn btn-outline" onclick="openSandboxCollection()">← फर्कनुहोस्</button>', { replace: true });
-}
-
-function sandboxSaveOtherIncome() {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  const amount = parseFloat(document.getElementById('sb-oi-amt').value) || 0;
-  const note = (document.getElementById('sb-oi-note').value || '').trim();
-  if (amount <= 0 || !note) return UI.toast('रकम र कैफियत हाल्नुहोस्', 'error');
-  month.otherIncomeDetails = month.otherIncomeDetails || [];
-  month.otherIncomeDetails.push({ type: 'general', amount, note, time: new Date().toISOString() });
-  Accounting.recalcMonth(month, data);
-  UI.toast('अभ्यास आम्दानी सेभ भयो ✅', 'success');
-  sandboxShowOtherIncomeForm();
-}
-
-function sandboxCloseCollection() {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  if (!month || month.status !== 'open') return;
-  Accounting.closeCollection(data, month);
-  UI.toast('अभ्यास कलेक्सन बन्द भयो ✅', 'success');
-  openSandboxCollection();
-}
-
-function sandboxOpenLoans() {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  const active = (data.members || []).filter(m => m.active);
-  const html = _sandboxBannerHtml() + `
-    <div class="report-card mb-2">
-      <div class="report-row highlight"><span class="label">उपलब्ध नगद (अभ्यास)</span><span class="value fw-bold">${Accounting.formatNum(month ? month.cashInHand : 0)}</span></div>
-    </div>
-    <div class="form-group"><label>ऋण दिने सदस्य</label>
-      <select id="sb-loan-mem">${active.map(m => `<option value="${m.id}">${m.name} (बाँकी: ${Accounting.formatNum(m.outstandingLoan || 0)})</option>`).join('')}</select>
-    </div>
-    <div class="form-group"><label>ऋण रकम</label><input type="number" id="sb-loan-amt" placeholder="रकम"></div>
-    <button class="btn btn-orange btn-block" onclick="sandboxSaveLoan()">✅ अभ्यास ऋण दिनुहोस्</button>
-  `;
-  UI.showModal('🧪 अभ्यास ऋण लगानी', html, '<button class="btn btn-outline" onclick="openSandboxCollection()">← फर्कनुहोस्</button>', { replace: true });
-}
-
-function sandboxSaveLoan() {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  if (!month || month.status !== 'collection_closed') return;
-  const memberId = document.getElementById('sb-loan-mem').value;
-  const amount = parseFloat(document.getElementById('sb-loan-amt').value) || 0;
-  const member = data.members.find(m => m.id === memberId);
-  if (!member || amount <= 0) return UI.toast('सदस्य र रकम हाल्नुहोस्', 'error');
-  Accounting.recalcMonth(month, data);
-  if (amount > month.cashInHand) return UI.toast('अभ्यास नगद पर्याप्त छैन', 'error');
-  month.loansGiven.push({ memberId, amount, signature: '✓', time: new Date().toISOString() });
-  member.outstandingLoan = (member.outstandingLoan || 0) + amount;
-  Accounting.recalcMonth(month, data);
-  UI.toast('अभ्यास ऋण लगानी भयो ✅', 'success');
-  openSandboxCollection();
-}
-
-function sandboxCloseMonth() {
-  const data = _ensureSandboxData();
-  const month = Accounting.getCurrentMonth(data);
-  if (!month || month.status !== 'collection_closed') return;
-  Accounting.closeMonth(data, month);
-  const perKitta = Accounting.perKittaValue(data, month);
-  const html = _sandboxBannerHtml() + `
-    <div class="section-title">✅ अभ्यास महिना बन्द परिणाम</div>
-    <div class="report-card mb-2">
-      <div class="report-row"><span class="label">महिना</span><span class="value fw-bold">${month.name}</span></div>
-      <div class="report-row"><span class="label">सुरु मौज्दात</span><span class="value">${Accounting.formatNum(month.startAssets)}</span></div>
-      <div class="report-row"><span class="label">जम्मा बचत</span><span class="value">${Accounting.formatNum(month.savingsCollected)}</span></div>
-      <div class="report-row"><span class="label">जम्मा ब्याज</span><span class="value">${Accounting.formatNum(month.interestCollected)}</span></div>
-      <div class="report-row highlight"><span class="label">अन्तिम मौज्दात</span><span class="value fw-bold">${Accounting.formatNum(month.finalAssets)}</span></div>
-      <div class="report-row"><span class="label">प्रति कित्ता मूल्य</span><span class="value fw-bold">${Accounting.formatNum(perKitta)}</span></div>
-    </div>
-    <button class="btn btn-primary btn-block mb-1" onclick="sandboxStartMonth()">▶️ अर्को अभ्यास महिना सुरु गर्नुहोस्</button>
-    <button class="btn btn-danger btn-block" onclick="sandboxDelete()">🗑️ अभ्यास डेटा मेटाउनुहोस्</button>
-  `;
-  UI.showModal('🧪 अभ्यास परिणाम', html, '<button class="btn btn-outline" onclick="openCollection()">← वास्तविक मासिक असुली</button>', { replace: true });
-}
-
-function sandboxDelete() {
-  window._sandboxData = null;
-  UI.toast('अस्थायी अभ्यास डेटा मेटियो (वास्तविक हिसाब सुरक्षित छ ✅)', 'success');
-  openCollection();
 }
 
 // ========== LOANS ==========
@@ -4020,20 +3704,498 @@ async function saveAdminProfile() {
   renderHomeByRole();
 }
 
+// ========== TERMS & CONDITIONS + MEMBER AGREEMENT ==========
+function getDefaultTermsClauses(groupName, domain) {
+  const gName = groupName || 'समूह बचत';
+  const dom = domain || 'bachat.gopalkoirala.com.np';
+  return [
+    {
+      id: 'tc1',
+      title: '१. परिचय तथा कार्यक्षेत्र',
+      detail: `यो वेब/मोबाइल एप ("${gName}" · ${dom}) समूहका सदस्यहरूबीच आन्तरिक मासिक बचत, ऋण, ब्याज र कोस हिसाब पारदर्शी रूपमा व्यवस्थापन गर्न सञ्चालन गरिएको निजी सामुदायिक प्रणाली हो। यो कुनै सार्वजनिक बैंक वा बाह्य वित्तीय संस्था होइन।`
+    },
+    {
+      id: 'tc2',
+      title: '२. बराबर अधिकार तथा समान दायित्व',
+      detail: 'समूहको विधान अनुसार प्रत्येक सक्रिय सदस्यको प्रति कित्ता शेयर मूल्य र वार्षिक मुनाफामा बराबर हक लाग्नेछ। साथै समयमै मासिक बचत, ब्याज, सावाँ र नियम अनुसारको जरिवाना बुझाउने दायित्व सबै सदस्यमा बराबर रहनेछ।'
+    },
+    {
+      id: 'tc3',
+      highlight: true,
+      title: '३. रियल-टाइम पासबुक र हिसाब गुनासोको म्याद (अनिवार्य नियम)',
+      detail: 'प्रत्येक सदस्यको मोबाइलमा यस एपमार्फत रियल-टाइम हिसाब, मासिक रसिद र व्यक्तिगत पासबुक उपलब्ध गराइएको छ। तसर्थ आफ्नो बचत, ब्याज, ऋण, अग्रिम वा अन्य हिसाबमा कुनै त्रुटि वा गडबडी देखिएमा अनिवार्य रूपमा अर्को मासिक बैठक अगावै यसै एपमार्फत वा बैठकमा गुनासो दर्ता गर्नुपर्नेछ। तोकिएको समय (अर्को बैठक) भित्र गुनासो नआएमा उक्त महिनाको हिसाब स्वतः सही र सबैलाई मान्य भएको मानिनेछ; सो म्यादपछि आउने पुरानो हिसाबसम्बन्धी गुनासोका लागि कोषाध्यक्ष जिम्मेवार हुने छैनन्।'
+    },
+    {
+      id: 'tc4',
+      title: '४. डिजिटल हिसाब, अग्रिम र सहिको मान्यता',
+      detail: 'एपमा देखिने कुल कोस, सदस्य अग्रिम, खुद शेयर कोस ((कुल कोस − अग्रिम) ÷ जम्मा कित्ता), डिजिटल रसिद र ऋण लिँदा गरिएको डिजिटल सहि (Signature) लाई समूहको आधिकारिक अभिलेख सरह मान्यता दिइनेछ।'
+    },
+    {
+      id: 'tc5',
+      title: '५. भूमिका विभाजन (Admin / कोषाध्यक्ष / सदस्य)',
+      detail: 'समूह सेटिङ, नियम-सर्त, विधान र सदस्य प्रोफाइल व्यवस्थापन Admin बाट हुनेछ भने मासिक असुली, खर्च, ऋण लगानी र महिना बन्दको वास्तविक हिसाब लेख्ने अधिकार तोकिएको कोषाध्यक्षमा रहनेछ। सदस्यले प्रत्यक्ष हिसाब हेर्न र छलफल/गुनासोमा सहभागी हुन सक्नेछन्।'
+    },
+    {
+      id: 'tc6',
+      title: '६. PIN, पासवर्ड र खाता सुरक्षा',
+      detail: 'प्रत्येक सदस्य र पदाधिकारीले आफ्नो मोबाइल नम्बर, Username, Password र ४ अंकको PIN गोप्य राख्नुपर्नेछ। आफ्नो खाता/PIN बाट पठाइएका सन्देश, सहमति वा गुनासोको जिम्मेवारी सम्बन्धित प्रयोगकर्ताकै हुनेछ।'
+    },
+    {
+      id: 'tc7',
+      title: '७. गोपनीयता र डेटा सुरक्षा (Privacy Policy)',
+      detail: 'सदस्यको नाम, मोबाइल नम्बर, फोटो, डिजिटल सहि र वित्तीय विवरण केवल समूहकै आन्तरिक पारदर्शिता र हिसाब व्यवस्थापनका लागि सुरक्षित क्लाउड सर्भरमा भण्डारण गरिनेछ। तेस्रो पक्षलाई बिक्री वा बाहिर सेयर गरिने छैन; समूहभित्रको विवरण बाहिर दुरुपयोग गर्न पाइने छैन।'
+    },
+    {
+      id: 'tc8',
+      title: '८. विवाद समाधान र समूह बहिर्गमन',
+      detail: 'कुनै हिसाब, जरिवाना वा ऋणसम्बन्धी विवाद उठेमा समूहको विधान र बैठकको बहुमत निर्णय नै अन्तिम हुनेछ। समूह छाड्दा वा कित्ता घटाउँदा बाँकी ऋण/ब्याज चुक्ता गरी विधान अनुसार शुल्क कटाई हिसाब फरफारक गरिनेछ।'
+    },
+    {
+      id: 'tc9',
+      title: '९. प्राविधिक सेवा र सर्त परिमार्जन',
+      detail: 'इन्टरनेट वा सर्भर मर्मतका कारण क्षणिक अवरोध आए पनि डेटा ब्याकअप/सिंक सुरक्षित रहनेछ। समयअनुसार नियम तथा सर्त परिमार्जन भएमा एप खोल्दा जानकारी दिई सदस्यहरूबाट पुनः सहमति (Re-Agreement) लिइनेछ।'
+    }
+  ];
+}
+
+function getEffectiveTermsConfig(data, overrideGroupName) {
+  const gName = overrideGroupName || (data && data.group && data.group.name) || 'समूह बचत';
+  const host = (typeof location !== 'undefined' && location.hostname && location.hostname !== 'localhost' && !location.hostname.includes('127.0.0.1') && !location.hostname.endsWith('.run.app'))
+    ? location.hostname
+    : 'bachat.gopalkoirala.com.np';
+  const saved = (data && data.settings && data.settings.terms) || {};
+  const clauses = Array.isArray(saved.clauses) && saved.clauses.length
+    ? saved.clauses.map((c, idx) => ({
+        id: c.id || ('tc_' + (idx + 1)),
+        title: String(c.title || ((idx + 1) + '. नियम')).trim(),
+        detail: String(c.detail || '').trim(),
+        highlight: !!c.highlight
+      }))
+    : getDefaultTermsClauses(gName, saved.domain || host);
+  return {
+    title: saved.title || 'नियम, सर्त तथा गोपनीयता नीति',
+    domain: saved.domain || host,
+    version: Math.max(1, Number(saved.version) || 1),
+    updatedAt: saved.updatedAt || '',
+    updatedBy: saved.updatedBy || '',
+    summaryNote: saved.summaryNote || '',
+    clauses
+  };
+}
+
+function getMemberTermsStatus(data, member, curVer) {
+  const ver = curVer || getEffectiveTermsConfig(data).version;
+  const mVer = Number((member && member.termsAcceptedVersion) || 0);
+  return {
+    accepted: mVer >= ver,
+    version: mVer,
+    acceptedAt: (member && member.termsAcceptedAt) || ''
+  };
+}
+
+function hasAcceptedCurrentTerms(data) {
+  const terms = getEffectiveTermsConfig(data);
+  const curVer = terms.version;
+  const u = (typeof Auth !== 'undefined' && Auth.currentUser) || null;
+  let acceptedVer = 0;
+  let acceptedAt = '';
+  if (u && u.memberId && data && Array.isArray(data.members)) {
+    const me = data.members.find((m) => m && m.id === u.memberId);
+    if (me && Number(me.termsAcceptedVersion || 0) > acceptedVer) {
+      acceptedVer = Number(me.termsAcceptedVersion || 0);
+      acceptedAt = me.termsAcceptedAt || '';
+    }
+  }
+  if (typeof DB !== 'undefined' && typeof DB.getUserTermsAcceptance === 'function') {
+    const cached = DB.getUserTermsAcceptance(u);
+    if (cached && Number(cached.version || 0) > acceptedVer) {
+      acceptedVer = Number(cached.version || 0);
+      acceptedAt = cached.acceptedAt || acceptedAt;
+    }
+  }
+  return {
+    accepted: acceptedVer >= curVer,
+    acceptedVer,
+    curVer,
+    isUpdated: acceptedVer > 0 && acceptedVer < curVer,
+    acceptedAt
+  };
+}
+
+function getTermsComplianceSummary(data) {
+  const terms = getEffectiveTermsConfig(data);
+  const active = (data && Array.isArray(data.members) ? data.members : []).filter((m) => m && m.active !== false);
+  let agreed = 0;
+  active.forEach((m) => {
+    if (getMemberTermsStatus(data, m, terms.version).accepted) agreed++;
+  });
+  return { total: active.length, agreed, pending: Math.max(0, active.length - agreed), version: terms.version };
+}
+
+function checkTreasurerTermsGate() {
+  if (!(Auth.isTreasurer && Auth.isTreasurer())) return;
+  if (window._pendingTermsGateOpen) return;
+  const overlay = document.getElementById('modal-overlay');
+  const modalOpen = overlay && !overlay.classList.contains('hidden');
+  if (modalOpen) return;
+  const status = hasAcceptedCurrentTerms(DB.load());
+  if (!status.accepted) {
+    openTermsModal({ gate: true, isUpdated: status.isUpdated });
+  }
+}
+
+async function openPublicTermsModal() {
+  let publicData = null;
+  try {
+    if (navigator.onLine) {
+      const res = await DB.apiFetch('/terms', { method: 'GET' });
+      if (res.ok && res.body && res.body.ok) {
+        publicData = {
+          group: { name: res.body.groupName || 'समूह बचत' },
+          settings: { terms: res.body.terms || null }
+        };
+      }
+    }
+  } catch (e) {}
+  if (!publicData) publicData = DB.load();
+  openTermsModal({ publicPreview: true, previewData: publicData });
+}
+
+function openTermsModal(opts = {}) {
+  const isGate = !!opts.gate;
+  const isPublic = !!opts.publicPreview;
+  const data = opts.previewData || DB.load();
+  const terms = getEffectiveTermsConfig(data);
+  const status = !isPublic && Auth.isLoggedIn && Auth.isLoggedIn()
+    ? hasAcceptedCurrentTerms(data)
+    : { accepted: false, acceptedVer: 0, curVer: terms.version, isUpdated: false, acceptedAt: '' };
+  const isUpdated = opts.isUpdated != null ? !!opts.isUpdated : status.isUpdated;
+  const isPrimaryAdmin = !isPublic && Auth.isPrimaryAdmin && Auth.isPrimaryAdmin();
+  const isAdminOrTr = !isPublic && Auth.isAdmin && Auth.isAdmin();
+
+  const updatedDateText = terms.updatedAt
+    ? new Date(terms.updatedAt).toLocaleDateString('ne-NP', { year: 'numeric', month: 'short', day: 'numeric' })
+    : 'प्रारम्भिक संस्करण';
+
+  const updateAlertHtml = isUpdated
+    ? `<div class="terms-update-banner">
+        <strong>🔔 नियम तथा सर्त परिमार्जन भएको छ (v${status.acceptedVer} → v${terms.version}):</strong><br>
+        ${terms.summaryNote ? `<span>परिवर्तन सारांश: <strong>${escapeHtmlChat(terms.summaryNote)}</strong><br></span>` : ''}
+        कृपया अद्यावधिक गरिएका नियम र सर्त पढी तलको बक्समा टिक लगाएर पुनः सहमति पुष्टि गर्नुहोस्।
+      </div>`
+    : (isGate
+      ? `<div class="terms-update-banner" style="background:#e7f1ff;border-color:#b6d4fe;border-left-color:#0d6efd;color:#084298">
+          <strong>👋 स्वागत छ! अगाडि बढ्नुअघि कृपया पढ्नुहोस्:</strong><br>
+          यो समूहको साझा आर्थिक कारोबार र बराबर हक-दायित्वसँग जोडिएको हुनाले सबै सदस्यको सहमति (Agreement) अनिवार्य छ।
+        </div>`
+      : '');
+
+  const clausesHtml = terms.clauses.map((c) => `
+    <div class="terms-clause-card ${c.highlight ? 'highlight' : ''}">
+      <div class="terms-clause-title">${escapeHtmlChat(c.title)}</div>
+      <div class="terms-clause-body">${escapeHtmlChat(c.detail).replace(/\n/g, '<br>')}</div>
+    </div>
+  `).join('');
+
+  let actionAreaHtml = '';
+  if (!isPublic) {
+    if (isGate || !status.accepted) {
+      actionAreaHtml = `
+        <label class="terms-agree-box" for="terms-agree-chk">
+          <input type="checkbox" id="terms-agree-chk">
+          <span>मैले माथि उल्लेखित <strong>${escapeHtmlChat(terms.title)} (संस्करण v${terms.version})</strong>, गोपनीयता नीति, बराबर हक-दायित्व र अर्को बैठकअगावै हिसाब गुनासो गर्नुपर्ने नियम ध्यानपूर्वक पढेँ र पूर्ण रूपमा मञ्जुर छु।</span>
+        </label>
+        <button type="button" id="terms-confirm-btn" class="btn btn-primary btn-block" onclick="submitTermsAgreement(${terms.version}, ${isGate ? 'true' : 'false'})">✅ मञ्जुर छ (Confirm &amp; Continue)</button>
+        ${isGate ? `<button type="button" class="btn btn-outline btn-block mt-1" onclick="UI._noClose=false;window._pendingTermsGateOpen=false;doLogout()">🚪 मञ्जुर छैन / लगआउट</button>` : ''}
+      `;
+    } else {
+      const accDate = status.acceptedAt
+        ? new Date(status.acceptedAt).toLocaleString('ne-NP', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : '';
+      actionAreaHtml = `
+        <div style="background:#d1e7dd;border:1px solid #badbcc;color:#0f5132;border-radius:10px;padding:9px 12px;margin-top:10px;font-size:0.82rem;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <div>✅ <strong>तपाईंले संस्करण v${terms.version} मञ्जुर गरिसक्नुभएको छ</strong></div>
+          ${accDate ? `<div style="font-size:0.74rem;opacity:0.9">${escapeHtmlChat(accDate)}</div>` : ''}
+        </div>
+      `;
+    }
+  }
+
+  let complianceHtml = '';
+  if (isAdminOrTr && !isGate) {
+    const active = (data.members || []).filter((m) => m && m.active !== false);
+    const comp = getTermsComplianceSummary(data);
+    const rows = active.map((m) => {
+      const st = getMemberTermsStatus(data, m, terms.version);
+      const dt = st.acceptedAt ? new Date(st.acceptedAt).toLocaleDateString('ne-NP', { month: 'short', day: 'numeric' }) : '';
+      return `<div class="terms-status-row">
+        <div><strong>${escapeHtmlChat(m.name)}</strong> <span class="text-muted" style="font-size:0.73rem">${escapeHtmlChat(m.mobile || '')}</span></div>
+        <div>${st.accepted
+          ? `<span class="terms-pill-ok">✅ v${st.version}${dt ? ' · ' + escapeHtmlChat(dt) : ''}</span>`
+          : `<span class="terms-pill-wait">⏳ बाँकी</span>`}</div>
+      </div>`;
+    }).join('') || '<div class="text-muted text-center" style="padding:8px">सदस्य छैनन्</div>';
+
+    complianceHtml = `
+      <details style="margin-top:12px;background:#fff;border:1px solid #dee2e6;border-radius:12px;padding:8px 10px" ${comp.pending > 0 ? 'open' : ''}>
+        <summary style="cursor:pointer;font-weight:700;font-size:0.84rem;color:#122;display:flex;justify-content:space-between;align-items:center">
+          <span>📋 सदस्य सहमति स्थिति (${comp.agreed}/${comp.total} मञ्जुर)</span>
+          <span class="${comp.pending === 0 ? 'terms-pill-ok' : 'terms-pill-wait'}">${comp.pending === 0 ? 'सबै मञ्जुर' : comp.pending + ' बाँकी'}</span>
+        </summary>
+        <div style="margin-top:8px;max-height:190px;overflow-y:auto;border-top:1px solid #eef2f6">${rows}</div>
+        ${isPrimaryAdmin && comp.pending > 0 ? `<button type="button" class="btn btn-warning btn-sm btn-block mt-1" onclick="sendTermsReminderNotice(${terms.version})">🔔 बाँकी सदस्यलाई सहमति सूचना पठाउनुहोस्</button>` : ''}
+      </details>
+    `;
+  }
+
+  const adminEditBtn = isPrimaryAdmin && !isGate
+    ? `<button type="button" class="btn btn-primary btn-block mt-1" onclick="openTermsEditorModal()">✏️ नियम तथा सर्त परिमार्जन गर्नुहोस् (नयाँ Version)</button>`
+    : '';
+
+  const html = `
+    <div class="terms-meta-bar">
+      <div>🌐 <strong>${escapeHtmlChat(terms.domain)}</strong> · ${updatedDateText}</div>
+      <span class="terms-ver-badge">संस्करण v${terms.version}</span>
+    </div>
+    ${terms.summaryNote && !isUpdated ? `<div style="font-size:0.77rem;color:#475569;background:#f1f5f9;padding:6px 10px;border-radius:8px;margin-bottom:8px">📝 पछिल्लो अपडेट: ${escapeHtmlChat(terms.summaryNote)}</div>` : ''}
+    ${updateAlertHtml}
+    <div class="terms-scroll-box">${clausesHtml}</div>
+    ${actionAreaHtml}
+    ${complianceHtml}
+    ${adminEditBtn}
+  `;
+
+  window._pendingTermsGateOpen = isGate;
+  UI.showModal(
+    '📜 ' + terms.title,
+    html,
+    isGate ? '' : '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>',
+    isGate ? { root: true, noClose: true } : {}
+  );
+}
+
+async function submitTermsAgreement(version, isGate) {
+  const chk = document.getElementById('terms-agree-chk');
+  if (!chk || !chk.checked) {
+    return UI.toast('कृपया पहिले माथिको टिक बक्स (☑️) मा चिन्ह लगाउनुहोस्', 'error');
+  }
+  const btn = document.getElementById('terms-confirm-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ सेभ हुँदैछ...'; }
+  try {
+    const res = await DB.acceptTerms(version);
+    if (!res || !res.ok) {
+      return UI.toast('सहमति सेभ गर्न सकिएन — कृपया पुनः प्रयास गर्नुहोस्', 'error');
+    }
+    APP_DATA = DB.load();
+    window._pendingTermsGateOpen = false;
+    UI._noClose = false;
+    closeModal();
+    renderSettingsTab();
+    UI.toast(res.queued ? 'सहमति सुरक्षित भयो (नेट आउँदा सर्भरमा सिंक हुन्छ) ✅' : 'नियम तथा सर्त सहमति सुरक्षित भयो ✅', 'success');
+    if (isGate && Auth.isMember && Auth.isMember()) {
+      setTimeout(runMemberOnboardingGate, 220);
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✅ मञ्जुर छ (Confirm & Continue)'; }
+  }
+}
+
+async function sendTermsReminderNotice(ver) {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र', 'error');
+  const title = `📜 नियम तथा सर्त सहमति सूचना (v${ver})`;
+  const body = 'समूहको नियम, सर्त तथा गोपनीयता नीति अद्यावधिक गरिएको छ। कृपया एप खोली सेटिङ → नियम तथा सर्तमा गई पढेर सहमति (Confirm) जनाउनुहोला।';
+  let sentPush = false;
+  try {
+    const r = await DB.apiFetch('/push/remind', {
+      method: 'POST',
+      body: JSON.stringify({ title, body })
+    });
+    sentPush = !!(r.ok && r.body && r.body.ok);
+  } catch (e) {}
+  if (sentPush) {
+    if (typeof DB.pullLatest === 'function') DB.pullLatest(true).catch(() => {});
+    UI.toast('बाँकी सदस्यलाई सूचना (Push + चौतारी) पठाइयो ✅', 'success');
+    return;
+  }
+  const data = DB.load();
+  postGroupMessage(title + '\n' + body, 'auto_group', data);
+  DB.save(data, { localOnly: true });
+  if (typeof DB.pushChatNow === 'function') {
+    try { await DB.pushChatNow(); } catch (e) {}
+  }
+  UI.toast('चौतारी सूचना पठाइयो ✅', 'success');
+}
+
+function openTermsEditorModal() {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) {
+    return UI.toast('नियम तथा सर्त परिमार्जन गर्ने अधिकार Admin लाई मात्र छ', 'error');
+  }
+  const data = DB.load();
+  const terms = getEffectiveTermsConfig(data);
+  const nextVer = terms.version + 1;
+
+  const clauseRowsHtml = terms.clauses.map((c, idx) => _buildTermsClauseEditRow(c, idx)).join('');
+  const html = `
+    <div style="background:#fff3cd;border-left:4px solid #fd7e14;padding:8px 10px;border-radius:8px;font-size:0.79rem;margin-bottom:10px;color:#664d03">
+      नयाँ संस्करण (<strong>v${nextVer}</strong>) सेभ गर्दा सबै सदस्यलाई एप खोल्दा <strong>"नियम तथा सर्त परिमार्जन भएको छ"</strong> भनी पुनः टिक लगाएर सहमति दिन सोधिनेछ।
+    </div>
+    <div class="form-group">
+      <label>शीर्षक (Title)</label>
+      <input type="text" id="te-title" value="${escapeHtmlChat(terms.title)}">
+    </div>
+    <div class="form-group">
+      <label>वेबसाइट / डोमेन</label>
+      <input type="text" id="te-domain" value="${escapeHtmlChat(terms.domain)}" placeholder="bachat.gopalkoirala.com.np">
+    </div>
+    <div class="form-group">
+      <label>के परिवर्तन भयो? (सदस्यलाई देखिने सारांश सूचना)</label>
+      <input type="text" id="te-summary" value="" placeholder="उदा: हिसाब गुनासो म्याद र गोपनीयता बुँदा अद्यावधिक">
+    </div>
+    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+      <span>📑 बुँदाहरू</span>
+      <button type="button" class="btn btn-light btn-sm" onclick="resetTermsToDefaultDraft()">↺ पूर्वनिर्धारित ९ बुँदा</button>
+    </div>
+    <div id="terms-edit-list" style="max-height:38vh;overflow-y:auto;padding-right:2px">${clauseRowsHtml}</div>
+    <button type="button" class="btn btn-outline btn-sm btn-block mt-1 mb-2" onclick="addTermsClauseRow()">➕ नयाँ बुँदा थप्नुहोस्</button>
+    <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;margin-bottom:8px;cursor:pointer">
+      <input type="checkbox" id="te-bump-ver" checked style="width:18px;height:18px">
+      <span>नयाँ संस्करण (<strong>v${nextVer}</strong>) जारी गरी सबै सदस्यबाट पुनः सहमति लिने</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="te-announce" checked style="width:18px;height:18px">
+      <span>छलफल चौतारीमा परिमार्जन सूचना पठाउने</span>
+    </label>
+    <button type="button" class="btn btn-success btn-block" onclick="saveEditedTerms()">💾 नियम तथा सर्त सेभ गर्नुहोस्</button>
+  `;
+  UI.showModal(
+    '✏️ नियम तथा सर्त परिमार्जन',
+    html,
+    '<button class="btn btn-outline" onclick="openTermsModal()">← फर्कनुहोस्</button>',
+    { replace: true }
+  );
+}
+
+function _buildTermsClauseEditRow(c, idx) {
+  return `<div class="terms-edit-row" data-id="${escapeHtmlChat(c.id || ('tc_' + Date.now() + '_' + idx))}" style="background:#f8fafc;border:1px solid #dee2e6;border-radius:10px;padding:8px;margin-bottom:8px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px">
+      <label style="display:flex;align-items:center;gap:5px;font-size:0.75rem;font-weight:600;color:#475569;cursor:pointer">
+        <input type="checkbox" class="tc-hl" ${c.highlight ? 'checked' : ''}> मुख्य हाइलाइट बुँदा
+      </label>
+      <button type="button" class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:0.72rem" onclick="removeTermsClauseRow(this)">🗑️ हटाउनुहोस्</button>
+    </div>
+    <input type="text" class="tc-title" value="${escapeHtmlChat(c.title || '')}" placeholder="बुँदा शीर्षक" style="width:100%;padding:6px 8px;border:1px solid #ced4da;border-radius:8px;font-size:0.83rem;font-weight:700;margin-bottom:6px">
+    <textarea class="tc-detail" rows="3" placeholder="पूरा विवरण लेख्नुहोस्..." style="width:100%;padding:6px 8px;border:1px solid #ced4da;border-radius:8px;font-size:0.8rem">${escapeHtmlChat(c.detail || '')}</textarea>
+  </div>`;
+}
+
+function addTermsClauseRow() {
+  const list = document.getElementById('terms-edit-list');
+  if (!list) return;
+  const n = list.querySelectorAll('.terms-edit-row').length + 1;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = _buildTermsClauseEditRow({ id: 'tc_' + Date.now(), title: n + '. ', detail: '', highlight: false }, n);
+  list.appendChild(wrap.firstElementChild);
+  list.scrollTop = list.scrollHeight;
+}
+
+function removeTermsClauseRow(btn) {
+  const list = document.getElementById('terms-edit-list');
+  if (!list) return;
+  const rows = list.querySelectorAll('.terms-edit-row');
+  if (rows.length <= 1) return UI.toast('कम्तिमा १ बुँदा अनिवार्य छ', 'error');
+  const row = btn.closest('.terms-edit-row');
+  if (row) row.remove();
+}
+
+function resetTermsToDefaultDraft() {
+  const list = document.getElementById('terms-edit-list');
+  if (!list) return;
+  const data = DB.load();
+  const domain = (document.getElementById('te-domain') && document.getElementById('te-domain').value || '').trim() || 'bachat.gopalkoirala.com.np';
+  const def = getDefaultTermsClauses((data.group && data.group.name) || 'समूह बचत', domain);
+  list.innerHTML = def.map((c, idx) => _buildTermsClauseEditRow(c, idx)).join('');
+  UI.toast('पूर्वनिर्धारित ९ बुँदा लोड भयो', 'success');
+}
+
+async function saveEditedTerms() {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र', 'error');
+  const data = DB.load();
+  const prev = getEffectiveTermsConfig(data);
+  const title = (document.getElementById('te-title') && document.getElementById('te-title').value || '').trim() || prev.title;
+  const domain = (document.getElementById('te-domain') && document.getElementById('te-domain').value || '').trim() || prev.domain;
+  const summaryNote = (document.getElementById('te-summary') && document.getElementById('te-summary').value || '').trim();
+  const bumpVer = !!(document.getElementById('te-bump-ver') && document.getElementById('te-bump-ver').checked);
+  const announce = !!(document.getElementById('te-announce') && document.getElementById('te-announce').checked);
+
+  const clauses = [];
+  document.querySelectorAll('#terms-edit-list .terms-edit-row').forEach((row, idx) => {
+    const t = (row.querySelector('.tc-title') && row.querySelector('.tc-title').value || '').trim();
+    const d = (row.querySelector('.tc-detail') && row.querySelector('.tc-detail').value || '').trim();
+    const hl = !!(row.querySelector('.tc-hl') && row.querySelector('.tc-hl').checked);
+    if (t && d) {
+      clauses.push({
+        id: row.getAttribute('data-id') || ('tc_' + (idx + 1)),
+        title: t,
+        detail: d,
+        highlight: hl
+      });
+    }
+  });
+  if (!clauses.length) return UI.toast('कम्तिमा १ बुँदा र विवरण लेख्नुहोस्', 'error');
+
+  const nextVer = bumpVer ? (prev.version + 1) : prev.version;
+  const nextTerms = {
+    title,
+    domain,
+    version: nextVer,
+    updatedAt: new Date().toISOString(),
+    updatedBy: (Auth.currentUser && Auth.currentUser.name) || 'Admin',
+    summaryNote,
+    clauses
+  };
+
+  const res = await DB.saveAdminSettings({ settingsPatch: { terms: nextTerms } });
+  if (!res || !res.ok) {
+    return UI.toast((res && res.error) || 'सर्त सेभ असफल — नेट जाँच्नुहोस्', 'error');
+  }
+  APP_DATA = DB.load();
+  if (announce) {
+    const msg = `📜 सूचना: नियम, सर्त तथा गोपनीयता नीति (संस्करण v${nextVer}) परिमार्जन गरिएको छ।` +
+      (summaryNote ? `\nपरिवर्तन: ${summaryNote}` : '') +
+      '\nसबै सदस्यले एप खोल्दा पुनः पढेर सहमति (Confirm) गर्नुहोला।';
+    postGroupMessage(msg, 'auto_group', APP_DATA);
+    DB.save(APP_DATA, { localOnly: true });
+    if (typeof DB.pushChatNow === 'function') {
+      try { await DB.pushChatNow(); } catch (e) {}
+    }
+  }
+  UI.toast(`नियम तथा सर्त v${nextVer} सुरक्षित सेभ भयो ✅`, 'success');
+  renderSettingsTab();
+  openTermsModal();
+}
+
 // ========== SETTINGS ==========
 function renderSettingsTab() {
   const container = document.getElementById('settings-content');
+  const dataForTerms = DB.load();
+  const termsStatus = hasAcceptedCurrentTerms(dataForTerms);
+  const termsComp = getTermsComplianceSummary(dataForTerms);
+
   if (!Auth.isAdmin()) {
-    const dataM = DB.load();
+    const dataM = dataForTerms;
     const myId = (Auth.currentUser && Auth.currentUser.memberId) || '';
     const fbN = myId ? memberFeedbackUnread(myId, dataM) : 0;
     const fbBadge = fbN > 0 ? ' <span class="badge-unread">' + fbN + ' जवाफ</span>' : '';
+    const termsBadge = termsStatus.accepted
+      ? `<span class="terms-pill-ok" style="margin-left:6px">✅ v${termsStatus.curVer}</span>`
+      : `<span class="terms-pill-wait" style="margin-left:6px">⚠️ मञ्जुरी बाँकी</span>`;
     container.innerHTML = `
       <div class="section-card">
         <div class="section-title">⚙️ सेटिङ</div>
         <button class="btn btn-primary btn-block mb-1" onclick="showChangeOwnPinModal()">🔐 मेरो PIN परिवर्तन गर्नुहोस्</button>
         <button class="btn btn-warning btn-block mb-1" onclick="openMemberFeedbackHub()">📢 सुझाव तथा गुनासो${fbBadge}</button>
         <button class="btn btn-success btn-block mb-1" onclick="enablePushFromSettings()">🔔 पुश सूचना (Notification)</button>
+        <button class="btn btn-outline btn-block mb-1" onclick="openTermsModal()">📜 नियम, सर्त र गोपनीयता ${termsBadge}</button>
         <button class="btn btn-outline btn-block mb-1" onclick="showMemberGuideTour(0, true)">❓ एप चलाउने गाइड</button>
         <button class="btn btn-danger btn-block mb-2" onclick="doLogout()">🚪 लगआउट</button>
       </div>
@@ -4042,11 +4204,11 @@ function renderSettingsTab() {
     return;
   }
 
-  const data = DB.load();
+  const data = dataForTerms;
   const isPrimaryAdmin = Auth.isPrimaryAdmin && Auth.isPrimaryAdmin();
 
   if (!isPrimaryAdmin) {
-    // Treasurer (कोषाध्यक्ष) settings view — focused on accounting tools, sync, push & backup
+    // Treasurer (कोषाध्यक्ष) settings view — focused on accounting tools, sync, push, terms & backup
     const u = Auth.currentUser || {};
     container.innerHTML = `
       <div class="section-card">
@@ -4074,6 +4236,11 @@ function renderSettingsTab() {
           <li class="settings-item" onclick="openSnapshotBackups()">
             <div class="settings-icon" style="background:#e2e3ff">🗂️</div>
             <div class="settings-text"><div class="title">बन्द महिना स्न्यापसट (R2)</div><div class="desc">प्रत्येक बन्द महिनाको सुरक्षित ब्याकअप</div></div>
+            <div class="settings-arrow">›</div>
+          </li>
+          <li class="settings-item" onclick="openTermsModal()">
+            <div class="settings-icon" style="background:#e7f1ff">📜</div>
+            <div class="settings-text"><div class="title">नियम, सर्त तथा मञ्जुरी (Terms)</div><div class="desc">संस्करण v${termsComp.version} · ${termsComp.agreed}/${termsComp.total} सदस्य मञ्जुर</div></div>
             <div class="settings-arrow">›</div>
           </li>
           <li class="settings-item" onclick="showAppGuide()">
@@ -4119,6 +4286,11 @@ function renderSettingsTab() {
         <li class="settings-item" onclick="editTreasurer()">
           <div class="settings-icon" style="background:#fff3cd">💼</div>
           <div class="settings-text"><div class="title">कोषाध्यक्ष (हिसाब लेख्ने)</div><div class="desc">${trDesc}</div></div>
+          <div class="settings-arrow">›</div>
+        </li>
+        <li class="settings-item" onclick="openTermsModal()">
+          <div class="settings-icon" style="background:#e7f1ff">📜</div>
+          <div class="settings-text"><div class="title">नियम, सर्त तथा मञ्जुरी (Terms)</div><div class="desc">संस्करण v${termsComp.version} · ${termsComp.agreed}/${termsComp.total} सदस्य मञ्जुर · सम्पादन र ट्र्याकिङ</div></div>
           <div class="settings-arrow">›</div>
         </li>
         <li class="settings-item" onclick="editAppOwner()">
@@ -5409,10 +5581,24 @@ async function unlockAppSession() {
   };
   refreshUnlockedViews();
   setTimeout(refreshUnlockedViews, 120);
+  const checkTermsAfterUnlock = () => {
+    try {
+      if (Auth.isMember && Auth.isMember()) {
+        runMemberOnboardingGate();
+      } else if (Auth.isTreasurer && Auth.isTreasurer()) {
+        checkTreasurerTermsGate();
+      }
+    } catch (e) {}
+  };
   if (navigator.onLine && typeof DB.pullLatest === 'function') {
     DB.pullLatest(true).then((pulled) => {
       if (pulled) refreshUnlockedViews();
-    }).catch(() => {});
+      checkTermsAfterUnlock();
+    }).catch(() => {
+      checkTermsAfterUnlock();
+    });
+  } else {
+    setTimeout(checkTermsAfterUnlock, 180);
   }
 }
 
@@ -5822,6 +6008,9 @@ function onCloudDataRemote(remote) {
       if (document.getElementById('tab-profile') && document.getElementById('tab-profile').classList.contains('active')) {
         renderProfileTab();
       }
+      if (document.getElementById('tab-settings') && document.getElementById('tab-settings').classList.contains('active')) {
+        renderSettingsTab();
+      }
       // खुला रहेको सदस्य प्रोफाइल मोडल / Admin सदस्य विवरण मोडल स्वतः ताजा पार्ने
       const overlay = document.getElementById('modal-overlay');
       const modalOpen = overlay && !overlay.classList.contains('hidden');
@@ -5831,6 +6020,16 @@ function onCloudDataRemote(remote) {
           openMemberOwnProfileModal({ replace: true });
         } else if (Auth.isAdmin && Auth.isAdmin() && window._openMemberDetailId && mTitle.startsWith('👤 ')) {
           openMemberDetail(window._openMemberDetailId, { replace: true });
+        }
+      } else if (!(Auth.isLocked && Auth.isLocked())) {
+        // Admin ले नियम-सर्त परिमार्जन गर्दा चलिरहेको सदस्य/कोषाध्यक्ष सत्रमा तुरुन्त पुनः सहमति जानकारी देखाउने
+        const ts = hasAcceptedCurrentTerms(remote);
+        if (!ts.accepted && !window._pendingTermsGateOpen) {
+          if (Auth.isMember && Auth.isMember()) {
+            runMemberOnboardingGate();
+          } else if (Auth.isTreasurer && Auth.isTreasurer()) {
+            checkTreasurerTermsGate();
+          }
         }
       }
     } catch (e) {}
