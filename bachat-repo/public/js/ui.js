@@ -44,7 +44,8 @@ const UI = {
           body: document.getElementById('modal-body').innerHTML,
           footer: document.getElementById('modal-footer').innerHTML,
           back: null,
-          full: !!(box && box.classList.contains('modal-full'))
+          full: !!(box && box.classList.contains('modal-full')),
+          passbook: !!(box && box.classList.contains('modal-passbook'))
         });
       }
     }
@@ -53,7 +54,10 @@ const UI = {
     document.getElementById('modal-body').innerHTML = bodyHtml;
     document.getElementById('modal-footer').innerHTML = footerHtml;
     const modalBox = document.getElementById('modal-box');
-    if (modalBox) modalBox.classList.toggle('modal-full', !!options.full);
+    if (modalBox) {
+      modalBox.classList.toggle('modal-full', !!options.full);
+      modalBox.classList.toggle('modal-passbook', !!options.passbook);
+    }
     const closeBtn = overlay.querySelector('.modal-close');
     this._noClose = !!options.noClose;
     if (closeBtn) closeBtn.style.display = this._noClose ? 'none' : '';
@@ -69,7 +73,7 @@ const UI = {
       this._modalStack = [];
       this._modalBack = null;
       const box = document.getElementById('modal-box');
-      if (box) box.classList.remove('modal-full');
+      if (box) box.classList.remove('modal-full', 'modal-passbook');
       document.getElementById('modal-overlay').classList.add('hidden');
       setTimeout(() => {
         if (typeof askComplaintAfterView === 'function') {
@@ -84,7 +88,7 @@ const UI = {
       this._modalBack = null;
       this._modalStack = [];
       const box = document.getElementById('modal-box');
-      if (box) box.classList.remove('modal-full');
+      if (box) box.classList.remove('modal-full', 'modal-passbook');
       if (typeof fnName === 'function') { fnName(); return; }
       if (typeof window[fnName] === 'function') { window[fnName](); return; }
     }
@@ -96,13 +100,16 @@ const UI = {
       document.getElementById('modal-body').innerHTML = prev.body;
       document.getElementById('modal-footer').innerHTML = prev.footer;
       const box = document.getElementById('modal-box');
-      if (box) box.classList.toggle('modal-full', !!prev.full);
+      if (box) {
+        box.classList.toggle('modal-full', !!prev.full);
+        box.classList.toggle('modal-passbook', !!prev.passbook);
+      }
       this._modalBack = prev.back || null;
       return;
     }
 
     const box = document.getElementById('modal-box');
-    if (box) box.classList.remove('modal-full');
+    if (box) box.classList.remove('modal-full', 'modal-passbook');
     document.getElementById('modal-overlay').classList.add('hidden');
   },
 

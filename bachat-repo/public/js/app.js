@@ -1692,6 +1692,18 @@ function openLoans() {
   const canWrite = Auth.isAccountsWriter && Auth.isAccountsWriter();
 
   let html = '';
+  /* TEMPORARY LOAN PRACTICE BANNER (REMOVE AFTER TESTING) */
+  html += `<div class="loan-sbx-banner">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <div style="font-size:0.8rem;color:#78350f;line-height:1.35">
+        <strong>🧪 ऋण लगानी अभ्यास (Test मोड)</strong><br>
+        <span style="font-size:0.74rem">ऋण प्रक्रिया, सहि र रेकर्ड कहाँ कसरी बस्छ हेर्नुहोस् (रियल हिसाबमा जाँदैन)</span>
+      </div>
+      <button type="button" class="btn btn-warning btn-sm" style="white-space:nowrap;font-weight:700" onclick="openLoanSandbox()">🧪 अभ्यास खोल्नुहोस्</button>
+    </div>
+  </div>`;
+  /* END TEMPORARY LOAN PRACTICE BANNER */
+
   if (!canWrite) {
     html += `<div style="background:#fff3cd;border:1px solid #ffe69c;color:#664d03;padding:8px 10px;border-radius:10px;font-size:0.8rem;margin-bottom:8px">👁️ Read-only मोड: ऋण लगानी र महिना बन्द कोषाध्यक्षले मात्र गर्न सक्नुहुन्छ।</div>`;
   }
@@ -2266,10 +2278,17 @@ function printReportImage(elementId) {
     <style>
       body{font-family:sans-serif;padding:16px;color:#000;-webkit-print-color-adjust:exact;print-color-adjust:exact}
       .report-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed #ccc}
-      table{width:100%;border-collapse:collapse;font-size:11px}
+      table{width:100%;border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums}
       th,td{border:1px solid #ccc;padding:4px 5px;text-align:right;vertical-align:middle}
       th{background:#eee} td:first-child,th:first-child{text-align:left}
-      h2{text-align:center} .print-meta{text-align:center;margin-bottom:12px;color:#555}
+      thead{display:table-header-group} tr{page-break-inside:avoid}
+      h2{text-align:center;margin:0 0 4px} .print-meta{text-align:center;margin-bottom:12px;color:#555;font-size:12px}
+      .passbook-print-only{display:block!important}
+      .passbook-two-grid,.passbook-box,.passbook-box-scroll{display:block!important;overflow:visible!important;height:auto!important;max-height:none!important}
+      .passbook-box{margin-bottom:14px;border:1px solid #bbb;border-radius:6px;overflow:visible!important}
+      .passbook-box-head{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:#f3f4f6;border-bottom:1px solid #bbb;font-weight:700;font-size:13px}
+      .passbook-box-metric{font-weight:700;font-size:12px}
+      .pb-latest-row{background:#f0f7ff;font-weight:600}
       img{max-width:110px;max-height:36px;object-fit:contain;background:#fff;vertical-align:middle}
       button{display:none!important}
     </style></head><body>${el.innerHTML}</body></html>`;
@@ -3101,14 +3120,10 @@ async function submitComplaintAfter(memberId, source) {
   closeModal();
 }
 
-function renderPassbookContent(memberId) {
-  const data = DB.load();
-  const member = data.members.find(m => m.id === memberId);
-  const snap = Accounting.getSnapshot(data);
+function buildPassbookTwoBoxHtml(data, member, options = {}) {
   const myAssets = Accounting.memberAssets(data, member);
-  const curMonth = Accounting.getCurrentMonth(data);
+  const curMonth = options.monthOverride !== undefined ? options.monthOverride : Accounting.getCurrentMonth(data);
   const effLoan = Accounting.getEffectiveMemberLoan(data, member, curMonth);
-  const effAdv = Accounting.getEffectiveMemberAdvance(data, member, curMonth);
 
   let assetRows = (member.assetHistory || []).slice();
   let loanRows = (member.loanHistory || []).slice();
@@ -3122,8 +3137,8 @@ function renderPassbookContent(memberId) {
       added: myAssets - prevA,
       total: myAssets
     });
-    const taken = (curMonth.loansGiven || []).filter(l => l.memberId === memberId).reduce((s, l) => s + l.amount, 0);
-    const repaid = (curMonth.collections && curMonth.collections[memberId] && curMonth.collections[memberId].principal) || 0;
+    const taken = (curMonth.loansGiven || []).filter(l => l.memberId === member.id).reduce((s, l) => s + (l.amount || 0), 0);
+    const repaid = (curMonth.collections && curMonth.collections[member.id] && curMonth.collections[member.id].principal) || 0;
     const prevL = loanRows.length ? loanRows[loanRows.length - 1].balance
       : (effLoan - taken + repaid);
     loanRows.push({
@@ -3135,63 +3150,82 @@ function renderPassbookContent(memberId) {
     });
   }
 
-  // मासिक भुक्तानी विवरण तालिका (थिच्दा पूरा बिल/विवरण खुल्छ)
-  const payMonths = (data.months || []).filter(m => m.status === 'closed' || (m.collections && m.collections[memberId]));
-  let payHtml = '';
-  if (!payMonths.length) {
-    payHtml = '<tr><td colspan="6">अहिलेसम्म भुक्तानी रेकर्ड छैन</td></tr>';
+  const assetRowsDesc = assetRows.slice().reverse();
+  const loanRowsDesc = loanRows.slice().reverse();
+
+  let assetBody = '';
+  if (!assetRowsDesc.length) {
+    assetBody = '<tr><td colspan="4" style="text-align:center;color:#64748b;padding:16px">अहिलेसम्म रेकर्ड छैन</td></tr>';
   } else {
-    payHtml = payMonths.map(mo => {
-      const c = (mo.collections && mo.collections[memberId]) || {};
-      const statusTag = mo.status === 'closed' ? '' : ' *';
-      return `<tr style="cursor:pointer" onclick="showMemberMonthPaymentDetail('${mo.id}','${memberId}')">
-        <td style="color:#0d6efd;text-decoration:underline">${mo.name}${statusTag}</td>
-        <td>${Accounting.formatNum(c.saving || 0)}</td>
-        <td>${Accounting.formatNum(c.interest || 0)}</td>
-        <td>${Accounting.formatNum(c.principal || 0)}</td>
-        <td>${Accounting.formatNum(c.fine || 0)}</td>
-        <td class="fw-bold">${Accounting.formatNum(c.totalPaid || 0)}</td>
-      </tr>`;
-    }).join('');
+    assetBody = assetRowsDesc.map((h, i) => `
+      <tr class="${i === 0 ? 'pb-latest-row' : ''}">
+        <td>${h.monthName}</td>
+        <td>${Accounting.formatNum(h.prev)}</td>
+        <td>${Accounting.formatNum(h.added)}</td>
+        <td class="fw-bold">${Accounting.formatNum(h.total)}</td>
+      </tr>`).join('');
   }
 
-  let html = `<div class="print-area" id="print-passbook">
-    <h2>${data.group.name}</h2>
-    <div class="print-meta">पासबुक · ${member.name}</div>
-    <div class="report-card mb-2">
-      <div class="report-row"><span class="label">🎫 कित्ता</span><span class="value fw-bold">${member.kitta}</span></div>
-      <div class="report-row highlight"><span class="label">💎 हालको सम्पत्ति (हिस्सा)</span><span class="value fw-bold">${Accounting.formatNum(myAssets)}</span></div>
-      <div class="report-row"><span class="label">💰 प्रति कित्ता</span><span class="value">${Accounting.formatNum(snap.perKitta)}</span></div>
-      <div class="report-row"><span class="label">🤝 बाँकी ऋण</span><span class="value">${Accounting.formatNum(effLoan)}</span></div>
-      <div class="report-row"><span class="label">💚 अग्रिम</span><span class="value">${Accounting.formatNum(effAdv)}</span></div>
+  let loanBody = '';
+  if (!loanRowsDesc.length) {
+    loanBody = '<tr><td colspan="5" style="text-align:center;color:#64748b;padding:16px">अहिलेसम्म रेकर्ड छैन</td></tr>';
+  } else {
+    loanBody = loanRowsDesc.map((h, i) => `
+      <tr class="${i === 0 ? 'pb-latest-row' : ''}">
+        <td>${h.monthName}</td>
+        <td>${Accounting.formatNum(h.prev)}</td>
+        <td>${Accounting.formatNum(h.taken)}</td>
+        <td>${Accounting.formatNum(h.repaid)}</td>
+        <td class="fw-bold">${Accounting.formatNum(h.balance)}</td>
+      </tr>`).join('');
+  }
+
+  return `<div class="print-area passbook-root" id="print-passbook">
+    <div class="passbook-print-only">
+      <h2>${(data.group && data.group.name) || 'समूह बचत'}</h2>
+      <div class="print-meta">पासबुक · ${member.name} · ${member.kitta || 0} कित्ता</div>
     </div>
-    <h3>💵 मासिक भुक्तानी विवरण <span style="font-size:0.75rem;color:#666;font-weight:400">(महिना थिचेर रसिद हेर्नुहोस्)</span></h3>
-    <div class="table-wrap"><table style="font-size:0.76rem"><thead><tr><th>महिना</th><th>बचत</th><th>ब्याज</th><th>सावा</th><th>जरि.</th><th>नगद</th></tr></thead><tbody>
-    ${payHtml}
-    </tbody></table></div>
-    <h3 class="mt-2">💎 सम्पत्ति इतिहास</h3>
-    <div class="table-wrap"><table><thead><tr><th>महिना</th><th>पहिले</th><th>थप</th><th>जम्मा</th></tr></thead><tbody>`;
-  if (!assetRows.length) {
-    html += '<tr><td colspan="4">अहिलेसम्म रेकर्ड छैन</td></tr>';
-  } else {
-    assetRows.forEach(h => {
-      html += `<tr><td>${h.monthName}</td><td>${Accounting.formatNum(h.prev)}</td><td>${Accounting.formatNum(h.added)}</td><td class="fw-bold">${Accounting.formatNum(h.total)}</td></tr>`;
-    });
-  }
-  html += `</tbody></table></div>
-    <h3 class="mt-2">🤝 ऋण इतिहास</h3>
-    <div class="table-wrap"><table><thead><tr><th>महिना</th><th>पहिले</th><th>लिएको</th><th>तिरेको</th><th>बाँकी</th></tr></thead><tbody>`;
-  if (!loanRows.length) {
-    html += '<tr><td colspan="5">अहिलेसम्म रेकर्ड छैन</td></tr>';
-  } else {
-    loanRows.forEach(h => {
-      html += `<tr><td>${h.monthName}</td><td>${Accounting.formatNum(h.prev)}</td><td>${Accounting.formatNum(h.taken)}</td><td>${Accounting.formatNum(h.repaid)}</td><td class="fw-bold">${Accounting.formatNum(h.balance)}</td></tr>`;
-    });
-  }
-  html += '</tbody></table></div></div>';
-  html += '<button class="btn btn-primary btn-block mt-2" onclick="printReportImage(\'print-passbook\')">🖨️ प्रिन्ट</button>';
+    <div class="passbook-two-grid">
+      <div class="passbook-box">
+        <div class="passbook-box-head">
+          <span>💎 सम्पत्ति विवरण</span>
+          <span class="passbook-box-metric">हाल: रु. ${Accounting.formatNum(myAssets)}</span>
+        </div>
+        <div class="passbook-box-scroll">
+          <table class="passbook-table">
+            <thead><tr><th>महिना</th><th>पहिले</th><th>थप</th><th>जम्मा</th></tr></thead>
+            <tbody>${assetBody}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="passbook-box">
+        <div class="passbook-box-head">
+          <span>🤝 ऋण विवरण</span>
+          <span class="passbook-box-metric loan">बाँकी: रु. ${Accounting.formatNum(effLoan)}</span>
+        </div>
+        <div class="passbook-box-scroll">
+          <table class="passbook-table">
+            <thead><tr><th>महिना</th><th>पहिले</th><th>लिएको</th><th>तिरेको</th><th>बाँकी</th></tr></thead>
+            <tbody>${loanBody}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
 
-  UI.showModal('📖 पासबुक - ' + member.name, html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+function renderPassbookContent(memberId) {
+  const data = DB.load();
+  const member = (data.members || []).find(m => m.id === memberId);
+  if (!member) return UI.toast('सदस्य भेटिएन', 'error');
+
+  const html = buildPassbookTwoBoxHtml(data, member);
+  const footerHtml = `
+    <button type="button" class="btn btn-primary" onclick="printReportImage('print-passbook')">🖨️ प्रिन्ट</button>
+    <button type="button" class="btn btn-outline" onclick="closeModal()">बन्द</button>
+  `;
+
+  UI.showModal('📖 पासबुक - ' + member.name, html, footerHtml, { passbook: true });
 }
 
 function showMemberMonthPaymentDetail(monthId, memberId) {
@@ -6633,3 +6667,366 @@ window.confirmClearAccountingOnly = confirmClearAccountingOnly;
 window.runClearAccountingOnly = runClearAccountingOnly;
 
 window.fixDuplicateMembersNow = fixDuplicateMembersNow;
+
+// ========== TEMPORARY ISOLATED LOAN SANDBOX (REMOVE AFTER TESTING) ==========
+const LOAN_SBX_STORAGE_KEY = 'gs_loan_sandbox_temp_v1';
+let _loanSbxSigPad = null;
+
+function getOrInitLoanSandbox() {
+  try {
+    const raw = sessionStorage.getItem(LOAN_SBX_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.data && parsed.month) return parsed;
+    }
+  } catch (e) {}
+
+  const real = DB.load();
+  const clone = JSON.parse(JSON.stringify(real));
+  const snap = Accounting.getSnapshot(clone);
+  let month = Accounting.getCurrentMonth(clone);
+  if (!month) {
+    const bs = adToBsParts(getNepalNow()) || { year: 2083, monthIndex: 7 };
+    const mName = (BS_MONTHS_NP[bs.monthIndex] || 'अभ्यास') + ' ' + bs.year;
+    month = {
+      id: 'sbx_' + Date.now(),
+      name: mName + ' (अभ्यास)',
+      yearBS: bs.year,
+      monthIndex: bs.monthIndex,
+      status: 'collection_closed',
+      startAssets: snap.assets,
+      finalAssets: snap.assets,
+      outstandingLoans: snap.loans,
+      cashInHand: snap.cash,
+      totalAdvances: snap.totalAdvance || 0,
+      netShareAssets: Math.max(0, snap.assets - (snap.totalAdvance || 0)),
+      savingsCollected: 0,
+      interestCollected: 0,
+      otherIncome: 0,
+      expenses: 0,
+      principalCollected: 0,
+      newLoansGiven: 0,
+      advanceFromCash: 0,
+      totalMembers: snap.members,
+      totalKitta: snap.kitta,
+      collections: {},
+      loansGiven: [],
+      otherIncomeDetails: [],
+      expenseDetails: [],
+      collectionClosedAt: new Date().toISOString()
+    };
+    clone.months = clone.months || [];
+    clone.months.push(month);
+    clone.currentMonthId = month.id;
+  } else {
+    month.status = 'collection_closed';
+    Accounting.recalcMonth(month, clone);
+  }
+  const sbx = {
+    data: clone,
+    monthId: month.id,
+    month,
+    extraCash: 0,
+    lastRecord: null,
+    createdAt: new Date().toISOString()
+  };
+  saveLoanSandbox(sbx);
+  return sbx;
+}
+
+function saveLoanSandbox(sbx) {
+  try {
+    sessionStorage.setItem(LOAN_SBX_STORAGE_KEY, JSON.stringify(sbx));
+  } catch (e) {}
+}
+
+function clearLoanSandbox(stayInLoans = true) {
+  try { sessionStorage.removeItem(LOAN_SBX_STORAGE_KEY); } catch (e) {}
+  _loanSbxSigPad = null;
+  UI.toast('अभ्यास डाटा सुरक्षित हटाइयो (रियल हिसाब जस्ताको तस्तै छ)', 'success');
+  if (stayInLoans) openLoans();
+}
+
+function resetLoanSandbox() {
+  try { sessionStorage.removeItem(LOAN_SBX_STORAGE_KEY); } catch (e) {}
+  _loanSbxSigPad = null;
+  openLoanSandbox();
+}
+
+function addLoanSandboxTestCash(amount) {
+  const sbx = getOrInitLoanSandbox();
+  sbx.extraCash = (sbx.extraCash || 0) + (Number(amount) || 50000);
+  saveLoanSandbox(sbx);
+  UI.toast('अभ्यास नगद +' + Accounting.formatNum(amount) + ' थपियो', 'success');
+  openLoanSandbox();
+}
+
+function getLoanSandboxCash(sbx) {
+  Accounting.recalcMonth(sbx.month, sbx.data);
+  return (Number(sbx.month.cashInHand) || 0) + (Number(sbx.extraCash) || 0);
+}
+
+function openLoanSandbox() {
+  const sbx = getOrInitLoanSandbox();
+  const sbxCash = getLoanSandboxCash(sbx);
+  const loans = sbx.month.loansGiven || [];
+  const last = sbx.lastRecord;
+
+  let lastInspectHtml = '';
+  if (last) {
+    const sizeKb = ((last.signatureDataUrl || '').length * 0.75 / 1024).toFixed(1);
+    const sigImg = last.signatureDataUrl
+      ? `<img src="${last.signatureDataUrl}" alt="सहि" style="max-width:160px;height:56px;object-fit:contain;border:1px solid #cbd5e1;border-radius:8px;background:#fff;padding:4px">`
+      : '';
+    const jsonPreview = escapeHtmlChat(JSON.stringify({
+      memberId: last.entry.memberId,
+      amount: last.entry.amount,
+      note: last.entry.note || undefined,
+      signature: last.simulatedR2Path,
+      time: last.entry.time
+    }, null, 2));
+
+    lastInspectHtml = `
+      <div class="section-card" style="border:2px solid #0d6efd;background:#f8fbff;padding:10px 12px">
+        <div class="section-title" style="color:#0a58ca;margin-bottom:6px">🔍 भर्खरै गरिएको अभ्यास ऋण · रेकर्ड र सहि कसरी बस्यो?</div>
+        <div class="loan-sbx-step">
+          <strong>१) सदस्यको डिजिटल सहि (Signature JPEG + R2 Storage):</strong>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
+            ${sigImg}
+            <div style="font-size:0.75rem;color:#334155;line-height:1.4">
+              <div>• Canvas साइज घटाएर हल्का JPEG: <strong>~${sizeKb} KB</strong></div>
+              <div>• सर्भरमा सहि फोटो बस्ने ठाउँ (R2):<br><code>${escapeHtmlChat(last.simulatedR2Path)}</code></div>
+            </div>
+          </div>
+        </div>
+        <div class="loan-sbx-step">
+          <strong>२) डाटाबेस (D1) मा बस्ने रेकर्ड:</strong>
+          <div style="font-size:0.75rem;margin-top:2px">• <code>month.loansGiven</code> भित्र थपिन्छ र <code>member.outstandingLoan</code> मा रु. <strong>${Accounting.formatNum(last.entry.amount)}</strong> जोडिन्छ, अनि कोसको नगद <code>cashInHand</code> घट्छ।</div>
+          <pre class="loan-sbx-code">${jsonPreview}</pre>
+        </div>
+        <div class="loan-sbx-step">
+          <strong>३) सदस्यलाई जाने व्यक्तिगत सन्देश (Private Chat + Push):</strong>
+          <div style="font-size:0.76rem;color:#0f5132;background:#d1e7dd;padding:6px 8px;border-radius:8px;margin-top:4px">
+            "तपाईंलाई रु. ${Accounting.formatNum(last.entry.amount)} ऋण लगानी गरियो। हालको बाँकी ऋण: रु. ${Accounting.formatNum(last.newBalance)}"
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+          <button type="button" class="btn btn-purple btn-sm" onclick="openLoanSandboxPassbook('${last.entry.memberId}')">📖 अभ्यास पासबुक हेर्नुहोस्</button>
+          <button type="button" class="btn btn-info btn-sm" onclick="openLoanSandboxCollectionPreview()">📋 सारांशमा सहि हेर्नुहोस्</button>
+        </div>
+      </div>`;
+  }
+
+  let sbxListHtml = '';
+  if (loans.length) {
+    sbxListHtml = '<div class="section-title mt-2">🧪 अभ्यासमा दिइएका ऋण (' + loans.length + ')</div>' +
+      loans.map((l, idx) => {
+        const mem = sbx.data.members.find(x => x.id === l.memberId);
+        return `<div class="member-item" style="align-items:center">
+          <div class="member-info">
+            <div class="member-name">${mem ? mem.name : l.memberId} · रु. ${Accounting.formatNum(l.amount)}</div>
+            <div class="member-meta">${l.note ? '📝 ' + escapeHtmlChat(l.note) + ' · ' : ''}${new Date(l.time).toLocaleTimeString('ne-NP')}</div>
+          </div>
+          <div>${renderTinySignature(l.signature)}</div>
+        </div>`;
+      }).join('');
+  }
+
+  const html = `
+    <div class="loan-sbx-banner">
+      <div style="font-size:0.82rem;color:#78350f;font-weight:700">⚠️ यो अभ्यास (Test) मोड मात्र हो — रियल D1, R2 वा हिसाबमा कुनै असर पर्दैन।</div>
+    </div>
+    <div class="report-card mb-2" style="padding:10px 12px">
+      <div class="report-row"><span class="label">💵 अभ्यास उपलब्ध नगद</span><span class="value fw-bold">रु. ${Accounting.formatNum(sbxCash)}</span></div>
+      <div class="report-row"><span class="label">🤝 अभ्यास ऋण दिइएको</span><span class="value">${loans.length} वटा (रु. ${Accounting.formatNum(loans.reduce((s, l) => s + (l.amount || 0), 0))})</span></div>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <button type="button" class="btn btn-orange" style="flex:1" onclick="showLoanSandboxMemberPick()">➕ अभ्यास ऋण लगानी गर्नुहोस्</button>
+      <button type="button" class="btn btn-light btn-sm" style="border:1px solid #cbd5e1;white-space:nowrap" onclick="addLoanSandboxTestCash(50000)">+रु. ५०,००० नगद</button>
+    </div>
+    ${lastInspectHtml}
+    ${sbxListHtml}
+    <div class="section-card mt-2" style="padding:10px 12px;background:#f8fafc">
+      <div class="section-title" style="font-size:0.86rem;margin-bottom:6px">📌 रियल ऋण लगानी हुँदा के–के हुन्छ र कहाँ बस्छ?</div>
+      <div style="font-size:0.78rem;line-height:1.5;color:#334155">
+        <div><strong>१. को र कहिले:</strong> केवल <strong>कोषाध्यक्ष</strong>ले <strong>कलेक्सन बन्द</strong> भएपछि मात्र ऋण दिन मिल्छ।</div>
+        <div><strong>२. के माग्छ:</strong> रकम (&gt; ०), वैकल्पिक उद्देश्य/साक्षी, <strong>अनिवार्य सहि</strong>, कोषाध्यक्ष <strong>PIN</strong> र पर्याप्त नगद जाँच।</div>
+        <div><strong>३. कहाँ बस्छ:</strong> सहि फोटो हल्का JPEG बनेर <strong>Cloudflare R2</strong> (<code>/api/media/signatures/...</code>) मा, ऋण रेकर्ड <strong>D1</strong> (<code>month.loansGiven</code> र <code>member.outstandingLoan</code>) मा, सदस्यको <strong>पासबुक</strong>, <strong>कलेक्सन सारांश</strong> (बुझिलिने सहि सहित), <strong>मासिक रसिद</strong> र <strong>निजी सूचना</strong> मा बस्छ।</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+      <button type="button" class="btn btn-light btn-sm" style="border:1px solid #ced4da" onclick="resetLoanSandbox()">🔄 अभ्यास रिसेट</button>
+      <button type="button" class="btn btn-danger btn-sm" onclick="clearLoanSandbox(true)">🗑️ अभ्यास डाटा मेटाउनुहोस्</button>
+    </div>
+  `;
+
+  UI.showModal('🧪 ऋण लगानी अभ्यास (Test)', html, '<button class="btn btn-outline" onclick="openLoans()">← ऋण मेनु</button>', { replace: true, back: 'openLoans' });
+}
+
+function showLoanSandboxMemberPick() {
+  const sbx = getOrInitLoanSandbox();
+  const active = (sbx.data.members || []).filter(m => m.active);
+  const html = `
+    <div class="search-box">
+      <input type="text" id="sbx-loan-search" placeholder="अभ्यासका लागि सदस्य छान्नुहोस्..." oninput="filterLoanSandboxMembers()">
+    </div>
+    <div id="sbx-loan-member-list">
+      ${UI.renderMemberList(active, 'selectLoanSandboxMember')}
+    </div>
+  `;
+  UI.showModal('🧪 अभ्यास — सदस्य छान्नुहोस्', html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← फर्कनुहोस्</button>', { replace: true, back: 'openLoanSandbox' });
+}
+
+function filterLoanSandboxMembers() {
+  const q = ((document.getElementById('sbx-loan-search') && document.getElementById('sbx-loan-search').value) || '').trim().toLowerCase();
+  const sbx = getOrInitLoanSandbox();
+  const filtered = (sbx.data.members || []).filter(m => m.active && (m.name || '').toLowerCase().includes(q));
+  const box = document.getElementById('sbx-loan-member-list');
+  if (box) box.innerHTML = UI.renderMemberList(filtered, 'selectLoanSandboxMember');
+}
+
+function selectLoanSandboxMember(memberId) {
+  const sbx = getOrInitLoanSandbox();
+  const member = (sbx.data.members || []).find(m => m.id === memberId);
+  if (!member) return;
+  const availCash = getLoanSandboxCash(sbx);
+
+  const html = `
+    <div class="loan-sbx-banner" style="padding:7px 10px;font-size:0.76rem;color:#78350f">
+      🧪 अभ्यास मोड · उपलब्ध अभ्यास नगद: <strong>रु. ${Accounting.formatNum(availCash)}</strong>
+    </div>
+    <div class="section-title">${member.name} (बाँकी ऋण: रु. ${Accounting.formatNum(member.outstandingLoan || 0)})</div>
+    <div class="form-group">
+      <label>💵 ऋण रकम</label>
+      <input type="number" id="sbx-loan-amount" placeholder="जस्तै: 5000" value="${availCash >= 5000 ? 5000 : ''}">
+    </div>
+    <div class="form-group">
+      <label>📝 उद्देश्य / म्याद / साक्षी (वैकल्पिक)</label>
+      <input type="text" id="sbx-loan-note" placeholder="जस्तै: व्यापार · ६ महिना · साक्षी राम">
+    </div>
+    <div class="form-group">
+      <label>✍️ सदस्यको सहि (अनिवार्य — औंला वा माउसले कोर्नुहोस्)</label>
+      <div class="loan-sbx-sig-wrap">
+        <canvas id="sbx-sig-canvas" width="320" height="150"></canvas>
+      </div>
+      <div class="sig-actions">
+        <button type="button" class="btn btn-light btn-sm" onclick="clearLoanSandboxSignature()">🗑️ सहि मेट्नुहोस्</button>
+      </div>
+    </div>
+    <button type="button" class="btn btn-orange btn-block" onclick="saveLoanSandbox('${memberId}')">✅ अभ्यास ऋण लगानी गरी रेकर्ड हेर्नुहोस्</button>
+  `;
+  UI.showModal('🧪 अभ्यास ऋण — ' + member.name, html, '<button class="btn btn-outline" onclick="showLoanSandboxMemberPick()">← फर्कनुहोस्</button>', { replace: true, back: 'showLoanSandboxMemberPick' });
+  initLoanSandboxSignaturePad();
+}
+
+function initLoanSandboxSignaturePad() {
+  const canvas = document.getElementById('sbx-sig-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = '#0f172a';
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  let drawing = false;
+  function pos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  }
+  function start(e) { e.preventDefault(); drawing = true; if (_loanSbxSigPad) _loanSbxSigPad.hasDrawn = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+  function move(e) { e.preventDefault(); if (!drawing) return; const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); }
+  function end() { drawing = false; }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  canvas.addEventListener('mouseup', end);
+  canvas.addEventListener('mouseleave', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  _loanSbxSigPad = { canvas, ctx, hasDrawn: false };
+}
+
+function clearLoanSandboxSignature() {
+  if (!_loanSbxSigPad) return;
+  _loanSbxSigPad.ctx.clearRect(0, 0, _loanSbxSigPad.canvas.width, _loanSbxSigPad.canvas.height);
+  _loanSbxSigPad.hasDrawn = false;
+}
+
+function saveLoanSandbox(memberId) {
+  const amount = parseFloat((document.getElementById('sbx-loan-amount') && document.getElementById('sbx-loan-amount').value) || 0) || 0;
+  if (amount <= 0) return UI.toast('रकम लेख्नुहोस्', 'error');
+  if (!_loanSbxSigPad || !_loanSbxSigPad.hasDrawn) return UI.toast('सदस्यको सहि कोर्न अनिवार्य छ', 'error');
+
+  const note = ((document.getElementById('sbx-loan-note') && document.getElementById('sbx-loan-note').value) || '').trim();
+  const signature = compressSignatureFromPad(_loanSbxSigPad);
+
+  const sbx = getOrInitLoanSandbox();
+  const availCash = getLoanSandboxCash(sbx);
+  if (amount > availCash) {
+    return UI.toast('अभ्यास नगद पर्याप्त छैन (उपलब्ध: ' + Accounting.formatNum(availCash) + ' — माथि +रु. ५०,००० थप्नुहोस्)', 'error');
+  }
+
+  UI.showPinModal('🧪 अभ्यास PIN जाँच (तपाईंको रियल PIN वा Test PIN): रु. ' + Accounting.formatNum(amount), () => {
+    const curSbx = getOrInitLoanSandbox();
+    const member = (curSbx.data.members || []).find(m => m.id === memberId);
+    if (!member) return;
+    const idx = (curSbx.month.loansGiven || []).length;
+    const entry = { memberId, amount, signature, time: new Date().toISOString() };
+    if (note) entry.note = note;
+    curSbx.month.loansGiven = curSbx.month.loansGiven || [];
+    curSbx.month.loansGiven.push(entry);
+    member.outstandingLoan = (Number(member.outstandingLoan) || 0) + amount;
+    Accounting.recalcMonth(curSbx.month, curSbx.data);
+
+    curSbx.lastRecord = {
+      entry,
+      newBalance: member.outstandingLoan,
+      signatureDataUrl: signature,
+      simulatedR2Path: '/api/media/signatures/' + curSbx.month.id + '-' + memberId + '-' + idx + '.jpg'
+    };
+    saveLoanSandbox(curSbx);
+    UI.toast('🧪 अभ्यास ऋण रेकर्ड भयो (रियल डाटा छोइएको छैन)', 'success');
+    openLoanSandbox();
+  });
+}
+
+function openLoanSandboxPassbook(memberId) {
+  const sbx = getOrInitLoanSandbox();
+  const member = (sbx.data.members || []).find(m => m.id === memberId);
+  if (!member) return UI.toast('सदस्य भेटिएन', 'error');
+  const html = buildPassbookTwoBoxHtml(sbx.data, member, { monthOverride: sbx.month });
+  UI.showModal('🧪 अभ्यास पासबुक - ' + member.name, html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← अभ्यासमा फर्कनुहोस्</button>', { passbook: true, replace: true, back: 'openLoanSandbox' });
+}
+
+function openLoanSandboxCollectionPreview() {
+  const sbx = getOrInitLoanSandbox();
+  const month = sbx.month;
+  const rows = (sbx.data.members || []).filter(m => m.active).map(m => {
+    const loans = (month.loansGiven || []).filter(l => l.memberId === m.id);
+    if (!loans.length) return '';
+    const taken = loans.reduce((s, l) => s + (l.amount || 0), 0);
+    const sigs = loans.map(l => renderTinySignature(l.signature)).join(' ');
+    return `<tr>
+      <td><strong>${m.name}</strong></td>
+      <td>${Accounting.formatNum(taken)}</td>
+      <td style="color:#dc3545;font-weight:700">${Accounting.formatNum(m.outstandingLoan || 0)}</td>
+      <td>${sigs}</td>
+    </tr>`;
+  }).filter(Boolean).join('');
+
+  const html = `
+    <div class="loan-sbx-banner" style="padding:7px 10px;font-size:0.76rem;color:#78350f">
+      कलेक्सन सारांशको <strong>"बुझिलिने"</strong> स्तम्भमा सदस्यको सहि यसरी प्रिन्ट सहित बस्छ:
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>सदस्य</th><th>लिएको ऋण</th><th>बाँकी ऋण</th><th>बुझिलिने सहि</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">अभ्यास ऋण छैन</td></tr>'}</tbody>
+    </table></div>
+  `;
+  UI.showModal('🧪 अभ्यास कलेक्सन सारांश', html, '<button class="btn btn-outline" onclick="openLoanSandbox()">← फर्कनुहोस्</button>', { replace: true, back: 'openLoanSandbox' });
+}
+// ========== END TEMPORARY ISOLATED LOAN SANDBOX ==========
+
