@@ -492,6 +492,11 @@ tr:active { background: #f0f7ff; }
   flex-direction: column;
   animation: slideUp 0.25s ease;
 }
+.modal.modal-full {
+  max-height: 95vh;
+  height: 92vh;
+  border-radius: 16px 16px 0 0;
+}
 @keyframes slideUp {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }
@@ -852,72 +857,28 @@ tr:active { background: #f0f7ff; }
   line-height: 1.55;
 }
 
-/* सदस्य होम — बिना scroll पूरा स्क्रिन + भित्र छलफल चौतारी बाकस */
+/* सदस्य होम — बिना scroll पूरा स्क्रिन + भित्र साझा छलफल चौतारी बाकस */
 .member-home-shell {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 108px);
-  height: calc(100dvh - 108px);
-  min-height: 420px;
-  gap: 8px;
+  height: calc(100vh - 110px);
+  height: calc(100dvh - 110px);
+  min-height: 460px;
+  gap: 7px;
 }
 .mh-fund-card,
 .mh-profile-card {
   flex-shrink: 0;
   margin-bottom: 0 !important;
 }
-.mh-chat-card {
-  flex: 1 1 0;
-  min-height: 155px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  margin-bottom: 0 !important;
-  padding: 10px !important;
-}
-.mh-chat-compose {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 6px;
-  flex-shrink: 0;
-}
-.mh-chat-compose input {
-  flex: 1;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1.5px solid #ced4da;
-  border-radius: 10px;
-  font-size: 0.88rem;
-  outline: none;
-}
-.mh-chat-compose input:focus {
-  border-color: var(--primary);
-}
-.mh-chat-list {
-  flex: 1 1 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 4px 2px 2px;
-  -webkit-overflow-scrolling: touch;
-}
-.mh-chat-card .chat-bubble {
-  max-width: 88%;
-  padding: 7px 10px;
-  font-size: 0.84rem;
-}
-.mh-chat-card .chat-sys {
-  max-width: 98%;
-}
 
-/* Admin होम — साना 6 कार्ड + एउटै लाइन 3 एक्सन कार्ड + मुनि छलफल चौतारी */
+/* Admin र कोषाध्यक्ष होम — साना 6 कार्ड + एउटै लाइन 3 एक्सन कार्ड + मुनि साझा छलफल चौतारी */
 .admin-home-shell {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 108px);
-  height: calc(100dvh - 108px);
-  min-height: 430px;
+  height: calc(100vh - 110px);
+  height: calc(100dvh - 110px);
+  min-height: 460px;
   gap: 6px;
 }
 .ah-stats-wrap,
@@ -1001,7 +962,7 @@ tr:active { background: #f0f7ff; }
 }
 .ah-chat-card {
   flex: 1 1 0;
-  min-height: 165px;
+  min-height: 200px;
   display: flex;
   flex-direction: column;
   overflow: hidden;

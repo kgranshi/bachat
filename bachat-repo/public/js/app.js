@@ -365,47 +365,51 @@ function renderHomeByRole() {
   }
 }
 
-function renderAdminHomeChat(options = {}) {
-  const listEl = document.getElementById('ah-chat-list');
+function _buildGroupChatBubblesHtml(msgs, canDelete) {
+  if (!msgs || !msgs.length) {
+    return '<div class="text-muted text-center" style="padding:18px 8px;font-size:0.83rem">अहिलेसम्म छलफल सन्देश छैन — तल बाकसबाट सुरु गर्नुहोस्</div>';
+  }
+  const me = _chatSender();
+  return msgs.map(function (m) {
+    const mine = me.role !== 'system' && m.fromId === me.id && m.fromRole === me.role;
+    const sys = m.fromRole === 'system' || m.type === 'auto_group';
+    const time = m.time ? new Date(m.time).toLocaleString('ne-NP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+    const delBtn = canDelete && m.id
+      ? '<button type="button" onclick="event.stopPropagation();deleteGroupChatMessage(\'' + escapeHtmlChat(m.id) + '\')" style="border:none;background:none;color:#dc3545;cursor:pointer;font-size:0.74rem;margin-left:6px;padding:0" title="मेटाउनुहोस्">🗑️</button>'
+      : '';
+    const roleIcon = m.fromRole === 'admin' ? '🔐 ' : (m.fromRole === 'treasurer' ? '💼 ' : '👤 ');
+    return '<div class="chat-row ' + (sys ? 'sys' : (mine ? 'mine' : 'theirs')) + '">' +
+      '<div class="chat-bubble' + (sys ? ' chat-sys' : '') + '">' +
+      (!mine && !sys ? '<div class="chat-from">' + roleIcon + escapeHtmlChat(m.fromName || '') + '</div>' : '') +
+      (sys ? '<div class="chat-from">📢 समूह सूचना</div>' : '') +
+      '<div class="chat-text">' + escapeHtmlChat(m.text || '').replace(/\n/g, '<br>') + '</div>' +
+      '<div class="chat-time">' + time + delBtn + '</div></div></div>';
+  }).join('');
+}
+
+function _renderHomeChatBox(listId, badgeId, options = {}) {
+  const listEl = document.getElementById(listId);
   if (!listEl) return;
   const data = _ensureChat(DB.load());
-  const me = _chatSender();
   const canDelete = (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter());
   const msgs = (data.chat && data.chat.group) || [];
 
   const wasLoaded = listEl.dataset.loaded === '1';
-  const prevScrollTop = listEl.scrollTop;
-  const wasAtBottom = !wasLoaded || (listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 40);
-  const prevCount = Number(listEl.dataset.count || 0);
+  const prevScrollTop = options.prevScrollTop != null ? options.prevScrollTop : listEl.scrollTop;
+  const wasAtBottom = options.wasAtBottom != null
+    ? options.wasAtBottom
+    : (!wasLoaded || (listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 40));
+  const prevCount = options.prevCount != null ? options.prevCount : Number(listEl.dataset.count || 0);
   const hasNewMsg = msgs.length > prevCount;
 
-  const badge = document.getElementById('ah-chat-unread-badge');
+  const badge = document.getElementById(badgeId);
   const unread = groupChatUnreadCount(data);
   if (badge) {
     badge.textContent = unread + ' नयाँ';
     badge.classList.toggle('hidden', unread <= 0);
   }
 
-  if (!msgs.length) {
-    listEl.innerHTML = '<div class="text-muted text-center" style="padding:18px 8px;font-size:0.83rem">अहिलेसम्म छलफल सन्देश छैन — तल बाकसबाट सुरु गर्नुहोस्</div>';
-  } else {
-    listEl.innerHTML = msgs.map(function (m) {
-      const mine = me.role !== 'system' && m.fromId === me.id && m.fromRole === me.role;
-      const sys = m.fromRole === 'system' || m.type === 'auto_group';
-      const time = m.time ? new Date(m.time).toLocaleString('ne-NP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-      const delBtn = canDelete && m.id
-        ? '<button type="button" onclick="event.stopPropagation();deleteGroupChatMessage(\'' + escapeHtmlChat(m.id) + '\', false)" style="border:none;background:none;color:#dc3545;cursor:pointer;font-size:0.74rem;margin-left:6px;padding:0" title="मेटाउनुहोस्">🗑️</button>'
-        : '';
-      const roleIcon = m.fromRole === 'admin' ? '🔐 ' : (m.fromRole === 'treasurer' ? '💼 ' : '👤 ');
-      return '<div class="chat-row ' + (sys ? 'sys' : (mine ? 'mine' : 'theirs')) + '">' +
-        '<div class="chat-bubble' + (sys ? ' chat-sys' : '') + '">' +
-        (!mine && !sys ? '<div class="chat-from">' + roleIcon + escapeHtmlChat(m.fromName || '') + '</div>' : '') +
-        (sys ? '<div class="chat-from">📢 समूह सूचना</div>' : '') +
-        '<div class="chat-text">' + escapeHtmlChat(m.text || '').replace(/\n/g, '<br>') + '</div>' +
-        '<div class="chat-time">' + time + delBtn + '</div></div></div>';
-    }).join('');
-  }
-
+  listEl.innerHTML = _buildGroupChatBubblesHtml(msgs, canDelete);
   listEl.dataset.loaded = '1';
   listEl.dataset.count = String(msgs.length);
 
@@ -416,8 +420,8 @@ function renderAdminHomeChat(options = {}) {
   }
 }
 
-function ackAdminHomeChatRead() {
-  const badge = document.getElementById('ah-chat-unread-badge');
+function _ackHomeChatRead(badgeId) {
+  const badge = document.getElementById(badgeId);
   const hadBadge = badge && !badge.classList.contains('hidden');
   if (!hadBadge) return;
   try {
@@ -425,6 +429,14 @@ function ackAdminHomeChatRead() {
     markGroupChatRead(data.chat.group || []);
     badge.classList.add('hidden');
   } catch (e) {}
+}
+
+function renderAdminHomeChat(options = {}) {
+  _renderHomeChatBox('ah-chat-list', 'ah-chat-unread-badge', options);
+}
+
+function ackAdminHomeChatRead() {
+  _ackHomeChatRead('ah-chat-unread-badge');
 }
 
 function sendAdminHomeChat() {
@@ -442,6 +454,10 @@ function sendAdminHomeChat() {
   if (typeof DB.pushChatNow === 'function') {
     try { DB.pushChatNow(); } catch (e) {}
   }
+}
+
+function renderMemberHomeChat(options = {}) {
+  _renderHomeChatBox('mh-chat-list', 'mh-chat-unread-badge', options);
 }
 
 function showMemberMandatoryBreakdown() {
@@ -482,6 +498,8 @@ function renderMemberHome(container) {
   const hadFocus = !!(prevInp && document.activeElement === prevInp);
   const prevList = document.getElementById('mh-chat-list');
   const prevScroll = prevList ? prevList.scrollTop : 0;
+  const wasAtBottom = !prevList || (prevList.scrollHeight - prevList.scrollTop - prevList.clientHeight < 40);
+  const prevCount = prevList ? Number(prevList.dataset.count || 0) : 0;
 
   const snap = Accounting.getSnapshot(data);
   const myAssets = Accounting.memberAssets(data, member);
@@ -501,30 +519,9 @@ function renderMemberHome(container) {
       '</span></div>';
   } catch (e) {}
 
-  const chatUnread = groupChatUnreadCount(data);
-  const chatBadge = `<span id="mh-chat-unread-badge" class="badge-unread${chatUnread > 0 ? '' : ' hidden'}">${chatUnread} नयाँ</span>`;
   const avatarHtml = member.photo
     ? `<img src="${member.photo}" alt="" class="member-passport-photo" style="width:50px;height:62px"/>`
     : `<div class="member-avatar" style="width:50px;height:62px;border-radius:10px;font-size:1.35rem">${member.name.charAt(0)}</div>`;
-
-  const me = _chatSender();
-  const msgs = (data.chat && data.chat.group) || [];
-  let chatBubbles = '';
-  if (!msgs.length) {
-    chatBubbles = '<div class="text-muted text-center" style="padding:18px 8px;font-size:0.84rem">अहिलेसम्म छलफल सन्देश छैन — तल बाकस माथिबाट सुरु गर्नुहोस्</div>';
-  } else {
-    chatBubbles = msgs.slice().reverse().map(function (m) {
-      const mine = m.fromId === me.id && m.fromRole === me.role;
-      const sys = m.fromRole === 'system' || m.type === 'auto_group';
-      const time = m.time ? new Date(m.time).toLocaleString('ne-NP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-      return '<div class="chat-row ' + (sys ? 'sys' : (mine ? 'mine' : 'theirs')) + '">' +
-        '<div class="chat-bubble' + (sys ? ' chat-sys' : '') + '">' +
-        (!mine && !sys ? '<div class="chat-from">' + (m.fromRole === 'admin' ? '🔐 ' : '👤 ') + escapeHtmlChat(m.fromName || '') + '</div>' : '') +
-        (sys ? '<div class="chat-from">📢 समूह सूचना</div>' : '') +
-        '<div class="chat-text">' + escapeHtmlChat(m.text || '').replace(/\n/g, '<br>') + '</div>' +
-        '<div class="chat-time">' + time + '</div></div></div>';
-    }).join('');
-  }
 
   container.innerHTML = `
     <div class="member-home-shell">
@@ -582,19 +579,30 @@ function renderMemberHome(container) {
         </div>
       </div>
 
-      <div class="section-card mh-chat-card" onclick="ackMemberHomeChatRead()">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-shrink:0">
-          <div style="font-weight:700;font-size:0.92rem">💬 छलफल चौतारी ${chatBadge}</div>
-          <button type="button" class="btn btn-light btn-sm" style="padding:3px 8px;font-size:0.72rem" onclick="event.stopPropagation();openGroupChatFromHome()">ठूलो ↗</button>
+      <div id="member-home-chat-card" class="section-card ah-chat-card" onclick="ackMemberHomeChatRead()">
+        <div class="ah-chat-head">
+          <div style="font-weight:700;font-size:0.88rem">💬 छलफल चौतारी <span id="mh-chat-unread-badge" class="badge-unread hidden">0</span></div>
         </div>
-        <div class="mh-chat-compose" onclick="event.stopPropagation();ackMemberHomeChatRead()">
-          <input type="text" id="member-home-chat-input" placeholder="नयाँ सन्देश लेख्नुहोस्..." onkeydown="if(event.key==='Enter')sendMemberHomeChat()">
-          <button type="button" class="btn btn-success btn-sm" style="padding:7px 12px" onclick="sendMemberHomeChat()">पठाउ</button>
+        <div id="mh-chat-list" class="ah-chat-list" onscroll="ackMemberHomeChatRead()"></div>
+        <div class="ah-chat-compose" onclick="event.stopPropagation();ackMemberHomeChatRead()">
+          <input type="text" id="member-home-chat-input" placeholder="सन्देश लेख्नुहोस्..." onkeydown="if(event.key==='Enter')sendMemberHomeChat()">
+          <button type="button" class="chat-send-icon-btn" onclick="sendMemberHomeChat()" aria-label="पठाउनुहोस्" title="पठाउनुहोस्">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
         </div>
-        <div id="mh-chat-list" class="mh-chat-list" onscroll="ackMemberHomeChatRead()">${chatBubbles}</div>
       </div>
     </div>
   `;
+
+  renderMemberHomeChat({
+    scrollToBottom: !prevList || wasAtBottom,
+    prevScrollTop: prevScroll,
+    wasAtBottom: wasAtBottom,
+    prevCount: prevCount
+  });
 
   if (prevDraft) {
     const newInp = document.getElementById('member-home-chat-input');
@@ -607,19 +615,10 @@ function renderMemberHome(container) {
       try { newInp.setSelectionRange(newInp.value.length, newInp.value.length); } catch (e) {}
     }
   }
-  const newList = document.getElementById('mh-chat-list');
-  if (newList && prevScroll > 0) newList.scrollTop = prevScroll;
 }
 
 function ackMemberHomeChatRead() {
-  const badge = document.getElementById('mh-chat-unread-badge');
-  const hadBadge = badge && !badge.classList.contains('hidden');
-  if (!hadBadge) return;
-  try {
-    const data = _ensureChat(DB.load());
-    markGroupChatRead(data.chat.group || []);
-    badge.classList.add('hidden');
-  } catch (e) {}
+  _ackHomeChatRead('mh-chat-unread-badge');
 }
 
 function sendMemberHomeChat() {
@@ -629,16 +628,11 @@ function sendMemberHomeChat() {
   let data = DB.load();
   postGroupMessage(text, 'text', data);
   markGroupChatRead((data.chat && data.chat.group) || []);
-  DB.save(data);
+  DB.save(data, { localOnly: true });
   if (input) input.value = '';
+  renderMemberHomeChat({ scrollToBottom: true });
   if (typeof DB.pushChatNow === 'function') {
     try { DB.pushChatNow(); } catch (e) {}
-  }
-  const memberHome = document.getElementById('home-member');
-  if (memberHome) {
-    renderMemberHome(memberHome);
-    const list = document.getElementById('mh-chat-list');
-    if (list) list.scrollTop = 0;
   }
 }
 
@@ -1000,106 +994,12 @@ function showMemberOwnCollectionSummary() {
   UI.showModal('📋 मेरो कलेक्सन सारांश', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
 }
 
-function openGroupChatFromHome(options = {}) {
-  window._chatMode = 'group';
-  const data = _ensureChat(DB.load());
-  const msgs = data.chat.group || [];
-  markGroupChatRead(msgs);
-  const me = _chatSender();
-  const canDelete = (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter());
-  let bubbles = '';
-  if (!msgs.length) {
-    bubbles = '<div class="text-muted text-center" style="padding:16px">अहिलेसम्म सन्देश छैन</div>';
-  } else {
-    bubbles = msgs.map(function (m) {
-      const mine = m.fromId === me.id && m.fromRole === me.role;
-      const sys = m.fromRole === 'system' || m.type === 'auto_group';
-      const time = m.time ? new Date(m.time).toLocaleString('ne-NP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-      const delBtn = canDelete && m.id
-        ? '<button type="button" onclick="event.stopPropagation();deleteGroupChatMessage(\'' + escapeHtmlChat(m.id) + '\', true)" style="border:none;background:none;color:#dc3545;cursor:pointer;font-size:0.75rem;margin-left:6px;padding:0" title="मेटाउनुहोस्">🗑️</button>'
-        : '';
-      const roleIcon = m.fromRole === 'admin' ? '🔐 ' : (m.fromRole === 'treasurer' ? '💼 ' : '👤 ');
-      return '<div class="chat-row ' + (sys ? 'sys' : (mine ? 'mine' : 'theirs')) + '">' +
-        '<div class="chat-bubble' + (sys ? ' chat-sys' : '') + '">' +
-        (!mine && !sys ? '<div class="chat-from">' + roleIcon + escapeHtmlChat(m.fromName || '') + '</div>' : '') +
-        (sys ? '<div class="chat-from">📢 समूह सूचना</div>' : '') +
-        '<div class="chat-text">' + escapeHtmlChat(m.text || '').replace(/\n/g, '<br>') + '</div>' +
-        '<div class="chat-time">' + time + delBtn + '</div></div></div>';
-    }).join('');
-  }
-  const canSend = true;
-  const html = '<div id="group-chat-box" style="max-height:50vh;overflow-y:auto;padding:8px">' + bubbles + '</div>' +
-    (canSend ? '<div class="flex gap-1 mt-2"><input type="text" id="home-chat-input" placeholder="सन्देश..." style="flex:1" onkeydown="if(event.key===\'Enter\')sendGroupChatFromHome()">' +
-      '<button class="btn btn-primary" onclick="sendGroupChatFromHome()">पठाउनुहोस्</button></div>' : '');
-  UI.showModal('💬 छलफल चौतारी', html, '<button class="btn btn-outline" onclick="closeModal();renderHomeByRole()">बन्द</button>', options.replace ? { replace: true } : {});
-  setTimeout(function () {
-    const box = document.getElementById('group-chat-box');
-    if (box) box.scrollTop = box.scrollHeight;
-  }, 80);
-}
-
-function sendGroupChatFromHome() {
-  const input = document.getElementById('home-chat-input');
-  const text = (input && input.value || '').trim();
-  if (!text) return UI.toast('सन्देश लेख्नुहोस्', 'error');
-  let data = DB.load();
-  postGroupMessage(text, 'text', data);
-  DB.save(data, { localOnly: !Auth.isAccountsWriter() });
-  if (typeof DB.pushChatNow === 'function') {
-    try { DB.pushChatNow(); } catch (e) {}
-  }
-  openGroupChatFromHome({ replace: true });
-}
-
-
 function openMemberReports() {
   const html = `
     <button class="btn btn-primary btn-block mb-1" onclick="showMonthlyReport()">📅 मासिक रिपोर्ट</button>
     <button class="btn btn-info btn-block mb-1" onclick="showYearlyReport()">📊 वार्षिक रिपोर्ट</button>
   `;
   UI.showModal('📊 रिपोर्ट', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
-}
-
-function showMemberActivityPopup() {
-  const data = DB.load();
-  const memberId = Auth.currentUser && Auth.currentUser.memberId;
-  if (!memberId) return;
-  const rs = (typeof DB.getUserReadState === 'function') ? DB.getUserReadState() : {};
-  const lastSeen = rs.activityReadAt || '';
-  const activities = [];
-
-  if (lastSeen) {
-    (data.months || []).forEach(mo => {
-      const c = (mo.collections || {})[memberId];
-      if (c && c.time && c.time > lastSeen) {
-        activities.push(`${mo.name}: तिरेको ${Accounting.formatNum(c.totalPaid || 0)}`);
-      }
-      (mo.loansGiven || []).forEach(l => {
-        if (l.memberId === memberId && l.time && l.time > lastSeen) {
-          activities.push(`${mo.name}: ऋण लिएको ${Accounting.formatNum(l.amount)}`);
-        }
-      });
-    });
-
-    // Unread complaint replies newer than lastSeen
-    (data.complaints || []).filter(c => c.memberId === memberId).forEach(c => {
-      (c.replies || []).forEach(r => {
-        if (r.from === 'admin' && !r.readByMember && r.time && r.time > lastSeen) {
-          activities.push('Admin जवाफ: ' + r.text.substring(0, 40));
-        }
-      });
-    });
-  }
-
-  // Persist current checkpoint to both localStorage & D1 so old activity never pops up again after logout/login
-  if (typeof DB.saveUserReadState === 'function') {
-    DB.saveUserReadState({ activityReadAt: new Date().toISOString() });
-  }
-
-  if (activities.length === 0) return;
-  const html = '<div class="section-title">🔔 नयाँ गतिविधि</div>' +
-    activities.slice(0, 10).map(a => `<div class="report-row"><span class="label">${a}</span></div>`).join('');
-  UI.showModal('🔔 सूचना', html, '<button class="btn btn-primary" onclick="closeModal()">ठीक छ</button>');
 }
 
 // ========== LOGIN UI ==========
@@ -1202,7 +1102,6 @@ function switchTab(tab) {
   const pane = document.getElementById('tab-' + tab);
   if (pane) pane.classList.add('active');
 
-  if (tab === 'chat') renderChatTab();
   if (tab === 'profile') renderProfileTab();
   if (tab === 'settings') renderSettingsTab();
   if (tab === 'vidhan') renderVidhanTab();
@@ -1214,16 +1113,13 @@ function switchTab(tab) {
   }
 }
 
-/** सदस्य लगइनमा च्याट र प्रोफाइल ट्याब लुकाउने (होमको कार्डमै प्रोफाइल र छलफल चौतारी छ) */
+/** सदस्य लगइनमा प्रोफाइल ट्याब लुकाउने (होमको कार्डमै प्रोफाइल र छलफल चौतारी छ) */
 function updateNavForRole() {
   const profileBtn = document.querySelector('.nav-btn[data-tab="profile"]');
-  const chatBtn = document.querySelector('.nav-btn[data-tab="chat"]');
   if (Auth.isMember && Auth.isMember()) {
     if (profileBtn) profileBtn.style.display = 'none';
-    if (chatBtn) chatBtn.style.display = 'none';
   } else {
     if (profileBtn) profileBtn.style.display = '';
-    if (chatBtn) chatBtn.style.display = '';
   }
 }
 
@@ -1259,31 +1155,63 @@ function showAssetsDetail() {
 
 function showMembersSummary() {
   const data = DB.load();
+  const snap = Accounting.getSnapshot(data);
   const active = data.members.filter(m => m.active);
   const html = `
     <div class="report-card mb-2">
-      <div class="report-row"><span class="label">👥 जम्मा सदस्य</span><span class="value">${Accounting.totalMembers(data)}</span></div>
-      <div class="report-row"><span class="label">🎫 जम्मा कित्ता</span><span class="value">${Accounting.totalKitta(data)}</span></div>
-      <div class="report-row highlight"><span class="label">💰 प्रति कित्ता मूल्य</span><span class="value">${Accounting.formatNum(
-        (() => {
-          const m = Accounting.getCurrentMonth(data) || Accounting.getPreviousMonth(data);
-          if (!m) {
-            if (data.migrationDone) {
-              const loans = Object.values(data.migration.loans||{}).reduce((s,v)=>s+v,0);
-              const assets = (data.migration.cash||0) + loans;
-              const k = Accounting.totalKitta(data);
-              return k > 0 ? Math.round(assets / k) : 0;
-            }
-            return 0;
-          }
-          return Accounting.perKittaValue(data, m);
-        })()
-      )}</span></div>
+      <div class="report-row"><span class="label">👥 जम्मा सदस्य</span><span class="value">${snap.members}</span></div>
+      <div class="report-row"><span class="label">🎫 जम्मा कित्ता</span><span class="value">${snap.kitta}</span></div>
+      <div class="report-row highlight"><span class="label">💰 प्रति कित्ता मूल्य</span><span class="value">${Accounting.formatNum(snap.perKitta)}</span></div>
     </div>
     <div class="section-title">सदस्य सूची</div>
     ${UI.renderMemberList(active, 'viewMemberFromHome')}
   `;
   UI.showModal('👥 सदस्य सारांश', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
+}
+
+function showAdvanceSummary() {
+  const data = DB.load();
+  const snap = Accounting.getSnapshot(data);
+  const month = Accounting.getCurrentMonth(data);
+  const active = (data.members || []).filter(m => m && m.active);
+  const holders = active
+    .map(m => ({ member: m, adv: Accounting.getEffectiveMemberAdvance(data, m, month) }))
+    .filter(x => x.adv > 0)
+    .sort((a, b) => b.adv - a.adv);
+
+  let rows = '';
+  if (!holders.length) {
+    rows = '<div class="empty-state" style="padding:18px 10px"><div class="icon">💚</div>कुनै सदस्यको अग्रिम रकम छैन</div>';
+  } else {
+    rows = holders.map(x => {
+      const m = x.member;
+      const avatar = m.photo
+        ? `<img src="${m.photo}" alt="" class="member-avatar" style="object-fit:cover;object-position:top center"/>`
+        : `<div class="member-avatar">${(m.name || '?').charAt(0)}</div>`;
+      return `
+        <div class="member-item" onclick="viewMemberFromHome('${m.id}')">
+          ${avatar}
+          <div class="member-info">
+            <div class="member-name">${escapeHtmlChat(m.name)}</div>
+            <div class="member-meta">${m.kitta} कित्ता · ${m.mobile || 'मोबाइल नभएको'}</div>
+          </div>
+          <div style="text-align:right;font-weight:700;color:#0f5132">रु. ${Accounting.formatNum(x.adv)}</div>
+        </div>`;
+    }).join('');
+  }
+
+  const html = `
+    <div class="report-card mb-2">
+      <div class="report-row"><span class="label">💎 कुल कोस (सम्पत्ति)</span><span class="value">रु. ${Accounting.formatNum(snap.assets)}</span></div>
+      <div class="report-row"><span class="label">💚 सदस्य कुल अग्रिम (दायित्व)</span><span class="value" style="color:#0f5132;font-weight:700">− रु. ${Accounting.formatNum(snap.totalAdvance || 0)}</span></div>
+      <div class="report-row highlight"><span class="label">🏦 खुद शेयर कोस (कोस − अग्रिम)</span><span class="value fw-bold">रु. ${Accounting.formatNum(snap.netShareAssets || 0)}</span></div>
+      <div class="report-row"><span class="label">💰 प्रति कित्ता मूल्य</span><span class="value">रु. ${Accounting.formatNum(snap.perKitta)}</span></div>
+    </div>
+    <p class="text-muted mb-2" style="font-size:0.78rem">अग्रिम रकम कोसमा नगद/लगानी रहे पनि सदस्यको निजी अग्रिम भएकाले प्रति कित्ता शेयर मूल्य र वार्षिक नाफामा दोहोरो गनिँदैन।</p>
+    <div class="section-title">💚 अग्रिम भएका सदस्य (${holders.length} जना)</div>
+    ${rows}
+  `;
+  UI.showModal('💚 अग्रिम विवरण', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
 }
 
 function viewMemberFromHome(id) {
@@ -1406,30 +1334,6 @@ function recalcCashTally(expectedCash) {
   }
 }
 
-function confirmReopenMonth() {
-  UI.toast('बन्द महिना खोल्ने सुविधा हटाइएको छ (दोहोरो entry रोक्न)', 'error');
-}
-
-function doReopenMonth() {
-  UI.toast('बन्द महिना खोल्ने सुविधा हटाइएको छ', 'error');
-}
-
-function fixStartAssets() {
-  if (!Auth.isAccountsWriter()) return UI.toast('Read-only: हिसाब लेख्ने अधिकार कोषाध्यक्षलाई मात्र छ', 'error');
-  UI.showPinModal('सबै महिना: सुरु = अघिल्लो अन्तिम · एउटै नियम (PIN)', () => {
-    const data = DB.load();
-    Accounting.rebuildMonthChain(data);
-    DB.save(data);
-    UI.updateHome(data);
-    const cur = Accounting.getCurrentMonth(data);
-    const msg = cur
-      ? (cur.name + ' सुरु मौज्दात: ' + Accounting.formatNum(cur.startAssets))
-      : 'सबै महिनाको शृंखला मिल्यो';
-    UI.toast(msg, 'success');
-    openCollection();
-  });
-}
-
 function startNewMonth() {
   if (!Auth.isAccountsWriter()) return UI.toast('Read-only: नयाँ महिना सुरु गर्ने अधिकार कोषाध्यक्षलाई मात्र छ', 'error');
   const data = DB.load();
@@ -1484,26 +1388,54 @@ function _doStartNewMonth() {
   openCollection();
 }
 
-function renderCollectStatusList(members, month) {
-  const data = DB.load();
+function renderCollectStatusList(members, month, dataObj, selectFnName) {
+  const data = dataObj || DB.load();
+  const fn = selectFnName || 'selectCollectMember';
+  if (!members || !members.length) {
+    return '<div class="empty-state" style="padding:20px 10px"><div class="icon">👥</div>कुनै सदस्य भेटिएन</div>';
+  }
   return members.map(m => {
-    const c = month.collections[m.id];
+    const c = (month.collections || {})[m.id];
     const man = Accounting.calcMandatory(m, data, month);
+    const effLoan = Accounting.getEffectiveMemberLoan(data, m, month);
     let status;
     if (c) {
       status = `<span style="color:#198754;font-weight:700">✅ ${Accounting.formatNum(c.totalPaid)}</span>`;
     } else if (man.total === 0 && man.advanceCover > 0) {
-      status = `<span style="color:#0d6efd">अग्रिमले पुग्छ</span>`;
+      status = `<span style="color:#0d6efd;font-weight:700">⚡ अग्रिमले पुग्छ</span>`;
     } else {
-      status = `<span style="color:#dc3545">💵 ${Accounting.formatNum(man.total)}</span>`;
+      status = `<span style="color:#dc3545;font-weight:700">💵 ${Accounting.formatNum(man.total)}</span>`;
     }
-    return `<div class="member-item" onclick="selectCollectMember('${m.id}')">
-      <div class="member-avatar">${m.name.charAt(0)}</div>
-      <div class="member-info"><div class="member-name">${m.name}</div>
-      <div class="member-meta">${m.kitta} कित्ता${man.previousDue > 0 ? ' · बाँकी ' + Accounting.formatNum(man.previousDue) : ''}${man.advance > 0 ? ' · अग्रिम ' + Accounting.formatNum(man.advance) : ''}</div></div>
-      <div style="text-align:right;font-size:0.85rem">${status}</div>
+    const avatarHtml = m.photo
+      ? `<img src="${m.photo}" alt="" class="member-avatar" style="object-fit:cover;object-position:top center"/>`
+      : `<div class="member-avatar">${(m.name || '?').charAt(0)}</div>`;
+    let badges = `<span class="member-badge badge-kitta">${m.kitta} कित्ता</span>`;
+    if (effLoan > 0) badges += ` <span class="member-badge badge-loan">ऋण ${Accounting.formatNum(effLoan)}</span>`;
+    if (man.previousDue > 0) badges += ` <span class="member-badge badge-due">बाँकी ${Accounting.formatNum(man.previousDue)}</span>`;
+    if (man.advance > 0) badges += ` <span class="member-badge badge-advance">अग्रिम ${Accounting.formatNum(man.advance)}</span>`;
+    return `<div class="member-item" onclick="${fn}('${m.id}')">
+      ${avatarHtml}
+      <div class="member-info">
+        <div class="member-name">${escapeHtmlChat(m.name)}</div>
+        <div class="member-meta">${m.mobile || 'मोबाइल छैन'} · ${badges}</div>
+      </div>
+      <div style="text-align:right;font-size:0.86rem;white-space:nowrap">${status}</div>
     </div>`;
   }).join('');
+}
+
+function filterCollectMemberList(isSandbox) {
+  const inpId = isSandbox ? 'sb-collect-search' : 'collect-search';
+  const listId = isSandbox ? 'sb-collect-member-list' : 'collect-member-list';
+  const q = ((document.getElementById(inpId) && document.getElementById(inpId).value) || '').trim().toLowerCase();
+  const data = isSandbox ? _ensureSandboxData() : DB.load();
+  const month = Accounting.getCurrentMonth(data);
+  if (!month) return;
+  const filtered = (data.members || []).filter(m =>
+    m && m.active && (!q || (m.name || '').toLowerCase().includes(q) || (m.mobile || '').toLowerCase().includes(q))
+  );
+  const el = document.getElementById(listId);
+  if (el) el.innerHTML = renderCollectStatusList(filtered, month, data, isSandbox ? 'sandboxSelectCollectMember' : 'selectCollectMember');
 }
 
 function showCollectMember(preselectId) {
@@ -1514,66 +1446,31 @@ function showCollectMember(preselectId) {
   }
 
   const active = data.members.filter(m => m.active);
-  let opts = '<option value="">— सदस्य छान्नुहोस् —</option>';
-  let legend = `<div style="font-size:0.75rem;margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap">
-    <span style="color:#0d6efd;font-weight:700">● बचत भइसकेको</span>
-    <span style="color:#e6a800;font-weight:700">● अग्रिमले पुग्छ</span>
-    <span style="color:#dc3545;font-weight:700">● बाँकी / तिर्नुपर्ने</span>
-  </div>`;
-  active.forEach(m => {
-    const c = month.collections[m.id];
-    const man = Accounting.calcMandatory(m, data, month);
-    let color, tag;
-    if (c) {
-      color = '#0d6efd';
-      tag = ' ✅ ' + Accounting.formatNum(c.totalPaid);
-    } else if (man.total === 0 && man.advanceCover > 0) {
-      color = '#e6a800';
-      tag = ' ⚡ अग्रिमले पुग्छ';
-    } else {
-      color = '#dc3545';
-      tag = ' · तिर्नुपर्ने ' + Accounting.formatNum(man.total);
-    }
-    opts += `<option value="${m.id}" style="color:${color};font-weight:600">${m.name} (${m.kitta} कित्ता)${tag}</option>`;
-  });
+  const collected = Object.keys(month.collections || {}).length;
 
   let html = `
-    <button class="btn btn-danger btn-block mb-1" onclick="showExpenseForm()">💸 खर्च लेख्नुहोस्</button>
-    <button class="btn btn-primary btn-block mb-1" onclick="showOtherIncomeForm()">💰 अन्य आम्दानी</button>
-    <hr style="margin:12px 0;border:none;border-top:1px solid #e0e0e0">
-    ${legend}
-    <div class="form-group">
-      <label>👤 सदस्य खोज्नुहोस् / छान्नुहोस्</label>
-      <input type="text" id="collect-search" placeholder="नाम टाइप गर्नुहोस्..." oninput="filterCollectDropdown()" style="margin-bottom:6px">
-      <select id="collect-member-select" size="8" style="width:100%;font-size:0.95rem;padding:6px" onchange="onCollectMemberPick()">
-        ${opts}
-      </select>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <button class="btn btn-danger btn-sm" style="flex:1" onclick="showExpenseForm()">💸 खर्च लेख्नुहोस्</button>
+      <button class="btn btn-primary btn-sm" style="flex:1" onclick="showOtherIncomeForm()">💰 अन्य आम्दानी</button>
     </div>
-    <div id="collect-pick-hint" class="text-muted text-center" style="font-size:0.85rem">सदस्य छानेपछि कलेक्सन फारम खुल्छ</div>
+    <div style="font-size:0.75rem;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <span style="color:#198754;font-weight:700">● बचत भएको</span>
+        <span style="color:#0d6efd;font-weight:700">● अग्रिमले पुग्छ</span>
+        <span style="color:#dc3545;font-weight:700">● तिर्नुपर्ने</span>
+      </div>
+      <span class="text-muted fw-bold">${collected}/${active.length} जना</span>
+    </div>
+    <div class="search-box">
+      <input type="text" id="collect-search" placeholder="सदस्यको नाम वा मोबाइल खोज्नुहोस्..." oninput="filterCollectMemberList(false)">
+    </div>
+    <div id="collect-member-list">${renderCollectStatusList(active, month, data, 'selectCollectMember')}</div>
   `;
-  UI.showModal('📥 कलेक्सन गर्नुहोस्', html, '<button class="btn btn-outline" onclick="openCollection()">← फर्कनुहोस्</button>', { replace: true, back: 'openCollection' });
+  UI.showModal('📥 कलेक्सन गर्नुहोस्', html, '<button class="btn btn-outline" onclick="openCollection()">← फर्कनुहोस्</button>', { replace: true, back: 'openCollection', full: true });
 
   if (preselectId) {
-    setTimeout(() => {
-      const sel = document.getElementById('collect-member-select');
-      if (sel) { sel.value = preselectId; selectCollectMember(preselectId); }
-    }, 100);
+    setTimeout(() => selectCollectMember(preselectId), 100);
   }
-}
-
-function filterCollectDropdown() {
-  const q = (document.getElementById('collect-search').value || '').trim().toLowerCase();
-  const sel = document.getElementById('collect-member-select');
-  if (!sel) return;
-  Array.from(sel.options).forEach((opt, i) => {
-    if (i === 0) { opt.hidden = false; return; }
-    opt.hidden = q && !opt.text.toLowerCase().includes(q);
-  });
-}
-
-function onCollectMemberPick() {
-  const id = document.getElementById('collect-member-select').value;
-  if (id) selectCollectMember(id);
 }
 
 function showExpenseForm() {
@@ -1666,14 +1563,6 @@ function saveOtherIncome() {
     UI.toast('आम्दानी सेभ · मौज्दात/नगद बढ्यो', 'success');
     showOtherIncomeForm();
   });
-}
-
-function filterCollectList() {
-  const q = (document.getElementById('collect-search').value || '').trim().toLowerCase();
-  const data = DB.load();
-  const month = Accounting.getCurrentMonth(data);
-  const filtered = data.members.filter(m => m.active && m.name.toLowerCase().includes(q));
-  document.getElementById('collect-member-list').innerHTML = renderCollectStatusList(filtered, month);
 }
 
 function selectCollectMember(memberId) {
@@ -1896,40 +1785,23 @@ function sandboxShowCollectMember(preselectId) {
   const month = Accounting.getCurrentMonth(data);
   if (!month || month.status !== 'open') return UI.toast('अभ्यास कलेक्सन खुल्ला छैन', 'error');
   const active = (data.members || []).filter(m => m.active);
-  let opts = '<option value="">— सदस्य छान्नुहोस् —</option>';
-  active.forEach(m => {
-    const c = (month.collections || {})[m.id];
-    const man = Accounting.calcMandatory(m, data, month);
-    const color = c ? '#0d6efd' : ((man.total === 0 && man.advanceCover > 0) ? '#e6a800' : '#dc3545');
-    const tag = c ? (' ✅ ' + Accounting.formatNum(c.totalPaid)) : ((man.total === 0 && man.advanceCover > 0) ? ' ⚡ अग्रिमले पुग्छ' : (' · तिर्नुपर्ने ' + Accounting.formatNum(man.total)));
-    opts += `<option value="${m.id}" style="color:${color};font-weight:600">${m.name} (${m.kitta} कित्ता)${tag}</option>`;
-  });
+  const collected = Object.keys(month.collections || {}).length;
   const html = _sandboxBannerHtml() + `
-    <div style="font-size:0.75rem;margin-bottom:8px;display:flex;gap:10px;flex-wrap:wrap">
-      <span style="color:#0d6efd;font-weight:700">● बचत भइसकेको</span>
-      <span style="color:#e6a800;font-weight:700">● अग्रिमले पुग्छ</span>
-      <span style="color:#dc3545;font-weight:700">● बाँकी / तिर्नुपर्ने</span>
+    <div style="font-size:0.75rem;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <span style="color:#198754;font-weight:700">● बचत भएको</span>
+        <span style="color:#0d6efd;font-weight:700">● अग्रिमले पुग्छ</span>
+        <span style="color:#dc3545;font-weight:700">● तिर्नुपर्ने</span>
+      </div>
+      <span class="text-muted fw-bold">${collected}/${active.length} जना</span>
     </div>
-    <div class="form-group">
-      <label>👤 सदस्य छान्नुहोस् (अभ्यास)</label>
-      <input type="text" id="sb-collect-search" placeholder="नाम टाइप गर्नुहोस्..." oninput="sandboxFilterCollectDropdown()" style="margin-bottom:6px">
-      <select id="sb-collect-member-select" size="8" style="width:100%;font-size:0.95rem;padding:6px" onchange="if(this.value)sandboxSelectCollectMember(this.value)">
-        ${opts}
-      </select>
+    <div class="search-box">
+      <input type="text" id="sb-collect-search" placeholder="सदस्यको नाम वा मोबाइल खोज्नुहोस्..." oninput="filterCollectMemberList(true)">
     </div>
+    <div id="sb-collect-member-list">${renderCollectStatusList(active, month, data, 'sandboxSelectCollectMember')}</div>
   `;
-  UI.showModal('🧪 अभ्यास कलेक्सन', html, '<button class="btn btn-outline" onclick="openSandboxCollection()">← फर्कनुहोस्</button>', { replace: true });
+  UI.showModal('🧪 अभ्यास कलेक्सन', html, '<button class="btn btn-outline" onclick="openSandboxCollection()">← फर्कनुहोस्</button>', { replace: true, full: true });
   if (preselectId) sandboxSelectCollectMember(preselectId);
-}
-
-function sandboxFilterCollectDropdown() {
-  const q = (document.getElementById('sb-collect-search').value || '').trim().toLowerCase();
-  const sel = document.getElementById('sb-collect-member-select');
-  if (!sel) return;
-  Array.from(sel.options).forEach((opt, i) => {
-    if (i === 0) { opt.hidden = false; return; }
-    opt.hidden = q && !opt.text.toLowerCase().includes(q);
-  });
 }
 
 function sandboxSelectCollectMember(memberId) {
@@ -2284,30 +2156,11 @@ function initSignaturePad() {
   canvas.addEventListener('touchstart', () => { if (sigPad) sigPad.hasDrawn = true; });
 }
 
-function scanSignatureToPad(input) {
-  const file = input.files && input.files[0];
-  if (!file || !sigPad || !sigPad.canvas) return;
-  const img = new Image();
-  img.onload = function () {
-    const c = sigPad.canvas;
-    const ctx = sigPad.ctx;
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, c.width, c.height);
-    // fit contain
-    const sc = Math.min(c.width / img.width, c.height / img.height);
-    const w = img.width * sc, h = img.height * sc;
-    ctx.drawImage(img, (c.width - w) / 2, (c.height - h) / 2, w, h);
-    sigPad.hasDrawn = true;
-    UI.toast('सहि स्क्यान भयो', 'success');
-  };
-  img.src = URL.createObjectURL(file);
-}
 function clearSignature() {
   if (!sigPad) return;
   sigPad.ctx.clearRect(0, 0, sigPad.canvas.width, sigPad.canvas.height);
   sigPad.hasDrawn = false;
 }
-
 
 /** सहि: ठूलो भए पनि रिजोलुसन घटाएर हल्का JPEG — काट्दैन, प्रिन्टमा देखिन्छ */
 function compressSignatureFromPad(sigPad) {
@@ -2333,33 +2186,10 @@ function compressSignatureCanvas(src, maxW, quality) {
   ctx.fillRect(0, 0, w, h);
   ctx.drawImage(src, 0, 0, w, h);
   let out = c.toDataURL('image/jpeg', quality);
-  // अझ ठूलो भए फेरि कम्प्रेस
   if (out.length > 12000) {
     out = c.toDataURL('image/jpeg', 0.28);
   }
   return out;
-}
-
-/** भएको dataURL सहि पनि हल्का पार्ने (पुरानो ठूलो PNG) */
-function lightenSignatureDataUrl(sig) {
-  if (!sig || String(sig).indexOf('data:image') !== 0) return sig || '';
-  if (String(sig).length <= 10000) return sig;
-  try {
-    return new Promise(function () {}); // sync path below
-  } catch (e) {}
-  return sig;
-}
-
-function lightenSignatureSync(sig) {
-  if (!sig) return '';
-  if (String(sig).indexOf('data:image') !== 0) return sig;
-  if (String(sig).length <= 10000) return sig;
-  try {
-    const img = new Image();
-    // sync compress via canvas only works if already loaded — try Image with src
-    // For strip path we use DB side length check; here for display/print keep as is if mid-size
-  } catch (e) {}
-  return sig;
 }
 
 
@@ -2629,9 +2459,9 @@ function renderCollectionSummary() {
   data.members.filter(m => m.active).forEach(m => {
     const c = month.collections[m.id] || {};
     const taken = (month.loansGiven || []).filter(l => l.memberId === m.id).reduce((s, l) => s + l.amount, 0);
-    const snap = month.memberSnapshots[m.id] || {};
-    const loanBal = snap.outstandingLoan !== undefined ? snap.outstandingLoan : (m.outstandingLoan || 0);
-    const adv = snap.advance !== undefined ? snap.advance : (m.advance || 0);
+    const snap = (month.memberSnapshots && month.memberSnapshots[m.id]) || {};
+    const loanBal = snap.outstandingLoan !== undefined ? snap.outstandingLoan : Accounting.getEffectiveMemberLoan(data, m, month);
+    const adv = snap.advance !== undefined ? snap.advance : Accounting.getEffectiveMemberAdvance(data, m, month);
 
     const fromAdv = (c.fromAdvance || 0) > 0 || c.coveredByAdvance;
     const noCash = (c.totalPaid || 0) <= 0;
@@ -2731,7 +2561,14 @@ function showYearlyReport() {
       <td>${Accounting.formatNum(m.cashInHand)}</td>
     </tr>`;
   });
-  html += '</tbody></table></div></div>';
+  const lastClosed = closed[closed.length - 1];
+  const lastAdv = Number(lastClosed && lastClosed.totalAdvances) || 0;
+  const lastNetShare = (lastClosed && lastClosed.netShareAssets != null) ? lastClosed.netShareAssets : Math.max(0, (Number(lastClosed.finalAssets) || 0) - lastAdv);
+  html += '</tbody></table></div>';
+  html += `<div style="margin-top:8px;padding:8px 10px;background:#f8fafc;border:1px solid #dee2e6;border-radius:8px;font-size:0.78rem;color:#495057">
+    <div>📌 <strong>नोट (अग्रिम समायोजन):</strong> अन्तिम मौज्दात रु. ${Accounting.formatNum(lastClosed.finalAssets)} मा सदस्य कुल अग्रिम रु. ${Accounting.formatNum(lastAdv)} समावेश हुन्छ; प्रति कित्ता शेयर मूल्य र खुद शेयर कोस (रु. ${Accounting.formatNum(lastNetShare)}) निकाल्दा अग्रिम दायित्व अलग गरिन्छ (दोहोरो गनिँदैन)।</div>
+  </div>`;
+  html += '</div>';
   html += '<button class="btn btn-primary btn-block mt-2" onclick="printReportImage(\'print-yearly\')">🖨️ इमेज प्रिन्ट</button>';
 
   UI.showModal('📊 वार्षिक रिपोर्ट', html, '<button class="btn btn-outline" onclick="openReports()">← फर्कनुहोस्</button>');
@@ -2796,48 +2633,6 @@ function renderProfileTab() {
     return;
   }
   renderAdminProfile(container);
-}
-
-function requestProfileChange() {
-  const html = `
-    <p class="text-muted mb-2">Admin लाई PIN वा मोबाइल परिवर्तनको अनुरोध पठाइन्छ।</p>
-    <div class="form-group"><label>नयाँ मोबाइल (खाली राखे नबदलिने)</label><input type="tel" id="req-mobile" placeholder="98xxxxxxxx"></div>
-    <div class="form-group"><label>नयाँ PIN अनुरोध?</label>
-      <select id="req-pin"><option value="no">होइन</option><option value="yes">हो, नयाँ PIN चाहियो</option></select>
-    </div>
-    <button class="btn btn-primary btn-block" onclick="submitProfileRequest()">📤 अनुरोध पठाउनुहोस्</button>
-  `;
-  UI.showModal('🔢 परिवर्तन अनुरोध', html, '<button class="btn btn-outline" onclick="closeModal()">रद्द</button>');
-}
-
-async function submitProfileRequest() {
-  const mobile = document.getElementById('req-mobile').value.trim();
-  const wantPin = document.getElementById('req-pin').value === 'yes';
-  const data = DB.load();
-  const req = {
-    id: 'pr_' + Date.now(),
-    memberId: Auth.currentUser.memberId,
-    memberName: Auth.currentUser.name,
-    mobile: mobile || Auth.currentUser.mobile,
-    newMobile: mobile || null,
-    wantPin,
-    time: new Date().toISOString(),
-    status: 'pending'
-  };
-  data.pinRequests = data.pinRequests || [];
-  data.pinRequests.push(req);
-  DB.save(data, { localOnly: !Auth.isAccountsWriter() });
-  if (Auth.isMember && Auth.isMember()) {
-    await DB.submitMemberFeedback({
-      id: req.id,
-      kind: 'pin_request',
-      mobile: req.mobile,
-      newMobile: req.newMobile,
-      wantPin: req.wantPin
-    });
-  }
-  UI.toast('अनुरोध पठाइयो', 'success');
-  closeModal();
 }
 
 function renderAdminProfile(container) {
@@ -2950,52 +2745,7 @@ function refreshProfileMemberListAfterRead() {
 }
 
 
-function editMemberExtra(memberId) {
-  const data = DB.load();
-  const m = data.members.find(x => x.id === memberId);
-  if (!m) return;
-  const html = `
-    <div class="section-title">${m.name}</div>
-    <div class="form-group"><label>📷 प्रोफाइल फोटो</label><input type="file" id="me-photo" accept="image/*"></div>
-    <div class="form-group"><label>🪪 परिचय पत्र फोटो</label><input type="file" id="me-idcard" accept="image/*"></div>
-    <div class="form-group"><label>🏠 ठेगाना</label><input type="text" id="me-address" value="${m.address||''}"></div>
-    <div class="form-group"><label>📝 परिचय / अन्य</label><textarea id="me-bio" rows="3">${m.bio||''}</textarea></div>
-    <button class="btn btn-primary btn-block" onclick="saveMemberExtra('${memberId}')">💾 सेभ</button>
-  `;
-  UI.showModal('सदस्य विवरण', html, '<button class="btn btn-outline" onclick="openMemberDetail(\''+memberId+'\')">← फर्कनुहोस्</button>');
-}
 
-function saveMemberExtra(memberId) {
-  const data = DB.load();
-  const m = data.members.find(x => x.id === memberId);
-  if (!m) return;
-  m.address = (document.getElementById('me-address').value || '').trim();
-  m.bio = (document.getElementById('me-bio').value || '').trim();
-  let pending = 0;
-  function done() {
-    pending--;
-    if (pending > 0) return;
-    DB.save(data);
-    UI.toast('सेभ भयो', 'success');
-    openMemberDetail(memberId);
-  }
-  const pf = document.getElementById('me-photo') && document.getElementById('me-photo').files[0];
-  const idf = document.getElementById('me-idcard') && document.getElementById('me-idcard').files[0];
-  if (!pf && !idf) {
-    DB.save(data);
-    UI.toast('सेभ भयो', 'success');
-    openMemberDetail(memberId);
-    return;
-  }
-  if (pf) {
-    pending++;
-    readFileAsDataURL(pf, 400000, function (url) { if (url) m.photo = url; done(); });
-  }
-  if (idf) {
-    pending++;
-    readFileAsDataURL(idf, 500000, function (url) { if (url) m.idCardPhoto = url; done(); });
-  }
-}
 
 function openMemberDetail(memberId, options = {}) {
   const data = DB.load();
@@ -3540,6 +3290,9 @@ async function doAddNewMember() {
   const kitta = parseInt(document.getElementById('nm-kitta').value) || 0;
   const amount = parseFloat(document.getElementById('nm-amount').value) || 0;
   if (!name || kitta <= 0) return UI.toast('नाम र कित्ता चाहिन्छ', 'error');
+  if (mobile && Auth.isMobileConflictWithAdmin(mobile)) {
+    return UI.toast('यो मोबाइल/नम्बर पहिले नै दर्ता छ', 'error');
+  }
 
   const data = DB.load();
   const month = Accounting.getCurrentMonth(data);
@@ -4052,127 +3805,7 @@ function notifyMonthClosed(data, month) {
   postGroupMessage(text, 'auto_group', data, { silentPush: true });
 }
 
-function renderChatTab() {
-  const el = document.getElementById('chat-content');
-  if (!el) return;
-  const data = _ensureChat(DB.load());
-  const me = _chatSender();
-  const isAdmin = Auth.isAdmin && Auth.isAdmin();
-  const canDelete = (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter());
-  const mode = 'group'; // व्यक्तिगत हटाइयो
-
-  window._chatMode = 'group';
-  let tabs = `
-    <div style="margin-bottom:10px;font-weight:600;font-size:0.95rem">👥 समूह कुराकानी</div>
-  `;
-
-  if (mode === 'group') {
-    const msgs = data.chat.group || [];
-    if (document.getElementById('tab-chat') && document.getElementById('tab-chat').classList.contains('active')) {
-      markGroupChatRead(msgs);
-    }
-    let bubbles = '';
-    if (!msgs.length) {
-      bubbles = '<div class="empty-state" style="padding:20px"><div class="icon">💬</div>समूह च्याट खाली छ</div>';
-    } else {
-      bubbles = msgs.map(m => {
-        const mine = me.role !== 'system' && m.fromId === me.id && m.fromRole === me.role;
-        const sys = m.fromRole === 'system' || m.type === 'auto_group';
-        const time = m.time ? new Date(m.time).toLocaleString('ne-NP', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-        const delBtn = canDelete && m.id
-          ? '<button type="button" onclick="event.stopPropagation();deleteGroupChatMessage(\'' + escapeHtmlChat(m.id) + '\', false)" style="border:none;background:none;color:#dc3545;cursor:pointer;font-size:0.75rem;margin-left:6px;padding:0" title="मेटाउनुहोस्">🗑️</button>'
-          : '';
-        const roleIcon = m.fromRole === 'admin' ? '🔐 ' : (m.fromRole === 'treasurer' ? '💼 ' : '👤 ');
-        return '<div class="chat-row ' + (sys ? 'sys' : (mine ? 'mine' : 'theirs')) + '">' +
-          '<div class="chat-bubble' + (sys ? ' chat-sys' : '') + '">' +
-          (!mine && !sys ? '<div class="chat-from">' + roleIcon + escapeHtmlChat(m.fromName) + '</div>' : '') +
-          (sys ? '<div class="chat-from">📢 समूह सूचना</div>' : '') +
-          '<div class="chat-text">' + escapeHtmlChat(m.text).replace(/\n/g, '<br>') + '</div>' +
-          '<div class="chat-time">' + time + delBtn + '</div></div></div>';
-      }).join('');
-    }
-    el.innerHTML = tabs +
-      '<div class="section-title">👥 समूह कुराकानी</div>' +
-      '<div class="chat-messages" id="chat-messages">' + bubbles + '</div>' +
-      '<div class="chat-compose">' +
-      '<input type="text" id="chat-input" placeholder="सन्देश लेख्नुहोस्..." onkeydown="if(event.key===\'Enter\')sendGroupChat()">' +
-      '<button class="btn btn-primary" onclick="sendGroupChat()">पठाउनुहोस्</button></div>';
-    const box = document.getElementById('chat-messages');
-    if (box) box.scrollTop = box.scrollHeight;
-    return;
-  }
-
-  // —— व्यक्तिगत ——
-  if (isAdmin) {
-    const pins = (data.pinRequests || []).filter(r => r.status === 'pending');
-    const complaints = data.complaints || [];
-    const active = data.members.filter(m => m.active);
-    let rows = '';
-    active.forEach(m => {
-      const priv = privateUnreadCount(data, m.id, true);
-      const pinN = pins.filter(r => r.memberId === m.id).length;
-      const compN = complaints.filter(c => c.memberId === m.id && !c.read).length;
-      const total = priv + pinN + compN;
-      const allP = data.chat.private[m.id] || [];
-      const last = allP[allP.length - 1];
-      const prev = last ? escapeHtmlChat((last.text || '').slice(0, 36)) + (last.text && last.text.length > 36 ? '…' : '') : 'सन्देश छैन';
-      const badge = total
-        ? '<span style="background:#dc3545;color:#fff;border-radius:10px;padding:2px 8px;font-size:0.75rem">' + total + '</span>'
-        : '';
-      rows += '<div class="member-item" onclick="openPersonalBox(\'' + m.id + '\')">' +
-        '<div class="member-avatar">' + m.name.charAt(0) + '</div>' +
-        '<div class="member-info"><div class="member-name">' + escapeHtmlChat(m.name) + '</div>' +
-        '<div class="text-muted" style="font-size:0.78rem">' + prev + '</div></div>' + badge + '</div>';
-    });
-    el.innerHTML = tabs +
-      '<div class="section-title">🔐 व्यक्तिगत (सदस्य छान्नुहोस्)</div>' +
-      '<p class="text-muted" style="font-size:0.82rem;margin-bottom:8px">च्याट · PIN · गुनासो एउटै बाकसमा</p>' +
-      (rows || '<div class="empty-state">सदस्य छैन</div>');
-    return;
-  }
-
-  // सदस्य: Admin सँग सिधै
-  const mid = Auth.currentUser && Auth.currentUser.memberId;
-  if (mid) {
-    el.innerHTML = tabs +
-      '<div class="section-title">🔐 Admin सँग कुराकानी</div>' +
-      '<button class="btn btn-success btn-block mb-2" onclick="openPersonalBox(\'' + mid + '\')">💬 बाकस खोल्नुहोस् (सन्देश · PIN · गुनासो)</button>' +
-      '<p class="text-muted" style="font-size:0.85rem">कलेक्सन/ऋणका अटो सन्देश र Admin सँगको कुरा यहाँ</p>';
-  } else {
-    el.innerHTML = tabs + '<div class="empty-state">लगइन आवश्यक</div>';
-  }
-}
-
-
-function privateUnreadCount(data, memberId, forAdmin) {
-  if (!data.chat) data.chat = { group: [], private: {} };
-  if (!data.chat.readAt) data.chat.readAt = {};
-  const msgs = data.chat.private[memberId] || [];
-  const key = forAdmin ? ('a_' + memberId) : ('m_' + memberId);
-  const since = Number(data.chat.readAt[key]) || 0;
-  return msgs.filter(m => {
-    const tm = new Date(m.time || 0).getTime();
-    if (tm <= since) return false;
-    if (forAdmin) return m.from !== 'admin';
-    return m.from === 'admin';
-  }).length;
-}
-
-function markPrivateRead(memberId, forAdmin) {
-  const data = DB.load();
-  if (!data.chat) data.chat = { group: [], private: {} };
-  if (!data.chat.readAt) data.chat.readAt = {};
-  const key = forAdmin ? ('a_' + memberId) : ('m_' + memberId);
-  data.chat.readAt[key] = Date.now();
-  DB.save(data);
-}
-
-function setChatMode(mode) {
-  window._chatMode = 'group'; // व्यक्तिगत हटाइयो
-  renderChatTab();
-}
-
-function deleteGroupChatMessage(msgId, fromModal) {
+function deleteGroupChatMessage(msgId) {
   if (!((Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || (Auth.isAccountsWriter && Auth.isAccountsWriter()))) {
     return UI.toast('Admin वा कोषाध्यक्षले मात्र सन्देश मेट्न मिल्छ', 'error');
   }
@@ -4182,72 +3815,19 @@ function deleteGroupChatMessage(msgId, fromModal) {
   const html = `
     <p style="font-size:0.88rem;margin-bottom:8px">के यो सन्देश सबै सदस्यको च्याटबाट सधैँका लागि मेटाउने हो?</p>
     ${preview ? `<div style="background:#f8f9fa;border:1px solid #e9ecef;border-radius:8px;padding:8px;font-size:0.82rem;margin-bottom:12px">${preview}</div>` : ''}
-    <button type="button" class="btn btn-danger btn-block" onclick="confirmDeleteGroupChatMessage('${escapeHtmlChat(msgId)}', ${!!fromModal})">🗑️ हो, सन्देश मेटाउनुहोस्</button>
+    <button type="button" class="btn btn-danger btn-block" onclick="confirmDeleteGroupChatMessage('${escapeHtmlChat(msgId)}')">🗑️ हो, सन्देश मेटाउनुहोस्</button>
   `;
   UI.showModal('🗑️ सन्देश मेटाउने', html, '<button type="button" class="btn btn-outline" onclick="closeModal()">रद्द</button>');
 }
 
-async function confirmDeleteGroupChatMessage(msgId, fromModal) {
+async function confirmDeleteGroupChatMessage(msgId) {
   const res = await DB.deleteChatMessage(msgId);
   if (!res || !res.ok) {
     return UI.toast((res && res.error) || 'सन्देश मेट्न सकिएन', 'error');
   }
   UI.toast('सन्देश मेटियो ✅', 'success');
   closeModal();
-  if (fromModal) {
-    openGroupChatFromHome({ replace: true });
-  } else if (document.getElementById('tab-chat') && document.getElementById('tab-chat').classList.contains('active')) {
-    renderChatTab();
-  }
   renderHomeByRole();
-}
-
-function sendGroupChat() {
-  const input = document.getElementById('chat-input');
-  const text = (input && input.value || '').trim();
-  if (!text) return UI.toast('सन्देश लेख्नुहोस्', 'error');
-  const sender = _chatSender();
-  if (sender.role === 'system') return UI.toast('लगइन आवश्यक', 'error');
-  let data = DB.load();
-  postGroupMessage(text, 'text', data);
-  DB.save(data, { localOnly: !Auth.isAccountsWriter() });
-  if (input) input.value = '';
-  renderChatTab();
-  if (typeof DB.pushChatNow === 'function') {
-    DB.pushChatNow().then(function (ok) {
-      if (ok) UI.toast('पठाइयो · सिंक', 'success');
-    });
-  }
-}
-
-function openPrivateChat(memberId) {
-  openPersonalBox(memberId);
-}
-
-/** व्यक्तिगत च्याट हटाइएको */
-function openAdminPersonalHub() {
-  UI.toast('व्यक्तिगत बाकस हटाइएको छ · समूह च्याट मात्र', 'error');
-}
-
-function openPersonalBox(memberId) {
-  UI.toast('व्यक्तिगत च्याट हटाइएको छ · समूह कुराकानी / कलेक्सन सारांश प्रयोग गर्नुहोस्', 'error');
-}
-
-function sendPrivateChat(memberId) {
-  const input = document.getElementById('priv-input');
-  const text = (input && input.value || '').trim();
-  if (!text) return UI.toast('सन्देश लेख्नुहोस्', 'error');
-  let data = DB.load();
-  postPrivateMessage(memberId, text, 'text', data);
-  DB.save(data);
-  openPersonalBox(memberId);
-  if (typeof DB.pushChatNow === 'function') {
-    DB.pushChatNow().then(function (ok) {
-      UI.toast(ok ? 'पठाइयो · सिंक' : 'पठाइयो (लोकल) · सिंक जाँच्नुहोस्', ok ? 'success' : 'error');
-    });
-  } else {
-    UI.toast('पठाइयो', 'success');
-  }
 }
 
 
@@ -4373,39 +3953,6 @@ async function replyComplaint(cId) {
   UI.toast('जवाफ पठाइयो', 'success');
   if (c.memberId) openMemberDetail(c.memberId);
   else openComplaintDetail(cId);
-}
-
-function showComplaintForm() {
-  const html = `
-    <div class="form-group">
-      <label>तपाईंको गुनासो / सुझाव</label>
-      <textarea id="complaint-text" rows="4" placeholder="लेख्नुहोस्..."></textarea>
-    </div>
-    <button class="btn btn-warning btn-block" onclick="submitComplaint()">📤 पठाउनुहोस्</button>
-  `;
-  UI.showModal('📢 गुनासो', html, '<button class="btn btn-outline" onclick="closeModal()">रद्द</button>');
-}
-
-async function submitComplaint() {
-  const text = document.getElementById('complaint-text').value.trim();
-  if (!text) return UI.toast('केही लेख्नुहोस्', 'error');
-  const data = DB.load();
-  const item = {
-    id: 'c_' + Date.now(),
-    memberId: Auth.currentUser.memberId,
-    text,
-    time: new Date().toISOString(),
-    read: false,
-    replies: []
-  };
-  data.complaints = data.complaints || [];
-  data.complaints.push(item);
-  DB.save(data, { localOnly: !Auth.isAccountsWriter() });
-  if (Auth.isMember && Auth.isMember()) {
-    await DB.submitMemberFeedback({ id: item.id, kind: 'complaint', text: item.text });
-  }
-  UI.toast('गुनासो पठाइयो', 'success');
-  closeModal();
 }
 
 function editAdminProfile() {
@@ -4769,9 +4316,6 @@ async function saveTreasurer() {
   renderSettingsTab();
   renderHomeByRole();
 }
-
-function editAccountsWriter() { return editTreasurer(); }
-function editSecondaryAdmin() { return editTreasurer(); }
 
 function editAppOwner() {
   if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin only', 'error');
@@ -5831,15 +5375,45 @@ function hideLockScreen() {
 }
 
 async function unlockAppSession() {
-  const pin = (document.getElementById('lock-pin-input') && document.getElementById('lock-pin-input').value) || '';
+  const pinInput = document.getElementById('lock-pin-input');
+  const pin = (pinInput && pinInput.value) || '';
   const ok = await Auth.verifyUserPin(pin);
   if (!ok) {
     return UI.toast('PIN गलत', 'error');
+  }
+  if (pinInput) {
+    pinInput.value = '';
+    try { pinInput.blur(); } catch (e) {}
   }
   Auth.setLocked(false);
   Auth.touchActivity();
   hideLockScreen();
   UI.toast('खुल्यो', 'success');
+
+  const refreshUnlockedViews = () => {
+    try {
+      APP_DATA = DB.load();
+      UI.updateHeader(APP_DATA);
+      UI.updateHome(APP_DATA);
+      renderHomeByRole();
+      if (document.getElementById('tab-profile') && document.getElementById('tab-profile').classList.contains('active')) {
+        renderProfileTab();
+      }
+      if (document.getElementById('tab-settings') && document.getElementById('tab-settings').classList.contains('active')) {
+        renderSettingsTab();
+      }
+      if (document.getElementById('tab-vidhan') && document.getElementById('tab-vidhan').classList.contains('active')) {
+        renderVidhanTab();
+      }
+    } catch (e) {}
+  };
+  refreshUnlockedViews();
+  setTimeout(refreshUnlockedViews, 120);
+  if (navigator.onLine && typeof DB.pullLatest === 'function') {
+    DB.pullLatest(true).then((pulled) => {
+      if (pulled) refreshUnlockedViews();
+    }).catch(() => {});
+  }
 }
 
 // ========== VIDHAN (Rules & Meetings) ==========
@@ -6091,9 +5665,6 @@ function toggleRuleDetail(id) {
   const open = el.classList.toggle('hidden') === false;
   if (ch) ch.textContent = open ? '▾' : '›';
 }
-function loadDefaultRulesIfEmpty() {
-  UI.toast('डिफल्ट मेटाएर राख्ने बन्द · खाली भए आफैं ३५ बुँदा आउँछ', 'info');
-}
 
 function addRuleForm() {
   if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र नियम थप्न सक्नुहुन्छ', 'error');
@@ -6122,18 +5693,6 @@ async function saveRule() {
   if (!res || !res.ok) return UI.toast((res && res.error) || 'नियम सेभ असफल', 'error');
   UI.toast('नियम सेभ भयो', 'success');
   closeModal();
-  renderVidhanTab();
-}
-
-async function deleteRule(id) {
-  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र', 'error');
-  const data = DB.load();
-  if (data.settings && data.settings.rulesFinalized) {
-    return UI.toast('लक भएको बिधान मेटाउन मिल्दैन · बैठकबाट संशोधन', 'error');
-  }
-  data.rules = (data.rules || []).filter(r => r.id !== id);
-  const res = await DB.saveAdminSettings({ rules: data.rules });
-  if (!res || !res.ok) return UI.toast((res && res.error) || 'असफल', 'error');
   renderVidhanTab();
 }
 
@@ -6214,15 +5773,6 @@ async function saveMeeting() {
   renderVidhanTab();
 }
 
-async function deleteMeeting(id) {
-  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र', 'error');
-  const data = DB.load();
-  data.meetings = (data.meetings || []).filter(m => m.id !== id);
-  const res = await DB.saveAdminSettings({ meetings: data.meetings });
-  if (!res || !res.ok) return UI.toast((res && res.error) || 'असफल', 'error');
-  renderVidhanTab();
-}
-
 function addSuggestionForm() {
   const html = `<div class="form-group"><label>सुझाव / सल्लाह</label><textarea id="sug-text" rows="3"></textarea></div>
     <button class="btn btn-warning btn-block" onclick="saveSuggestion()">📤 पठाउनुहोस्</button>`;
@@ -6269,10 +5819,6 @@ function onCloudDataRemote(remote) {
       UI.updateHeader(remote);
       UI.updateHome(remote);
       renderHomeByRole();
-      // च्याट सधैं ताजा (ट्याब सक्रिय भए मात्र तुरुन्त रि-रेन्डर)
-      if (document.getElementById('tab-chat') && document.getElementById('tab-chat').classList.contains('active')) {
-        renderChatTab();
-      }
       if (document.getElementById('tab-profile') && document.getElementById('tab-profile').classList.contains('active')) {
         renderProfileTab();
       }
@@ -6285,26 +5831,7 @@ function onCloudDataRemote(remote) {
           openMemberOwnProfileModal({ replace: true });
         } else if (Auth.isAdmin && Auth.isAdmin() && window._openMemberDetailId && mTitle.startsWith('👤 ')) {
           openMemberDetail(window._openMemberDetailId, { replace: true });
-        } else if (mTitle === '💬 छलफल चौतारी') {
-          openGroupChatFromHome({ replace: true });
         }
-      }
-      // खुला private च्याट — हल्का refresh (पुनः modal stack नबनाउने)
-      if (window._openPrivateMemberId && document.getElementById('priv-messages')) {
-        try {
-          const mid = window._openPrivateMemberId;
-          const data = remote;
-          const msgs = ((data.chat && data.chat.private) || {})[mid] || [];
-          const box = document.getElementById('priv-messages');
-          if (box && typeof escapeHtmlChat === 'function') {
-            // optional: full re-open only if count changed
-            const prev = Number(box.getAttribute('data-count') || 0);
-            if (msgs.length !== prev) {
-              box.setAttribute('data-count', String(msgs.length));
-              if (typeof openPersonalBox === 'function') openPersonalBox(mid);
-            }
-          }
-        } catch (e) {}
       }
     } catch (e) {}
   }
@@ -6319,6 +5846,7 @@ async function startCloudSync() {
       try {
         UI.updateHeader(APP_DATA);
         UI.updateHome(APP_DATA);
+        renderHomeByRole();
       } catch (e) {}
     }
     console.log('Cloud sync ON');
@@ -6619,56 +6147,6 @@ async function downloadSnapshotBackup(monthId) {
 }
 
 
-/** Admin device fingerprint / biometrics (WebAuthn) — optional */
-async function registerAdminBiometric() {
-  if (!window.PublicKeyCredential) {
-    return UI.toast('यो ब्राउजरमा फिंगरप्रिन्ट समर्थित छैन — PIN प्रयोग गर्नुहोस्', 'error');
-  }
-  try {
-    const cred = await navigator.credentials.create({
-      publicKey: {
-        challenge: Uint8Array.from(String(Date.now()), c => c.charCodeAt(0)),
-        rp: { name: 'Samuha Bachat', id: location.hostname },
-        user: {
-          id: Uint8Array.from('admin-local', c => c.charCodeAt(0)),
-          name: 'admin',
-          displayName: 'Admin'
-        },
-        pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
-        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
-        timeout: 60000
-      }
-    });
-    if (cred) {
-      localStorage.setItem('samuha_webauthn', '1');
-      UI.toast('फिंगरप्रिन्ट दर्ता भयो — यो फोनमा PIN सट्टा प्रयोग गर्न सकिन्छ', 'success');
-    }
-  } catch (e) {
-    console.warn(e);
-    UI.toast('दर्ता रद्द/असफल — PIN नै प्रयोग गर्नुहोस्', 'error');
-  }
-}
-
-async function tryAdminBiometricThen(fn) {
-  if (localStorage.getItem('samuha_webauthn') !== '1' || !window.PublicKeyCredential) {
-    return UI.showPinModal('PIN आवश्यक', fn);
-  }
-  try {
-    await navigator.credentials.get({
-      publicKey: {
-        challenge: Uint8Array.from(String(Date.now()), c => c.charCodeAt(0)),
-        timeout: 60000,
-        userVerification: 'required',
-        rpId: location.hostname
-      }
-    });
-    fn();
-  } catch (e) {
-    UI.showPinModal('बायोमेट्रिक असफल — PIN हाल्नुहोस्', fn);
-  }
-}
-
-
 // ========== BS calendar + Nepal time + bills + meeting reminders ==========
 const BS_MONTHS_NP = ['बैशाख','जेठ','असार','साउन','भदौ','असोज','कार्तिक','मंसिर','पुस','माघ','फाल्गुन','चैत'];
 const BS_CAL_DATA = {
@@ -6950,18 +6428,6 @@ function startScheduleTimers() {
   if (window._samuhaSched) return;
   window._samuhaSched = setInterval(runScheduleChecks, 60000);
   setTimeout(runScheduleChecks, 5000);
-}
-
-function showDriveBackupGuide() {
-  const html = `
-    <div class="report-card" style="font-size:0.85rem;max-height:65vh;overflow:auto">
-      <p><strong>📦 ब्याकअप र Cloudflare सुरक्षा</strong><br>
-      हिसाब Cloudflare D1 र R2 मा प्रत्येक परिवर्तनमा सुरक्षित सेभ हुन्छ। महिना बन्द हुँदा R2 मा पनि snapshot बन्छ र JSON ब्याकअप डाउनलोड गर्न सकिन्छ।</p>
-      <hr>
-      <p><strong>🔔 स्वचालित भेला रिमाइन्डर (दोस्रो शुक्रबार ६ बजे)</strong></p>
-      <p><code>cron-worker</code> ले हरेक शुक्रबार नेपाली समय ६:०० बजे D1 जाँचेर दोस्रो शुक्रबार परे सबै सदस्यलाई Web Push सूचना र समूह च्याट सन्देश पठाउँछ।</p>
-    </div>`;
-  UI.showModal('☁️ ब्याकअप र रिमाइन्डर गाइड', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
 }
 
 window.confirmClearAccountingOnly = confirmClearAccountingOnly;

@@ -3,12 +3,16 @@
  */
 
 const UI = {
+  _toastTimer: null,
+
   toast(msg, type = '') {
     const el = document.getElementById('toast');
+    if (!el) return;
+    if (this._toastTimer) clearTimeout(this._toastTimer);
     el.textContent = msg;
     el.className = 'toast ' + type;
     el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 3000);
+    this._toastTimer = setTimeout(() => { el.classList.add('hidden'); this._toastTimer = null; }, 3000);
   },
 
   _modalStack: [],
@@ -34,11 +38,13 @@ const UI = {
       const curTitle = document.getElementById('modal-title').textContent;
       if (curTitle !== title) {
         this._modalStack = this._modalStack || [];
+        const box = document.getElementById('modal-box');
         this._modalStack.push({
           title: curTitle,
           body: document.getElementById('modal-body').innerHTML,
           footer: document.getElementById('modal-footer').innerHTML,
-          back: null
+          back: null,
+          full: !!(box && box.classList.contains('modal-full'))
         });
       }
     }
@@ -46,6 +52,8 @@ const UI = {
     document.getElementById('modal-title').textContent = title;
     document.getElementById('modal-body').innerHTML = bodyHtml;
     document.getElementById('modal-footer').innerHTML = footerHtml;
+    const modalBox = document.getElementById('modal-box');
+    if (modalBox) modalBox.classList.toggle('modal-full', !!options.full);
     const closeBtn = overlay.querySelector('.modal-close');
     this._noClose = !!options.noClose;
     if (closeBtn) closeBtn.style.display = this._noClose ? 'none' : '';
@@ -60,6 +68,8 @@ const UI = {
       _askComplaintOnClose = null;
       this._modalStack = [];
       this._modalBack = null;
+      const box = document.getElementById('modal-box');
+      if (box) box.classList.remove('modal-full');
       document.getElementById('modal-overlay').classList.add('hidden');
       setTimeout(() => {
         if (typeof askComplaintAfterView === 'function') {
@@ -73,6 +83,8 @@ const UI = {
       const fnName = this._modalBack;
       this._modalBack = null;
       this._modalStack = [];
+      const box = document.getElementById('modal-box');
+      if (box) box.classList.remove('modal-full');
       if (typeof fnName === 'function') { fnName(); return; }
       if (typeof window[fnName] === 'function') { window[fnName](); return; }
     }
@@ -83,10 +95,14 @@ const UI = {
       document.getElementById('modal-title').textContent = prev.title;
       document.getElementById('modal-body').innerHTML = prev.body;
       document.getElementById('modal-footer').innerHTML = prev.footer;
+      const box = document.getElementById('modal-box');
+      if (box) box.classList.toggle('modal-full', !!prev.full);
       this._modalBack = prev.back || null;
       return;
     }
 
+    const box = document.getElementById('modal-box');
+    if (box) box.classList.remove('modal-full');
     document.getElementById('modal-overlay').classList.add('hidden');
   },
 
