@@ -12,11 +12,11 @@ const APP_UPDATE_LOG = [
     dateBS: '२०८३ पहिलो आधिकारिक संस्करण',
     title: 'पूर्ण हिसाब, सुरक्षा र सदस्य पारदर्शिता सुरुवात',
     highlights: [
-      'मासिक बचत, ब्याज, सावाँ, जरिवाना, बाँकी र अग्रिम रकमको शुद्ध हिसाब तथा स्वचालित डिजिटल रसिद (बिल) व्यवस्था।',
-      'कोषाध्यक्षबाट मात्र हिसाब लेखिने नियम तथा इन्टरनेट नहुँदा पनि सुरक्षित अफलाइन हिसाब र नेट आएपछि स्वतः सर्भरमा सिंक।',
-      'सदस्यका लागि प्रत्यक्ष पासबुक, ऋण लिँदा डिजिटल सहि, नियम–सर्त सहमति र अर्को बैठकअगावै हिसाब गुनासो/सुझाव पठाउने सुविधा।',
-      'प्रत्येक महिनाको दोस्रो शुक्रबार साँझ बैठक रिमाइन्डर तथा एप बन्द हुँदा पनि मोबाइलमा पुश सूचना (लगआउट हुँदा सूचना स्वतः बन्द)।',
-      '१५ मिनेट नचलाएमा भित्रका सबै हिसाब छोपेर पूर्ण गोप्य लक स्क्रिन तथा नयाँ अपडेट आएपछि सहजै जानकारी र मञ्जुरी लिने व्यवस्था।'
+      'मासिक बचत, ब्याज, सावाँ, जरिवाना, बाँकी ऋण र अग्रिम रकमको शुद्ध हिसाब तथा प्रत्येक महिनाको डिजिटल बिल/रसिद हेर्ने सुविधा।',
+      'समूहको नियमअनुसार कोषाध्यक्षबाट मात्र हिसाबकिताब अद्यावधिक हुने र सबै सदस्यको पासबुकमा हरहिसाब स्वतः स्पष्ट देखिने व्यवस्था।',
+      'ऋण लिँदा मोबाइलमै डिजिटल सहि गर्ने, नियम तथा शर्तहरू पढेर सहमति जनाउने र बैठकअगावै हिसाब वा अन्य गुनासो/सुझाव पठाउने सुविधा।',
+      'प्रत्येक महिनाको दोस्रो शुक्रबार साँझ बचत बैठकको सूचना (रिमाइन्डर) तथा गुनासोको जवाफ सिधै मोबाइलमा आउने सुविधा।',
+      'अरुले नदेखून् भनी PIN लक राख्दा भित्रका सबै हिसाब पूर्ण रूपमा गोप्य रहने तथा नयाँ सुविधा थपिँदा स्पष्ट जानकारी पाउने व्यवस्था।'
     ]
   }
 ];
@@ -4768,8 +4768,11 @@ function openAppUpdateNoticeModal(opts = {}) {
   const isGate = !!opts.gate;
   const entry = opts.entry || getLatestAppUpdateEntry();
   const status = hasAnsweredCurrentAppUpdate();
-  const prevDec = (status.ack && status.ack.version === entry.version) ? status.ack.decision : '';
-  const prevNote = (status.ack && status.ack.version === entry.version) ? (status.ack.note || '') : '';
+  if (status.answered && status.ack && status.ack.version === entry.version) {
+    return openAppUpdateLogModal({ replace: !!opts.replace, gate: false });
+  }
+  const prevDec = '';
+  const prevNote = '';
 
   const bulletsHtml = (entry.highlights || [])
     .map((h) => `<li>${escapeHtmlChat(h)}</li>`)
@@ -4891,10 +4894,10 @@ function openAppUpdateLogModal(opts = {}) {
     if (myStatus.answered && myStatus.ack) {
       const agreed = myStatus.ack.decision !== 'disagree';
       memberBox = `
-        <div style="background:${agreed ? '#d1e7dd' : '#fff3cd'};border:1px solid ${agreed ? '#badbcc' : '#ffe69c'};color:${agreed ? '#0f5132' : '#664d03'};border-radius:10px;padding:9px 12px;margin-bottom:10px;font-size:0.82rem">
-          <div>${agreed ? '✅' : '⚠️'} <strong>v${escapeHtmlChat(APP_VERSION)} मा तपाईंको प्रतिक्रिया: ${agreed ? 'सहमत छु' : 'असहमत / सुझाव पठाइएको'}</strong></div>
-          ${myStatus.ack.note ? `<div style="margin-top:3px">सुझाव: "${escapeHtmlChat(myStatus.ack.note)}"</div>` : ''}
-          <button type="button" class="btn btn-outline btn-sm mt-1" onclick="openAppUpdateNoticeModal({ replace: true, gate: false })">✏️ प्रतिक्रिया परिवर्तन / सुझाव थप्नुहोस्</button>
+        <div style="background:${agreed ? '#d1e7dd' : '#fff3cd'};border:1px solid ${agreed ? '#badbcc' : '#ffe69c'};color:${agreed ? '#0f5132' : '#664d03'};border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:0.82rem">
+          <div>${agreed ? '✅' : '⚠️'} <strong>v${escapeHtmlChat(APP_VERSION)} मा तपाईंको प्रतिक्रिया दर्ता भइसकेको छ: ${agreed ? 'सहमत छु' : 'असहमत / सुझाव पठाइएको'}</strong></div>
+          ${myStatus.ack.note ? `<div style="margin-top:4px">तपाईंको टिप्पणी: "${escapeHtmlChat(myStatus.ack.note)}"</div>` : ''}
+          <div style="margin-top:5px;font-size:0.75rem;opacity:0.88">एकपटक प्रतिक्रिया जनाइसकेपछि पुनः परिवर्तन गर्न मिल्दैन — यहाँ के-के परिवर्तन भयो भन्ने जानकारी मात्र हेर्न सक्नुहुन्छ।</div>
         </div>
       `;
     } else {

@@ -666,6 +666,11 @@ const DB = {
         if (res.body.data) this._applyServerPayload(res.body.data, null, res.body.version);
         return true;
       }
+      if (res.status === 409 && res.body && res.body.alreadyAnswered) {
+        try { localStorage.removeItem(this.PENDING_UPDATE_ACK_KEY); } catch (e) {}
+        if (res.body.appUpdateAck) this.applyUserAppUpdateAck(res.body.appUpdateAck);
+        return true;
+      }
     } catch (e) {}
     return false;
   },
@@ -676,6 +681,10 @@ const DB = {
     const noteText = String(note || '').trim();
     const answeredAt = new Date().toISOString();
     const payload = { version: ver, decision: dec, note: noteText, answeredAt };
+    const prevRec = this.getUserAppUpdateAck(typeof Auth !== 'undefined' ? Auth.currentUser : null);
+    if (prevRec && prevRec.version === ver) {
+      return { ok: false, alreadyAnswered: true, ack: prevRec, error: 'यस संस्करणमा तपाईंको प्रतिक्रिया पहिले नै दर्ता भइसकेको छ' };
+    }
     const rec = this.applyUserAppUpdateAck(payload);
     if (!this.getToken() || !navigator.onLine) {
       try { localStorage.setItem(this.PENDING_UPDATE_ACK_KEY, JSON.stringify(payload)); } catch (e) {}
@@ -695,7 +704,10 @@ const DB = {
         return { ok: true, ack: res.body.ack || rec };
       }
       if (res.status >= 400 && res.status < 500) {
-        return { ok: false, error: (res.body && res.body.error) || 'पठाउन सकिएन' };
+        if (res.body && res.body.alreadyAnswered && res.body.appUpdateAck) {
+          this.applyUserAppUpdateAck(res.body.appUpdateAck);
+        }
+        return { ok: false, alreadyAnswered: !!(res.body && res.body.alreadyAnswered), error: (res.body && res.body.error) || 'पठाउन सकिएन' };
       }
     } catch (e) {}
     try { localStorage.setItem(this.PENDING_UPDATE_ACK_KEY, JSON.stringify(payload)); } catch (e) {}

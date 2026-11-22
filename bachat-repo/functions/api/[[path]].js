@@ -1977,6 +1977,16 @@ export async function onRequest(context) {
       if (decision === 'disagree' && !note) {
         return json({ ok: false, error: 'असहमत वा सुझाव छ भने कृपया कारण/सुझाव लेख्नुहोस्' }, 400);
       }
+      const existingAcks = await getAppUpdateAcks(env.DB);
+      const existingMine = getUserAppUpdateAck(existingAcks, user);
+      if (existingMine && existingMine.version === version) {
+        return json({
+          ok: false,
+          alreadyAnswered: true,
+          appUpdateAck: existingMine,
+          error: 'यस संस्करणमा तपाईंको प्रतिक्रिया पहिले नै दर्ता भइसकेको छ — पुनः परिवर्तन गर्न मिल्दैन।'
+        }, 409);
+      }
       const now = new Date().toISOString();
       const record = {
         version,
