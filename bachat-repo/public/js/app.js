@@ -4163,6 +4163,7 @@ async function saveAdminProfile() {
   data.admin.name = nextName;
   data.admin.username = nextUser;
   data.admin.mobile = nextMobile;
+  data.admin.email = nextEmail;
   data.admin.memberId = null;
   if (pin) data.admin.hasPin = true;
   delete data.admin.password;
@@ -4916,11 +4917,15 @@ async function openSystemHealthReport() {
   const emailInfo = res.emailAlert || {};
   const emailLine = emailInfo.providerReady
     ? (emailInfo.recipient
-        ? `सक्रिय (${escapeHtmlChat(emailInfo.recipient)})`
-        : 'Admin इमेल खाली छ (Admin प्रोफाइल वा एप परिचयमा इमेल राख्नुहोस्)')
+        ? `✅ सक्रिय (${escapeHtmlChat(emailInfo.recipient)})`
+        : 'Admin इमेल खाली छ (Admin प्रोफाइलमा इमेल राख्नुहोस्)')
     : (emailInfo.recipient
-        ? `इमेल: ${escapeHtmlChat(emailInfo.recipient)} · Cloudflare मा RESEND_API_KEY / Email Binding आवश्यक`
-        : 'इमेल ठेगाना र Cloudflare Email सेटअप बाँकी');
+        ? `इमेल: ${escapeHtmlChat(emailInfo.recipient)} · Cloudflare Pages (Production) मा RESEND_API_KEY सेभ गरी एक पटक Retry Deployment गर्नुहोस् (Email Binding चाहिँदैन)`
+        : 'इमेल ठेगाना र Cloudflare मा RESEND_API_KEY सेटअप बाँकी');
+
+  const testEmailBtn = (emailInfo.providerReady && emailInfo.recipient)
+    ? `<button type="button" class="btn btn-outline btn-block mt-1" onclick="testAdminHealthEmail()">📧 टेस्ट इमेल पठाएर जाँच्नुहोस्</button>`
+    : '';
 
   const html = `
     <div class="text-muted mb-1" style="font-size:0.75rem">अन्तिम जाँच: ${new Date(res.checkedAt).toLocaleString('ne-NP')} · सर्भर संस्करण v${res.version}</div>
@@ -4953,10 +4958,22 @@ async function openSystemHealthReport() {
     <div class="section-card" style="max-height:220px;overflow-y:auto;padding:8px 12px">
       ${activitiesHtml}
     </div>
+    ${testEmailBtn}
     <button type="button" class="btn btn-primary btn-block mt-2" onclick="openSystemHealthReport()">🔄 पुनः स्क्यान गर्नुहोस्</button>
   `;
 
   UI.showModal('🛠️ प्रणाली स्वास्थ्य र भण्डारण', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>', { replace: true });
+}
+
+async function testAdminHealthEmail() {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र', 'error');
+  UI.toast('टेस्ट इमेल पठाइँदैछ…', '');
+  const res = await DB.sendTestHealthEmail();
+  if (res && res.ok) {
+    UI.toast('✅ टेस्ट इमेल पठाइयो: ' + (res.to || ''), 'success');
+  } else {
+    UI.toast('❌ इमेल पठाउन सकिएन: ' + ((res && (res.detail || res.error)) || 'Resend/Email जाँच्नुहोस्'), 'error');
+  }
 }
 
 function showChangeOwnPinModal() {

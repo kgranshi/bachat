@@ -707,10 +707,14 @@ function getAdminAlertRecipient(env, st) {
   ).trim();
 }
 
+function getResendKey(env) {
+  return String((env && (env.RESEND_API_KEY || env.RESEND_KEY || env.RESEND_API || env.resend_api_key)) || '').trim();
+}
+
 function isEmailProviderConfigured(env) {
   return Boolean(
-    (env && env.RESEND_API_KEY) ||
-    (env && env.BREVO_API_KEY) ||
+    getResendKey(env) ||
+    (env && String(env.BREVO_API_KEY || '').trim()) ||
     (env && env.SEND_EMAIL && typeof env.SEND_EMAIL.send === 'function')
   );
 }
@@ -735,11 +739,12 @@ async function sendAdminHealthEmailApi(env, st, errors, nepalDate) {
   const bodyText = lines.join('\n');
 
   try {
-    if (env && env.RESEND_API_KEY) {
+    const resendKey = getResendKey(env);
+    if (resendKey) {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer ' + env.RESEND_API_KEY,
+          Authorization: 'Bearer ' + resendKey,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -749,7 +754,11 @@ async function sendAdminHealthEmailApi(env, st, errors, nepalDate) {
           text: bodyText
         })
       });
-      return { sent: res.ok, status: res.ok ? 'sent_resend' : 'error_resend_' + res.status, to: toEmail };
+      let detail = '';
+      if (!res.ok) {
+        try { detail = await res.text(); } catch (e) {}
+      }
+      return { sent: res.ok, status: res.ok ? 'sent_resend' : 'error_resend_' + res.status, to: toEmail, detail };
     }
 
     if (env && env.BREVO_API_KEY) {
@@ -2241,6 +2250,26 @@ export async function onRequest(context) {
       const chat = await loadChatFromDb(env.DB);
       const full = Object.assign({}, stateRow.data, { chat });
       return json({ ok: true, backup: full });
+    }
+
+    // 17c. Send Test Health Email (Primary Admin ONLY)
+    if (path === '/system-health/test-email' && method === 'POST') {
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'Admin लाई मात्र अनुमति छ' }, 403);
+      }
+      const stateRow = await loadStateRow(env.DB);
+      const st = stateRow.data || defaultState();
+      const nepalDate = getNepalNowApi().toISOString().slice(0, 10);
+      const res = await sendAdminHealthEmailApi(
+        env,
+        st,
+        [{ title: 'यो प्रणाली स्वास्थ्य इमेल अलर्ट परीक्षण (Test Email) हो — सबै सेटअप ठीक छ।', solution: 'कुनै समस्या छैन।' }],
+        nepalDate
+      );
+      if (!res.sent) {
+        return json({ ok: false, error: res.status || 'इमेल पठाउन सकिएन', detail: res.detail || res.error || '', to: res.to || '' }, 400);
+      }
+      return json({ ok: true, to: res.to, status: res.status });
     }
 
     // 18. System Health, Real Cloudflare Quota Usage, Diagnostics & Activity Log (Primary Admin ONLY)

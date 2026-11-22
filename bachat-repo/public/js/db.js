@@ -741,6 +741,18 @@ const DB = {
     }
   },
 
+  async sendTestHealthEmail() {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'इमेल जाँच गर्न इन्टरनेट चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/system-health/test-email', { method: 'POST', body: JSON.stringify({}) });
+      return (res && res.body) || { ok: false, error: 'इमेल पठाउन सकिएन' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
+  },
+
   async uploadMemberPhoto(memberId, dataUrl) {
     if (!this.getToken() || !navigator.onLine) {
       return { ok: false, error: 'फोटो अपलोड गर्न इन्टरनेट जडान आवश्यक छ' };

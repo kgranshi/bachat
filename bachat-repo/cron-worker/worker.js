@@ -280,6 +280,10 @@ async function evaluateCriticalHealthErrors(db) {
   return errors;
 }
 
+function getResendKey(env) {
+  return String((env && (env.RESEND_API_KEY || env.RESEND_KEY || env.RESEND_API || env.resend_api_key)) || '').trim();
+}
+
 async function sendAdminHealthEmail(env, st, errors, nepalDate) {
   const toEmail = String(
     (env && env.ADMIN_EMAIL) ||
@@ -306,11 +310,12 @@ async function sendAdminHealthEmail(env, st, errors, nepalDate) {
   const bodyText = lines.join('\n');
 
   try {
-    if (env && env.RESEND_API_KEY) {
+    const resendKey = getResendKey(env);
+    if (resendKey) {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer ' + env.RESEND_API_KEY,
+          Authorization: 'Bearer ' + resendKey,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
