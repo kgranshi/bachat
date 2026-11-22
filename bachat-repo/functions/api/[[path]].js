@@ -1062,8 +1062,67 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_chat_channel_time ON chat_messages(channel, created_at)`,
   `CREATE TABLE IF NOT EXISTS push_subscriptions (sub_key TEXT PRIMARY KEY, user_key TEXT NOT NULL, role TEXT NOT NULL, endpoint TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS login_attempts (ip_key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER NOT NULL DEFAULT 0)`,
-  `CREATE TABLE IF NOT EXISTS schedule_log (job_key TEXT PRIMARY KEY, ran_at TEXT NOT NULL)`
+  `CREATE TABLE IF NOT EXISTS schedule_log (job_key TEXT PRIMARY KEY, ran_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS user_activity_logs (
+    id TEXT PRIMARY KEY,
+    user_key TEXT NOT NULL,
+    actor_name TEXT NOT NULL,
+    actor_role TEXT NOT NULL,
+    member_id TEXT,
+    event_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    severity TEXT NOT NULL DEFAULT 'info',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_activity_created ON user_activity_logs(created_at DESC)`
 ];
+
+const CLIENT_ACTIVITY_TITLES = {
+  view_passbook: '📒 पासबुक हेरेको',
+  view_bill: '🧾 डिजिटल बिल / रसिद हेरेको',
+  print: '🖨️ प्रिन्ट / इमेज डाउनलोड गरेको',
+  view_loan_agreement: '📝 ऋण सम्झौता कागजात हेरेको',
+  session_lock: '🔒 एप PIN लक लागेको',
+  session_unlock: '🔓 PIN बाट लक खोलेको',
+  pin_fail: '⛔ गलत PIN प्रयास',
+  edit_blocked: '🚫 सम्पादन प्रयास रोकियो (अनुमति छैन)',
+  logout: '🚪 लगआउट गरेको'
+};
+
+async function logUserActivity(db, entry = {}) {
+  try {
+    if (!db || !entry || !entry.eventType || !entry.title) return;
+    const id = String(entry.id || ('act_' + Date.now() + '_' + randomHex(3))).slice(0, 64);
+    const userKey = String(entry.userKey || 'anon').slice(0, 80);
+    const actorName = String(entry.actorName || 'प्रयोगकर्ता').slice(0, 80);
+    const actorRole = String(entry.actorRole || 'member').slice(0, 30);
+    const memberId = entry.memberId ? String(entry.memberId).slice(0, 64) : null;
+    const eventType = String(entry.eventType).slice(0, 40);
+    const title = String(entry.title).slice(0, 120);
+    const detail = String(entry.detail || '').slice(0, 240);
+    const severity = entry.severity === 'warn' ? 'warn' : 'info';
+    const createdAt = String(entry.createdAt || new Date().toISOString()).slice(0, 40);
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO user_activity_logs
+         (id, user_key, actor_name, actor_role, member_id, event_type, title, detail, severity, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(id, userKey, actorName, actorRole, memberId, eventType, title, detail, severity, createdAt)
+      .run();
+    if (Math.random() < 0.08) {
+      await db
+        .prepare(
+          `DELETE FROM user_activity_logs WHERE id NOT IN (
+             SELECT id FROM user_activity_logs ORDER BY created_at DESC LIMIT 400
+           )`
+        )
+        .run()
+        .catch(() => {});
+    }
+  } catch (e) {}
+}
 
 let _schemaEnsured = false;
 async function ensureSchema(db) {
@@ -1216,6 +1275,15 @@ export async function onRequest(context) {
           )
           .bind(attemptKey, nextAtt, lockUntil)
           .run();
+        waitUntil(logUserActivity(env.DB, {
+          userKey: 'login:' + id.slice(0, 40),
+          actorName: id.slice(0, 60),
+          actorRole: 'unknown',
+          eventType: 'login_fail',
+          title: '⛔ गलत लगइन प्रयास',
+          detail: 'प्रयोग गरिएको ID: ' + id.slice(0, 40) + ' (प्रयास #' + nextAtt + ')',
+          severity: 'warn'
+        }));
         return json({ ok: false, error: 'लगइन मिलेन · username/password वा mobile/PIN जाँच्नुहोस्' }, 401);
       }
 
@@ -1242,6 +1310,15 @@ export async function onRequest(context) {
       const appUpdateAcks = await getAppUpdateAcks(env.DB);
       const appUpdateAck = getUserAppUpdateAck(appUpdateAcks, userObj);
       const canViewUpdateSummary = userObj.role === 'admin' || userObj.role === 'treasurer' || userObj.role === 'admin_ro';
+      waitUntil(logUserActivity(env.DB, {
+        userKey: userReadKey(userObj),
+        actorName: userObj.name,
+        actorRole: userObj.role,
+        memberId: userObj.memberId,
+        eventType: 'login_ok',
+        title: '🔐 एप लगइन सफल',
+        detail: (userObj.role === 'treasurer' ? 'कोषाध्यक्ष' : (userObj.role === 'admin' ? 'Admin' : 'सदस्य')) + ' लगइन भयो'
+      }));
 
       return json({
         ok: true,
@@ -1377,7 +1454,47 @@ export async function onRequest(context) {
         cred = await env.DB.prepare('SELECT pin_hash FROM auth_credentials WHERE id = ?').bind('mem:' + user.memberId).first();
       }
       const ok = cred && cred.pin_hash ? await verifySecret(String(pin || ''), cred.pin_hash) : false;
+      if (!ok) {
+        waitUntil(logUserActivity(env.DB, {
+          userKey: userReadKey(user),
+          actorName: user.name || user.username || 'प्रयोगकर्ता',
+          actorRole: user.role,
+          memberId: user.memberId,
+          eventType: 'pin_fail',
+          title: '⛔ गलत PIN प्रयास',
+          detail: 'PIN प्रमाणीकरण असफल',
+          severity: 'warn'
+        }));
+      }
       return json({ ok });
+    }
+
+    // 7b. User Activity Audit Telemetry (passbook, bill, print, lock/unlock, blocked edit, logout)
+    if (path === '/activity' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const list = Array.isArray(body && body.events)
+        ? body.events.slice(0, 20)
+        : (body && body.type ? [body] : []);
+      let logged = 0;
+      for (const ev of list) {
+        const t = String((ev && ev.type) || '').trim();
+        const title = CLIENT_ACTIVITY_TITLES[t];
+        if (!title) continue;
+        await logUserActivity(env.DB, {
+          id: ev.id ? String(ev.id).slice(0, 64) : undefined,
+          userKey: userReadKey(user),
+          actorName: user.name || user.username || 'प्रयोगकर्ता',
+          actorRole: user.role,
+          memberId: user.memberId,
+          eventType: t,
+          title,
+          detail: String((ev && ev.detail) || '').trim(),
+          severity: (ev && ev.severity === 'warn') || t === 'edit_blocked' || t === 'pin_fail' ? 'warn' : 'info',
+          createdAt: ev.time || new Date().toISOString()
+        });
+        logged++;
+      }
+      return json({ ok: true, logged });
     }
 
     // 8. Get State (lightweight delta check via sinceVersion)
@@ -1420,6 +1537,16 @@ export async function onRequest(context) {
     // 8b. Admin Non-Accounting Settings & Rules Update (ONLY Admin, never overwrites accounting!)
     if (path === '/admin/settings' && method === 'POST') {
       if (user.role !== 'admin') {
+        waitUntil(logUserActivity(env.DB, {
+          userKey: userReadKey(user),
+          actorName: user.name || user.username || 'प्रयोगकर्ता',
+          actorRole: user.role,
+          memberId: user.memberId,
+          eventType: 'edit_blocked',
+          title: '🚫 सेटिङ परिवर्तन प्रयास रोकियो',
+          detail: 'Admin बाहेकबाट सेटिङ बदल्न खोजिएको थियो',
+          severity: 'warn'
+        }));
         return json({ ok: false, error: 'सेटिङ परिवर्तन गर्ने अधिकार Admin लाई मात्र छ' }, 403);
       }
       const patch = await request.json().catch(() => ({}));
@@ -1480,6 +1607,16 @@ export async function onRequest(context) {
     // 9. Save State (कोषाध्यक्ष / Treasurer ONLY — version-checked & idempotent via txnId)
     if (path === '/state' && method === 'POST') {
       if (user.role !== 'treasurer' || !user.accountsWriter) {
+        waitUntil(logUserActivity(env.DB, {
+          userKey: userReadKey(user),
+          actorName: user.name || user.username || 'प्रयोगकर्ता',
+          actorRole: user.role,
+          memberId: user.memberId,
+          eventType: 'edit_blocked',
+          title: '🚫 हिसाब सम्पादन प्रयास रोकियो',
+          detail: 'कोषाध्यक्ष बाहेकबाट हिसाब लेख्न खोजिएको थियो',
+          severity: 'warn'
+        }));
         return json({ ok: false, error: 'Read-only: हिसाब किताब लेख्ने अधिकार कोषाध्यक्षलाई मात्र छ' }, 403);
       }
       const body = await request.json();
@@ -1589,6 +1726,15 @@ export async function onRequest(context) {
         }
       }
 
+      waitUntil(logUserActivity(env.DB, {
+        userKey: userReadKey(user),
+        actorName: user.name || user.username || 'कोषाध्यक्ष',
+        actorRole: user.role,
+        memberId: user.memberId,
+        eventType: closedMonthId ? 'close_month' : 'save_state',
+        title: closedMonthId ? '🔒 महिना बन्द र स्न्यापसट सेभ' : '💾 हिसाब अद्यावधिक गरेको',
+        detail: (closedMonthId ? ('महिना बन्द: ' + closedMonthId + ' · ') : '') + 'संस्करण v' + nextVersion
+      }));
       if (pushNotice && pushNotice.title) {
         await broadcastPush(env, pushNotice, user.role === 'admin' ? 'admin' : null);
       }
@@ -1852,6 +1998,15 @@ export async function onRequest(context) {
       const jwtSecret = await getJwtSecret(env);
       const updatedUser = Object.assign({}, user, { mustChangePin: false });
       const token = await signJwt(updatedUser, jwtSecret);
+      waitUntil(logUserActivity(env.DB, {
+        userKey: userReadKey(user),
+        actorName: user.name || 'सदस्य',
+        actorRole: user.role,
+        memberId: user.memberId,
+        eventType: 'pin_change',
+        title: '🔐 नयाँ PIN सेट गरेको',
+        detail: 'सदस्यले आफ्नो लगइन PIN परिवर्तन गर्नुभयो'
+      }));
       return json({ ok: true, token, user: updatedUser, pinVerifier: newHash, version: nextStateVersion });
     }
 
@@ -1957,6 +2112,15 @@ export async function onRequest(context) {
         }
       }
 
+      waitUntil(logUserActivity(env.DB, {
+        userKey: userReadKey(user),
+        actorName: user.name || user.username || 'सदस्य',
+        actorRole: user.role,
+        memberId: user.memberId,
+        eventType: 'terms_accept',
+        title: '📜 नियम तथा सर्त मञ्जुरी',
+        detail: 'सर्त संस्करण v' + ver + ' मा मञ्जुरी दिइयो'
+      }));
       return json({
         ok: true,
         acceptance: record,
@@ -2065,6 +2229,16 @@ export async function onRequest(context) {
         }
       }
 
+      waitUntil(logUserActivity(env.DB, {
+        userKey: userReadKey(user),
+        actorName: user.name || user.username || 'सदस्य',
+        actorRole: user.role,
+        memberId: user.memberId,
+        eventType: 'app_update_ack',
+        title: decision === 'disagree' ? '⚠️ एप अपडेट असहमत / सुझाव' : '✅ एप अपडेट मञ्जुरी',
+        detail: 'v' + version + (note ? (' · ' + note.slice(0, 70)) : ''),
+        severity: decision === 'disagree' ? 'warn' : 'info'
+      }));
       const canViewUpdateSummary = user.role === 'admin' || user.role === 'treasurer' || user.role === 'admin_ro';
       return json({
         ok: true,
@@ -2137,6 +2311,17 @@ export async function onRequest(context) {
           tag: 'pin-req'
         });
       }
+      if (!body.auto) {
+        waitUntil(logUserActivity(env.DB, {
+          userKey: userReadKey(user),
+          actorName: user.name || body.memberName || 'सदस्य',
+          actorRole: user.role,
+          memberId: user.memberId,
+          eventType: body.kind || 'feedback',
+          title: body.kind === 'pin_request' ? '🔢 PIN रिसेट अनुरोध पठाएको' : (body.kind === 'suggestion' || body.kind === 'suggestion_vidhan' ? '💡 सुझाव पठाएको' : '📢 गुनासो पठाएको'),
+          detail: String(body.text || body.mobile || '').slice(0, 80)
+        }));
+      }
       return json({ ok: true, version: nextVersion });
     }
 
@@ -2144,6 +2329,16 @@ export async function onRequest(context) {
     if (path === '/complaint/reply' && method === 'POST') {
       const canManage = user.role === 'admin' || (user.role === 'treasurer' && user.accountsWriter);
       if (!canManage) {
+        waitUntil(logUserActivity(env.DB, {
+          userKey: userReadKey(user),
+          actorName: user.name || user.username || 'प्रयोगकर्ता',
+          actorRole: user.role,
+          memberId: user.memberId,
+          eventType: 'edit_blocked',
+          title: '🚫 गुनासो समाधान प्रयास रोकियो',
+          detail: 'अनुमति नभएको भूमिकाबाट गुनासो जवाफ प्रयास',
+          severity: 'warn'
+        }));
         return json({ ok: false, error: 'Admin वा कोषाध्यक्षलाई मात्र गुनासो समाधान गर्ने अधिकार छ' }, 403);
       }
       const body = await request.json().catch(() => ({}));
@@ -2453,6 +2648,16 @@ export async function onRequest(context) {
     // 18. System Health, Real Cloudflare Quota Usage, Diagnostics & Activity Log (Primary Admin ONLY)
     if (path === '/system-health' && method === 'GET') {
       if (user.role !== 'admin') {
+        waitUntil(logUserActivity(env.DB, {
+          userKey: userReadKey(user),
+          actorName: user.name || user.username || 'प्रयोगकर्ता',
+          actorRole: user.role,
+          memberId: user.memberId,
+          eventType: 'edit_blocked',
+          title: '🚫 प्रणाली स्वास्थ्य हेर्ने प्रयास रोकियो',
+          detail: 'Admin मात्र हेर्न मिल्ने खण्ड खोल्न खोजियो',
+          severity: 'warn'
+        }));
         return json({ ok: false, error: 'प्रणाली स्वास्थ्य जाँच Admin लाई मात्र उपलब्ध छ' }, 403);
       }
 
@@ -2596,53 +2801,46 @@ export async function onRequest(context) {
         });
       }
 
-      // Real chronological activity log (from processed_txns + recent complaints + months + chat announcements)
-      const recentTxns = await env.DB
-        .prepare('SELECT txn_id, actor, action, applied_version, created_at FROM processed_txns ORDER BY created_at DESC LIMIT 15')
-        .all()
-        .catch(() => ({ results: [] }));
-      const recentSysChat = await env.DB
-        .prepare("SELECT id, text, type, created_at FROM chat_messages WHERE channel = 'group' AND (type = 'auto_group' OR from_role = 'system') ORDER BY created_at DESC LIMIT 10")
+      // Real per-user audit activity log (newest first, scrollable; excludes group chat clutter)
+      const auditRows = await env.DB
+        .prepare(
+          'SELECT id, user_key, actor_name, actor_role, member_id, event_type, title, detail, severity, created_at FROM user_activity_logs ORDER BY created_at DESC LIMIT 120'
+        )
         .all()
         .catch(() => ({ results: [] }));
 
-      const activities = [];
-      for (const tx of recentTxns.results || []) {
-        activities.push({
-          kind: tx.action === 'close_month' ? 'month' : 'sync',
-          title: tx.action === 'close_month' ? '🔒 महिना बन्द र स्न्यापसट सेभ' : '💾 हिसाब डाटा सिंक',
-          detail: (tx.actor || 'कोषाध्यक्ष') + ' · v' + (tx.applied_version || ''),
-          time: tx.created_at
-        });
+      const activities = (auditRows.results || []).map((r) => ({
+        id: r.id,
+        kind: r.event_type,
+        actorName: r.actor_name,
+        actorRole: r.actor_role,
+        memberId: r.member_id || null,
+        title: r.title,
+        detail: r.detail,
+        severity: r.severity || 'info',
+        time: r.created_at
+      }));
+
+      // Fallback seed from recent processed_txns only when user_activity_logs has minimal history
+      if (activities.length < 3) {
+        const recentTxns = await env.DB
+          .prepare('SELECT txn_id, actor, action, applied_version, created_at FROM processed_txns ORDER BY created_at DESC LIMIT 10')
+          .all()
+          .catch(() => ({ results: [] }));
+        for (const tx of recentTxns.results || []) {
+          activities.push({
+            kind: tx.action === 'close_month' ? 'close_month' : 'save_state',
+            actorName: tx.actor || 'कोषाध्यक्ष',
+            actorRole: 'treasurer',
+            memberId: null,
+            title: tx.action === 'close_month' ? '🔒 महिना बन्द र स्न्यापसट सेभ' : '💾 हिसाब अद्यावधिक गरेको',
+            detail: 'संस्करण v' + (tx.applied_version || ''),
+            severity: 'info',
+            time: tx.created_at
+          });
+        }
+        activities.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
       }
-      for (const c of (st.complaints || []).slice(-10)) {
-        if (!c || c.auto) continue;
-        const mem = members.find((m) => m && m.id === c.memberId);
-        activities.push({
-          kind: 'complaint',
-          title: c.resolved ? '✅ गुनासो समाधान' : '📢 सदस्य गुनासो प्राप्त',
-          detail: (mem ? mem.name : c.memberId) + ': ' + String(c.text || '').slice(0, 60),
-          time: c.resolvedAt || c.time
-        });
-      }
-      for (const pr of (st.pinRequests || []).slice(-6)) {
-        if (!pr) continue;
-        activities.push({
-          kind: 'pin',
-          title: pr.status === 'pending' ? '🔢 नयाँ PIN अनुरोध' : '✅ PIN अनुरोध स्वीकृत',
-          detail: (pr.memberName || pr.memberId) + ' (' + (pr.mobile || '') + ')',
-          time: pr.time
-        });
-      }
-      for (const chm of recentSysChat.results || []) {
-        activities.push({
-          kind: 'chat',
-          title: '💬 समूह सूचना पोस्ट',
-          detail: String(chm.text || '').split('\\n')[0].slice(0, 65),
-          time: chm.created_at
-        });
-      }
-      activities.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
 
       const nepalNow = getNepalNowApi();
       const nepalDate = nepalNow.toISOString().slice(0, 10);

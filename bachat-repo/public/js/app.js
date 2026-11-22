@@ -2647,6 +2647,17 @@ function showYearlyReport() {
 function printReportImage(elementId) {
   const el = document.getElementById(elementId);
   if (!el) return UI.toast('प्रिन्ट गर्न सकिएन', 'error');
+  const printLabels = {
+    'print-bill': 'डिजिटल बिल / रसिद',
+    'print-passbook': 'पासबुक',
+    'print-loan-agreement': 'ऋण सम्झौता कागजात',
+    'monthly-report-body': 'मासिक प्रतिवेदन',
+    'print-summary': 'संकलन सारांश',
+    'print-yearly': 'वार्षिक प्रतिवेदन'
+  };
+  if (typeof DB !== 'undefined' && typeof DB.logActivity === 'function') {
+    DB.logActivity('print', (printLabels[elementId] || 'रिपोर्ट') + ' प्रिन्ट / PDF खोलेको', 'info', { flushNow: true });
+  }
   const baseHref = (typeof location !== 'undefined' && location.origin) ? (location.origin + '/') : './';
   const htmlDoc = `<!doctype html><html><head><meta charset="utf-8"><base href="${baseHref}"><title>रिपोर्ट</title>
     <style>
@@ -3456,6 +3467,11 @@ function showPassbook(memberId) {
   } else {
     _askComplaintOnClose = null;
   }
+  const pbData = DB.load();
+  const pbMem = (pbData.members || []).find(m => m && m.id === memberId);
+  if (typeof DB !== 'undefined' && typeof DB.logActivity === 'function' && pbMem) {
+    DB.logActivity('view_passbook', pbMem.name + ' को पासबुक हेरेको');
+  }
   renderPassbookContent(memberId);
 }
 
@@ -3657,6 +3673,9 @@ function showMemberLoanAgreement(monthId, memberId, _unused = false, selectedLoa
 
   const loans = (month.loansGiven || []).filter(l => l && l.memberId === memberId);
   if (!loans.length) return UI.toast('यस महिनामा ऋण सम्झौता भेटिएन', 'error');
+  if (!opts.noPush && typeof DB !== 'undefined' && typeof DB.logActivity === 'function') {
+    DB.logActivity('view_loan_agreement', member.name + ' · ' + (month.name || '') + ' ऋण सम्झौता हेरेको');
+  }
 
   let activeIdx = 0;
   if (selectedLoanKey !== '' && selectedLoanKey != null) {
@@ -5212,16 +5231,9 @@ async function openSystemHealthReport() {
     </div>`;
   }).join('');
 
-  const activitiesHtml = (res.activities || []).length
-    ? (res.activities || []).map(a => `
-        <div style="padding:7px 0;border-bottom:1px dashed #e2e8f0;font-size:0.8rem">
-          <div style="display:flex;justify-content:space-between;gap:6px">
-            <strong>${escapeHtmlChat(a.title)}</strong>
-            <span class="text-muted" style="font-size:0.7rem;white-space:nowrap">${a.time ? new Date(a.time).toLocaleString('ne-NP') : ''}</span>
-          </div>
-          <div class="text-muted" style="font-size:0.76rem">${escapeHtmlChat(a.detail)}</div>
-        </div>`).join('')
-    : '<div class="text-muted text-center" style="padding:10px">हालसम्म गतिविधि रेकर्ड छैन</div>';
+  window._lastHealthActivities = Array.isArray(res.activities) ? res.activities.slice() : [];
+  window._healthActFilter = 'all';
+  const activitiesHtml = _buildHealthActivityRowsHtml(window._lastHealthActivities, 'all');
 
   const r2StatusHtml = res.r2.enabled
     ? `<div class="report-row"><span class="label">R2 भण्डारण (${res.r2.objectCount}${res.r2.truncated ? '+' : ''} फाइल)</span><span class="value">${_formatBytesReadable(res.r2.totalBytes)} / 10 GB (${r2Pct}%)</span></div>
@@ -5272,8 +5284,13 @@ async function openSystemHealthReport() {
       <div class="report-row"><span class="label">नियम/सर्त मञ्जुरी (v${res.stats.termsVersion})</span><span class="value">${res.stats.termsAgreed} / ${res.stats.activeMembers} जना</span></div>
     </div>
 
-    <div class="section-title mt-2">📜 पछिल्ला प्रणाली गतिविधिहरू</div>
-    <div class="section-card" style="max-height:220px;overflow-y:auto;padding:8px 12px">
+    <div class="section-title mt-2">📜 पछिल्ला सदस्य तथा प्रणाली गतिविधिहरू</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px" id="health-act-filters">
+      <button type="button" class="btn btn-sm btn-primary" onclick="filterHealthActivities('all', this)">सबै (${(res.activities || []).length})</button>
+      <button type="button" class="btn btn-sm btn-outline" onclick="filterHealthActivities('member', this)">👤 सदस्य गतिविधि</button>
+      <button type="button" class="btn btn-sm btn-outline" onclick="filterHealthActivities('warn', this)">⚠️ रोकिएको / चेतावनी</button>
+    </div>
+    <div class="section-card" id="health-activities-list" style="max-height:290px;overflow-y:auto;padding:8px 12px">
       ${activitiesHtml}
     </div>
     ${testEmailBtn}
@@ -5281,6 +5298,56 @@ async function openSystemHealthReport() {
   `;
 
   UI.showModal('🛠️ प्रणाली स्वास्थ्य र भण्डारण', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>', { replace: true });
+}
+
+function _buildHealthActivityRowsHtml(list, mode) {
+  const rows = (list || []).filter(a => {
+    if (!a) return false;
+    if (mode === 'member') return a.actorRole === 'member' || !!a.memberId;
+    if (mode === 'warn') return a.severity === 'warn' || a.kind === 'edit_blocked' || a.kind === 'login_fail' || a.kind === 'pin_fail';
+    return true;
+  });
+  if (!rows.length) {
+    return '<div class="text-muted text-center" style="padding:12px">यस वर्गमा गतिविधि रेकर्ड छैन</div>';
+  }
+  return rows.map(a => {
+    const isWarn = a.severity === 'warn';
+    const roleChip = a.actorRole === 'treasurer'
+      ? '<span style="background:#fff3cd;color:#664d03;font-size:0.68rem;padding:1px 6px;border-radius:6px;font-weight:700">कोषाध्यक्ष</span>'
+      : a.actorRole === 'admin'
+        ? '<span style="background:#e7f1ff;color:#084298;font-size:0.68rem;padding:1px 6px;border-radius:6px;font-weight:700">Admin</span>'
+        : '<span style="background:#e2e8f0;color:#1e293b;font-size:0.68rem;padding:1px 6px;border-radius:6px;font-weight:700">सदस्य</span>';
+    const actorTag = a.actorName ? `<div style="font-size:0.75rem;margin-top:2px">👤 <strong>${escapeHtmlChat(a.actorName)}</strong> ${roleChip}</div>` : '';
+    return `
+      <div style="padding:8px 6px;border-bottom:1px dashed #e2e8f0;font-size:0.8rem;${isWarn ? 'background:#fff8f6;border-left:3px solid #dc3545;padding-left:8px;margin:2px 0;border-radius:6px;' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+          <strong style="${isWarn ? 'color:#b02a37' : 'color:#0f172a'}">${escapeHtmlChat(a.title || '')}</strong>
+          <span class="text-muted" style="font-size:0.69rem;white-space:nowrap">${a.time ? new Date(a.time).toLocaleString('ne-NP') : ''}</span>
+        </div>
+        ${actorTag}
+        ${a.detail ? `<div class="text-muted" style="font-size:0.75rem;margin-top:2px">${escapeHtmlChat(a.detail)}</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function filterHealthActivities(mode, btnEl) {
+  window._healthActFilter = mode;
+  const wrap = document.getElementById('health-act-filters');
+  if (wrap) {
+    wrap.querySelectorAll('button').forEach(b => {
+      b.classList.remove('btn-primary');
+      b.classList.add('btn-outline');
+    });
+    if (btnEl) {
+      btnEl.classList.remove('btn-outline');
+      btnEl.classList.add('btn-primary');
+    }
+  }
+  const box = document.getElementById('health-activities-list');
+  if (box) {
+    box.innerHTML = _buildHealthActivityRowsHtml(window._lastHealthActivities || [], mode);
+    box.scrollTop = 0;
+  }
 }
 
 async function testAdminHealthEmail() {
@@ -6421,7 +6488,15 @@ function doLogout() {
 async function confirmLogoutWithPin() {
   const pin = (document.getElementById('logout-pin') && document.getElementById('logout-pin').value) || '';
   const ok = await Auth.verifyUserPin(pin);
-  if (!ok) return UI.toast('PIN गलत', 'error');
+  if (!ok) {
+    if (typeof DB !== 'undefined' && typeof DB.logActivity === 'function') {
+      DB.logActivity('pin_fail', 'लगआउट पुष्टिमा गलत PIN प्रयास', 'warn', { flushNow: true });
+    }
+    return UI.toast('PIN गलत', 'error');
+  }
+  if (typeof DB !== 'undefined' && typeof DB.logActivity === 'function') {
+    await DB.logActivity('logout', 'प्रयोगकर्ता लगआउट गरेको', 'info', { flushNow: true, noDedupe: true });
+  }
   try { await clearPushOnLogout(); } catch (e) {}
   window._pushLastGroupId = null;
   Auth.logout();
@@ -6467,6 +6542,9 @@ async function clearPushOnLogout() {
 
 function lockAppSession() {
   if (!Auth.isLoggedIn()) return;
+  if (!Auth.isLocked() && typeof DB !== 'undefined' && typeof DB.logActivity === 'function') {
+    DB.logActivity('session_lock', 'निष्क्रियता / सुरक्षा PIN लक लागेको', 'info', { flushNow: true });
+  }
   Auth.setLocked(true);
   showLockScreen();
 }
@@ -6519,7 +6597,13 @@ async function unlockAppSession() {
   const pin = (pinInput && pinInput.value) || '';
   const ok = await Auth.verifyUserPin(pin);
   if (!ok) {
+    if (typeof DB !== 'undefined' && typeof DB.logActivity === 'function') {
+      DB.logActivity('pin_fail', 'लक खोल्दा गलत PIN प्रयास', 'warn', { flushNow: true });
+    }
     return UI.toast('PIN गलत', 'error');
+  }
+  if (typeof DB !== 'undefined' && typeof DB.logActivity === 'function') {
+    DB.logActivity('session_unlock', 'PIN बाट लक खोलेको', 'info', { flushNow: true });
   }
   if (pinInput) {
     pinInput.value = '';
@@ -7503,6 +7587,9 @@ function viewBill(billId) {
   const data = DB.load();
   const bill = data.bills && data.bills[billId];
   if (!bill) return UI.toast('बिल भेटिएन', 'error');
+  if (typeof DB !== 'undefined' && typeof DB.logActivity === 'function') {
+    DB.logActivity('view_bill', 'बिल #' + billId + ' (' + (bill.monthName || '') + ') हेरेको');
+  }
   const html = `
     <div class="print-area" id="print-bill" style="background:#fff;border:2px solid #333;border-radius:12px;padding:16px;max-width:340px;margin:0 auto;font-family:monospace">
       <div style="text-align:center;font-weight:700;font-size:1.05rem">${escapeHtmlChat(bill.groupName)}</div>

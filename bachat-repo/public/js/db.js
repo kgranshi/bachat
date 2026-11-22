@@ -14,6 +14,7 @@ const DB = {
   PENDING_CHAT_KEY: 'gs_pending_chat',
   PENDING_TERMS_KEY: 'gs_pending_terms_accept',
   PENDING_UPDATE_ACK_KEY: 'gs_pending_update_ack_v1',
+  ACTIVITY_QUEUE_KEY: 'gs_pending_activity_v1',
 
   _cache: null,
   _cloud: false,
@@ -25,6 +26,8 @@ const DB = {
   _onRemote: null,
   _onlineBound: false,
   _lastFocusPullAt: 0,
+  _activityTimer: null,
+  _activitySeen: {},
   _serverVersion: 0,
   _hasAdminOnServer: false,
   _appUpdateAcks: {},
@@ -714,6 +717,87 @@ const DB = {
     return { ok: true, queued: true, ack: rec };
   },
 
+  _getPendingActivityQueue() {
+    try {
+      const raw = localStorage.getItem(this.ACTIVITY_QUEUE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  },
+
+  _setPendingActivityQueue(q) {
+    try {
+      if (!q || !q.length) localStorage.removeItem(this.ACTIVITY_QUEUE_KEY);
+      else localStorage.setItem(this.ACTIVITY_QUEUE_KEY, JSON.stringify(q.slice(-40)));
+    } catch (e) {}
+  },
+
+  async flushActivityQueue() {
+    if (!this.getToken() || !navigator.onLine) return false;
+    const q = this._getPendingActivityQueue();
+    if (!q.length) return true;
+    const batch = q.slice(0, 15);
+    const rest = q.slice(15);
+    try {
+      const res = await this.apiFetch('/activity', {
+        method: 'POST',
+        body: JSON.stringify({ events: batch })
+      });
+      if (res.ok && res.body && res.body.ok) {
+        this._setPendingActivityQueue(rest);
+        if (rest.length > 0) setTimeout(() => { this.flushActivityQueue().catch(() => {}); }, 200);
+        return true;
+      }
+      if (res.status >= 400 && res.status < 500) {
+        this._setPendingActivityQueue(rest);
+        return false;
+      }
+    } catch (e) {}
+    return false;
+  },
+
+  async logActivity(eventType, detail = '', severity = 'info', opts = {}) {
+    try {
+      if (!this.getToken()) return false;
+      const type = String(eventType || '').trim();
+      if (!type) return false;
+      const det = String(detail || '').trim().slice(0, 220);
+      const dedupeKey = type + '|' + det;
+      const nowMs = Date.now();
+      this._activitySeen = this._activitySeen || {};
+      if (!opts.noDedupe && this._activitySeen[dedupeKey] && (nowMs - this._activitySeen[dedupeKey] < 20000)) {
+        return false;
+      }
+      this._activitySeen[dedupeKey] = nowMs;
+      const ev = {
+        id: 'act_' + nowMs + '_' + Math.random().toString(36).slice(2, 6),
+        type,
+        detail: det,
+        severity: severity === 'warn' ? 'warn' : 'info',
+        time: new Date(nowMs).toISOString()
+      };
+      const q = this._getPendingActivityQueue();
+      q.push(ev);
+      this._setPendingActivityQueue(q);
+      if (this._activityTimer) {
+        clearTimeout(this._activityTimer);
+        this._activityTimer = null;
+      }
+      if (opts.flushNow) {
+        return await Promise.race([
+          this.flushActivityQueue().catch(() => false),
+          new Promise((r) => setTimeout(() => r(false), 1200))
+        ]);
+      }
+      this._activityTimer = setTimeout(() => {
+        this._activityTimer = null;
+        this.flushActivityQueue().catch(() => {});
+      }, 1500);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+
   async initCloud(onRemoteChange) {
     this._onRemote = onRemoteChange || null;
     this.bindOnlineSync();
@@ -993,6 +1077,7 @@ const DB = {
       this.flushChatQueue().catch(() => {});
       this.flushPendingTermsAccept().catch(() => {});
       this.flushPendingUpdateAck().catch(() => {});
+      this.flushActivityQueue().catch(() => {});
       this.flushPending().then((ok) => {
         if (ok && typeof UI !== 'undefined' && UI.toast) {
           UI.toast('नेट आयो · हिसाब सुरक्षित सिंक भयो ✅', 'success');

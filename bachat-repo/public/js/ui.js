@@ -13,6 +13,15 @@ const UI = {
     el.className = 'toast ' + type;
     el.classList.remove('hidden');
     this._toastTimer = setTimeout(() => { el.classList.add('hidden'); this._toastTimer = null; }, 3000);
+    if (
+      type === 'error' &&
+      typeof msg === 'string' &&
+      /Read-only|अनुमति|कोषाध्यक्षलाई मात्र|Admin मात्र/.test(msg) &&
+      typeof DB !== 'undefined' &&
+      typeof DB.logActivity === 'function'
+    ) {
+      DB.logActivity('edit_blocked', msg, 'warn', { flushNow: true });
+    }
   },
 
   _modalStack: [],

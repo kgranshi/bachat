@@ -85,3 +85,18 @@ CREATE TABLE IF NOT EXISTS schedule_log (
   job_key TEXT PRIMARY KEY,
   ran_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS user_activity_logs (
+  id TEXT PRIMARY KEY,
+  user_key TEXT NOT NULL,
+  actor_name TEXT NOT NULL,
+  actor_role TEXT NOT NULL,
+  member_id TEXT,
+  event_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  severity TEXT NOT NULL DEFAULT 'info',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_created ON user_activity_logs(created_at DESC);
