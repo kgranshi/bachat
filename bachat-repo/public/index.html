@@ -12,7 +12,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
   <title>समूह बचत एप</title>
-  <link rel="stylesheet" href="./css/styles.css?v=18">
+  <link rel="stylesheet" href="./css/styles.css?v=19">
 </head>
 <body>
 <div id="app">
@@ -264,17 +264,45 @@
     </div>
   </div>
 
-  <script src="./js/db.js?v=18"></script>
-  <script src="./js/accounting.js?v=18"></script>
-  <script src="./js/auth.js?v=18"></script>
-  <script src="./js/ui.js?v=18"></script>
-  <script src="./js/app.js?v=18"></script>
+  <script src="./js/db.js?v=19"></script>
+  <script src="./js/accounting.js?v=19"></script>
+  <script src="./js/auth.js?v=19"></script>
+  <script src="./js/ui.js?v=19"></script>
+  <script src="./js/app.js?v=19"></script>
   <script>
   if ('serviceWorker' in navigator) {
+    window._swReloading = false;
+    window._checkSwUpdateNow = async function (reloadIfUpdated) {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration('./');
+        if (!reg) return false;
+        await reg.update().catch(function () {});
+        if (reg.waiting) {
+          if (reloadIfUpdated && navigator.serviceWorker.controller) {
+            window._allowSwReload = true;
+          }
+          try { reg.waiting.postMessage({ type: 'SKIP_WAITING' }); } catch (e) {}
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (window._allowSwReload && !window._swReloading) {
+        window._swReloading = true;
+        window.location.reload();
+      }
+    });
     window.addEventListener('load', function () {
       navigator.serviceWorker.register('./sw.js', { scope: './' }).then(function (reg) {
+        window._swReg = reg;
         try { reg.update(); } catch (e) {}
       }).catch(function () {});
+    });
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible' && window._swReg) {
+        try { window._swReg.update(); } catch (e) {}
+      }
     });
   }
   </script>

@@ -1626,3 +1626,100 @@ tr:active { background: #f0f7ff; }
   color: #842029;
 }
 
+/* ===== Lock Screen Full Privacy Shield ===== */
+body.app-locked {
+  overflow: hidden !important;
+}
+body.app-locked #main-screen,
+body.app-locked #login-screen,
+body.app-locked #loading-screen,
+body.app-locked #modal-overlay,
+body.app-locked #pin-modal,
+body.app-locked #toast {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+#session-lock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: linear-gradient(160deg, #0b3975 0%, #0d6efd 55%, #082b59 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+/* ===== App Update Changelog Modal & Log Timeline ===== */
+.upd-banner {
+  background: #e7f1ff;
+  border: 1px solid #b6d4fe;
+  border-left: 4px solid #0d6efd;
+  color: #084298;
+  border-radius: 10px;
+  padding: 9px 11px;
+  margin-bottom: 10px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.upd-highlights {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.83rem;
+  line-height: 1.55;
+  color: #1e293b;
+}
+.upd-highlights li {
+  margin-bottom: 5px;
+}
+.upd-choice-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+.upd-choice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  cursor: pointer;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+.upd-choice-card input[type="radio"] {
+  width: 19px;
+  height: 19px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: #0d6efd;
+}
+.upd-choice-card.agree.selected {
+  border-color: #198754;
+  background: #d1e7dd;
+  color: #0f5132;
+}
+.upd-choice-card.disagree.selected {
+  border-color: #fd7e14;
+  background: #fff3cd;
+  color: #664d03;
+}
+.upd-log-card {
+  background: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 12px;
+  padding: 11px 12px;
+  margin-bottom: 10px;
+}
+.upd-log-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+

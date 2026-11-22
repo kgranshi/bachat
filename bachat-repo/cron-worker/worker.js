@@ -367,10 +367,23 @@ async function sendAdminHealthEmail(env, st, errors, nepalDate) {
   }
 }
 
-async function sendAdminHealthPush(db, errors, countNum) {
-  const vapidRow = await db.prepare("SELECT value FROM system_secrets WHERE key = 'vapid_keys'").first();
-  if (!vapidRow || !vapidRow.value) return 0;
-  const vapid = JSON.parse(vapidRow.value);
+async function getVapidKeysForCron(env) {
+  if (env && env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_JWK) {
+    return {
+      publicKey: env.VAPID_PUBLIC_KEY,
+      privateJwk: typeof env.VAPID_PRIVATE_JWK === 'string' ? JSON.parse(env.VAPID_PRIVATE_JWK) : env.VAPID_PRIVATE_JWK,
+      subject: env.VAPID_SUBJECT || 'mailto:admin@bachat.local'
+    };
+  }
+  const vapidRow = await env.DB.prepare("SELECT value FROM system_secrets WHERE key = 'vapid_keys'").first();
+  if (!vapidRow || !vapidRow.value) return null;
+  return JSON.parse(vapidRow.value);
+}
+
+async function sendAdminHealthPush(env, errors, countNum) {
+  const db = env.DB;
+  const vapid = await getVapidKeysForCron(env);
+  if (!vapid) return 0;
   const subs = await db.prepare("SELECT sub_key, endpoint, p256dh, auth FROM push_subscriptions WHERE user_key = 'admin'").all();
   let sent = 0;
   const firstTitle = (errors[0] && errors[0].title) || 'प्रणाली त्रुटि';
@@ -413,7 +426,7 @@ export default {
         const errors = await evaluateCriticalHealthErrors(env.DB);
         if (errors.length > 0) {
           const nextCount = Number(existingAlert.notifyCount || 0) + 1;
-          await sendAdminHealthPush(env.DB, errors, nextCount);
+          await sendAdminHealthPush(env, errors, nextCount);
           await setSecretJson(
             env.DB,
             'health_alert_state',
@@ -452,7 +465,7 @@ export default {
             stObj = gs && gs.data_json ? JSON.parse(gs.data_json) : null;
           } catch (e) {}
           const emailRes = await sendAdminHealthEmail(env, stObj, errors, nepalDate);
-          await sendAdminHealthPush(env.DB, errors, 1);
+          await sendAdminHealthPush(env, errors, 1);
           const nextAlert = {
             active: true,
             healthKey,
@@ -502,9 +515,8 @@ export default {
       .bind('rem_fri_' + bs.year + '_' + bs.monthIndex, msgText, nowIso)
       .run();
 
-    const vapidRow = await env.DB.prepare("SELECT value FROM system_secrets WHERE key = 'vapid_keys'").first();
-    if (vapidRow && vapidRow.value) {
-      const vapid = JSON.parse(vapidRow.value);
+    const vapid = await getVapidKeysForCron(env);
+    if (vapid) {
       const subs = await env.DB.prepare('SELECT sub_key, endpoint, p256dh, auth FROM push_subscriptions').all();
       for (const s of subs.results || []) {
         try {

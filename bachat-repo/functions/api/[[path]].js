@@ -361,6 +361,47 @@ function mergeTermsAcceptancesIntoMembers(members, allAcceptances) {
   });
 }
 
+async function getAppUpdateAcks(db) {
+  try {
+    const row = await db.prepare("SELECT value FROM system_secrets WHERE key = 'app_update_acks'").first();
+    return row && row.value ? JSON.parse(row.value) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function recordAppUpdateAcks(db, keys, record) {
+  const all = await getAppUpdateAcks(db);
+  for (const k of keys) {
+    if (!k) continue;
+    all[String(k)] = record;
+  }
+  await db
+    .prepare(
+      `INSERT INTO system_secrets (key, value, created_at) VALUES ('app_update_acks', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, created_at=excluded.created_at`
+    )
+    .bind(JSON.stringify(all), new Date().toISOString())
+    .run();
+  return all;
+}
+
+function getUserAppUpdateAck(allAcks, user) {
+  if (!allAcks || !user) return null;
+  const candidates = [];
+  if (user.memberId) candidates.push('mem:' + String(user.memberId));
+  const uk = userReadKey(user);
+  if (uk && !candidates.includes(uk)) candidates.push(uk);
+  let best = null;
+  for (const k of candidates) {
+    const rec = allAcks[k];
+    if (rec && (!best || String(rec.answeredAt || '') >= String(best.answeredAt || ''))) {
+      best = rec;
+    }
+  }
+  return best;
+}
+
 function userReadKey(user) {
   if (!user) return '';
   if (user.role === 'member' && user.memberId) return 'mem:' + String(user.memberId);
@@ -1198,6 +1239,9 @@ export async function onRequest(context) {
       const readState = await getUserReadState(env.DB, userObj);
       const termsAcceptances = await getTermsAcceptances(env.DB);
       const termsAcceptance = getUserTermsAcceptance(termsAcceptances, userObj);
+      const appUpdateAcks = await getAppUpdateAcks(env.DB);
+      const appUpdateAck = getUserAppUpdateAck(appUpdateAcks, userObj);
+      const canViewUpdateSummary = userObj.role === 'admin' || userObj.role === 'treasurer' || userObj.role === 'admin_ro';
 
       return json({
         ok: true,
@@ -1208,7 +1252,9 @@ export async function onRequest(context) {
         data: sanitizeStateForRole(stateRow.data, userObj, pinFlags, termsAcceptances),
         chat,
         readState,
-        termsAcceptance
+        termsAcceptance,
+        appUpdateAck,
+        ...(canViewUpdateSummary ? { appUpdateAcks } : {})
       });
     }
 
@@ -1342,8 +1388,20 @@ export async function onRequest(context) {
       const readState = await getUserReadState(env.DB, user);
       const termsAcceptances = await getTermsAcceptances(env.DB);
       const termsAcceptance = getUserTermsAcceptance(termsAcceptances, user);
+      const appUpdateAcks = await getAppUpdateAcks(env.DB);
+      const appUpdateAck = getUserAppUpdateAck(appUpdateAcks, user);
+      const canViewUpdateSummary = user.role === 'admin' || user.role === 'treasurer' || user.role === 'admin_ro';
       if (sinceVersion === stateRow.version) {
-        return json({ ok: true, unchanged: true, version: stateRow.version, chat, readState, termsAcceptance });
+        return json({
+          ok: true,
+          unchanged: true,
+          version: stateRow.version,
+          chat,
+          readState,
+          termsAcceptance,
+          appUpdateAck,
+          ...(canViewUpdateSummary ? { appUpdateAcks } : {})
+        });
       }
       const pinFlags = await getPinResetFlags(env.DB);
       return json({
@@ -1353,7 +1411,9 @@ export async function onRequest(context) {
         data: sanitizeStateForRole(stateRow.data, user, pinFlags, termsAcceptances),
         chat,
         readState,
-        termsAcceptance
+        termsAcceptance,
+        appUpdateAck,
+        ...(canViewUpdateSummary ? { appUpdateAcks } : {})
       });
     }
 
@@ -1905,6 +1965,107 @@ export async function onRequest(context) {
       });
     }
 
+    // 11e. App Update Changelog Acknowledgement (Agree / Disagree + Suggestion -> visible to Admin)
+    if (path === '/app-update/ack' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const version = String((body && body.version) || '').trim().slice(0, 32);
+      const decision = body && body.decision === 'disagree' ? 'disagree' : (body && body.decision === 'agree' ? 'agree' : '');
+      const note = String((body && body.note) || '').trim().slice(0, 1000);
+      if (!version || !decision) {
+        return json({ ok: false, error: 'अपडेट संस्करण र सहमत/असहमत छनोट आवश्यक छ' }, 400);
+      }
+      if (decision === 'disagree' && !note) {
+        return json({ ok: false, error: 'असहमत वा सुझाव छ भने कृपया कारण/सुझाव लेख्नुहोस्' }, 400);
+      }
+      const now = new Date().toISOString();
+      const record = {
+        version,
+        decision,
+        note,
+        answeredAt: (body && body.answeredAt) || now,
+        name: user.name || user.username || 'User',
+        role: user.role,
+        memberId: user.memberId || null
+      };
+      const keys = [];
+      if (user.memberId) keys.push('mem:' + String(user.memberId));
+      const uk = userReadKey(user);
+      if (uk && !keys.includes(uk)) keys.push(uk);
+      const allAcks = await recordAppUpdateAcks(env.DB, keys, record);
+
+      const cur = await loadStateRow(env.DB);
+      const state = cur.data || defaultState();
+      let nextVer = cur.version || 1;
+      let stateUpdated = false;
+      const pinFlags = await getPinResetFlags(env.DB);
+      const termsAcceptances = await getTermsAcceptances(env.DB);
+
+      if (user.role === 'member' || user.role === 'treasurer') {
+        const actorId = String(user.memberId || uk || 'user');
+        const safeVer = version.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const safeActor = actorId.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const sugId = 'upd_' + safeVer + '_' + safeActor;
+        const statusText = decision === 'agree' ? '✅ सहमत छु' : '⚠️ असहमत / सुझाव छ';
+        const msgText = '[एप अपडेट v' + version + ' · ' + statusText + ']' +
+          (note ? (' सुझाव: ' + note) : ' (अपडेट विवरण हेरेर मञ्जुरी दिइयो)');
+        const cleanAgreeOnly = decision === 'agree' && !note;
+
+        state.complaints = Array.isArray(state.complaints) ? state.complaints : [];
+        const existingIdx = state.complaints.findIndex((c) => c && c.id === sugId);
+        const prevItem = existingIdx >= 0 ? state.complaints[existingIdx] : null;
+        const item = Object.assign({}, prevItem || {}, {
+          id: sugId,
+          memberId: user.memberId || actorId,
+          memberName: user.name || 'सदस्य',
+          text: msgText,
+          kind: 'suggestion',
+          source: 'app_update',
+          updateVersion: version,
+          updateDecision: decision,
+          time: now,
+          read: cleanAgreeOnly,
+          replies: (prevItem && Array.isArray(prevItem.replies)) ? prevItem.replies : [],
+          auto: false,
+          resolved: cleanAgreeOnly
+        });
+        if (cleanAgreeOnly) {
+          item.resolvedAt = now;
+          item.resolvedBy = 'सदस्य मञ्जुरी';
+        } else {
+          delete item.resolvedAt;
+          delete item.resolvedBy;
+        }
+        if (existingIdx >= 0) state.complaints[existingIdx] = item;
+        else state.complaints.push(item);
+
+        nextVer = (cur.version || 0) + 1;
+        await env.DB
+          .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+          .bind(nextVer, JSON.stringify(stripSecretsFromState(state)), now)
+          .run();
+        stateUpdated = true;
+
+        if (decision === 'disagree' || note) {
+          const senderName = user.name || 'सदस्य';
+          await sendPushToUserKey(env, 'admin', {
+            title: decision === 'disagree' ? ('⚠️ अपडेट v' + version + ' — सदस्य असहमत') : ('💡 अपडेट v' + version + ' सुझाव'),
+            body: senderName + ': ' + (note || statusText).slice(0, 95),
+            tag: 'app-upd-' + sugId
+          });
+        }
+      }
+
+      const canViewUpdateSummary = user.role === 'admin' || user.role === 'treasurer' || user.role === 'admin_ro';
+      return json({
+        ok: true,
+        ack: record,
+        appUpdateAck: getUserAppUpdateAck(allAcks, user),
+        version: nextVer,
+        ...(canViewUpdateSummary ? { appUpdateAcks: allAcks } : {}),
+        ...(stateUpdated ? { data: sanitizeStateForRole(state, user, pinFlags, termsAcceptances) } : {})
+      });
+    }
+
     // 12. Member Feedback / Complaints / Suggestions / PIN Requests (appends safely without Admin write lock)
     if (path === '/feedback' && method === 'POST') {
       const body = await request.json();
@@ -2142,11 +2303,18 @@ export async function onRequest(context) {
     }
 
     if (path === '/push/unsubscribe' && method === 'POST') {
-      const { endpoint } = await request.json().catch(() => ({}));
-      if (endpoint) {
-        await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(endpoint).run();
+      const body = await request.json().catch(() => ({}));
+      const list = [];
+      if (body && body.endpoint) list.push(String(body.endpoint));
+      if (body && Array.isArray(body.endpoints)) {
+        for (const ep of body.endpoints) {
+          if (ep && !list.includes(String(ep))) list.push(String(ep));
+        }
       }
-      return json({ ok: true });
+      for (const ep of list) {
+        await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(ep).run();
+      }
+      return json({ ok: true, removed: list.length });
     }
 
     if (path === '/push/test' && method === 'POST') {

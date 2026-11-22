@@ -39,6 +39,18 @@ const Auth = {
     localStorage.removeItem('gs_last_activity');
     localStorage.removeItem('gs_locked');
     localStorage.removeItem(this.PIN_VERIFIER_KEY);
+    if (typeof DB !== 'undefined' && DB._appUpdateAcks) DB._appUpdateAcks = {};
+    try {
+      if (typeof navigator !== 'undefined' && navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === 'function') {
+        navigator.serviceWorker.getRegistrations().then((regs) => {
+          (regs || []).forEach((r) => {
+            if (r && r.pushManager) {
+              r.pushManager.getSubscription().then((sub) => { if (sub) sub.unsubscribe().catch(() => {}); }).catch(() => {});
+            }
+          });
+        }).catch(() => {});
+      }
+    } catch (e) {}
   },
 
   restoreSession() {
@@ -164,7 +176,7 @@ const Auth = {
       if (!res.ok || !res.body || !res.body.ok) {
         return { ok: false, msg: (res.body && res.body.error) || 'लगइन मिलेन' };
       }
-      const { token, user, pinVerifier, version, data, chat, readState, termsAcceptance } = res.body;
+      const { token, user, pinVerifier, version, data, chat, readState, termsAcceptance, appUpdateAck, appUpdateAcks } = res.body;
       DB.setToken(token);
       this.currentUser = user;
       this.setPinVerifier(pinVerifier || '');
@@ -174,6 +186,12 @@ const Auth = {
       }
       if (termsAcceptance && typeof DB.applyUserTermsAcceptance === 'function') {
         DB.applyUserTermsAcceptance(termsAcceptance, user);
+      }
+      if (appUpdateAck && typeof DB.applyUserAppUpdateAck === 'function') {
+        DB.applyUserAppUpdateAck(appUpdateAck, user);
+      }
+      if (appUpdateAcks && typeof DB.applyAppUpdateSummary === 'function') {
+        DB.applyAppUpdateSummary(appUpdateAcks);
       }
       DB._applyServerPayload(data, chat, version);
       return { ok: true };

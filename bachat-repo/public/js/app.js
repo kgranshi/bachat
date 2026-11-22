@@ -4,6 +4,68 @@
 
 let APP_DATA = null;
 
+// ========== APP VERSION & USER-FACING CHANGELOG (नेपाली भाषा · हिसाब र सुविधा मात्र) ==========
+const APP_VERSION = '1.0.0';
+const APP_UPDATE_LOG = [
+  {
+    version: '1.0.0',
+    dateBS: '२०८३ पहिलो आधिकारिक संस्करण',
+    title: 'पूर्ण हिसाब, सुरक्षा र सदस्य पारदर्शिता सुरुवात',
+    highlights: [
+      'मासिक बचत, ब्याज, सावाँ, जरिवाना, बाँकी र अग्रिम रकमको शुद्ध हिसाब तथा स्वचालित डिजिटल रसिद (बिल) व्यवस्था।',
+      'कोषाध्यक्षबाट मात्र हिसाब लेखिने नियम तथा इन्टरनेट नहुँदा पनि सुरक्षित अफलाइन हिसाब र नेट आएपछि स्वतः सर्भरमा सिंक।',
+      'सदस्यका लागि प्रत्यक्ष पासबुक, ऋण लिँदा डिजिटल सहि, नियम–सर्त सहमति र अर्को बैठकअगावै हिसाब गुनासो/सुझाव पठाउने सुविधा।',
+      'प्रत्येक महिनाको दोस्रो शुक्रबार साँझ बैठक रिमाइन्डर तथा एप बन्द हुँदा पनि मोबाइलमा पुश सूचना (लगआउट हुँदा सूचना स्वतः बन्द)।',
+      '१५ मिनेट नचलाएमा भित्रका सबै हिसाब छोपेर पूर्ण गोप्य लक स्क्रिन तथा नयाँ अपडेट आएपछि सहजै जानकारी र मञ्जुरी लिने व्यवस्था।'
+    ]
+  }
+];
+
+function getLatestAppUpdateEntry() {
+  return APP_UPDATE_LOG[0] || { version: APP_VERSION, dateBS: '', title: 'नयाँ अपडेट', highlights: [] };
+}
+
+function hasAnsweredCurrentAppUpdate() {
+  const u = (typeof Auth !== 'undefined' && Auth.currentUser) || null;
+  if (!u || typeof DB === 'undefined' || typeof DB.getUserAppUpdateAck !== 'function') {
+    return { answered: true, ack: null, version: APP_VERSION };
+  }
+  const ack = DB.getUserAppUpdateAck(u);
+  return {
+    answered: !!(ack && ack.version === APP_VERSION),
+    ack: ack || null,
+    version: APP_VERSION
+  };
+}
+
+function getAppUpdateAckCompliance(data) {
+  const summary = (typeof DB !== 'undefined' && typeof DB.getAppUpdateSummary === 'function') ? DB.getAppUpdateSummary() : {};
+  const active = (data && Array.isArray(data.members) ? data.members : []).filter((m) => m && m.active !== false);
+  let agreed = 0;
+  let disagreed = 0;
+  const rows = active.map((m) => {
+    const rec = summary['mem:' + String(m.id)] || null;
+    const isCur = rec && rec.version === APP_VERSION;
+    const status = isCur ? rec.decision : 'pending';
+    if (status === 'agree') agreed++;
+    else if (status === 'disagree') disagreed++;
+    return {
+      member: m,
+      status,
+      note: isCur ? (rec.note || '') : '',
+      answeredAt: isCur ? (rec.answeredAt || '') : ''
+    };
+  });
+  return {
+    version: APP_VERSION,
+    total: active.length,
+    agreed,
+    disagreed,
+    pending: Math.max(0, active.length - agreed - disagreed),
+    rows
+  };
+}
+
 // ========== INIT ==========
 document.addEventListener('DOMContentLoaded', () => {
   try { applyAppTheme(DB.load()); } catch (e) {}
@@ -76,6 +138,7 @@ async function initApp() {
 }
 
 function showLoginScreen() {
+  try { hideLockScreen(); } catch (e) {}
   try { applyAppTheme(DB.load()); } catch (e) {}
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById('login-screen').classList.add('active');
@@ -174,9 +237,10 @@ function showMainApp() {
   }
 }
 
-// ===== सदस्य अनबोर्डिङ (१. Temp PIN परिवर्तन → २. नियम तथा सर्त सहमति/परिमार्जन → ३. Push अनुमति → ४. Skip मिल्ने गाइड) =====
+// ===== सदस्य अनबोर्डिङ (१. Temp PIN परिवर्तन → २. नियम तथा सर्त सहमति/परिमार्जन → ३. एप अपडेट जानकारी तथा सहमत/असहमत → ४. Push अनुमति → ५. Skip मिल्ने गाइड) =====
 function runMemberOnboardingGate() {
   if (!Auth.isMember || !Auth.isMember() || !Auth.currentUser) return;
+  if (Auth.isLocked && Auth.isLocked()) return;
   const mid = Auth.currentUser.memberId || 'm';
   // १. अस्थायी PIN अनिवार्य परिवर्तन
   if (Auth.currentUser.mustChangePin) {
@@ -189,7 +253,13 @@ function runMemberOnboardingGate() {
     openTermsModal({ gate: true, isUpdated: termsStatus.isUpdated });
     return;
   }
-  // ३. पुश नोटिफिकेसन अनुमति गेट
+  // ३. एप अपडेट जानकारी (हिसाब तथा सुविधा परिवर्तन) + सहमत / असहमत अनिवार्य टिक
+  const updStatus = hasAnsweredCurrentAppUpdate();
+  if (!updStatus.answered) {
+    openAppUpdateNoticeModal({ gate: true });
+    return;
+  }
+  // ४. पुश नोटिफिकेसन अनुमति गेट
   const pushAckKey = 'gs_push_gate_done_' + mid;
   const perm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
   if (perm === 'granted') {
@@ -199,7 +269,7 @@ function runMemberOnboardingGate() {
     showPushPermissionGateModal();
     return;
   }
-  // ४. पहिलो पटक सदस्य एप गाइड (Skip गर्न मिल्ने)
+  // ५. पहिलो पटक सदस्य एप गाइड (Skip गर्न मिल्ने)
   const tourKey = 'gs_member_tour_done_' + mid;
   if (!localStorage.getItem(tourKey)) {
     showMemberGuideTour(0, false);
@@ -782,12 +852,38 @@ function memberFeedbackUnread(memberId, data) {
   } catch (e) { return 0; }
 }
 
+function getEffectiveAppOwner(data) {
+  const saved = (data && data.settings && data.settings.appOwner) || {};
+  const fallback = {
+    name: 'गोपाल प्रसाद कोइराला',
+    title: 'समूह बचत एप निर्माता तथा प्रविधि सहयोगी',
+    mobile: '',
+    email: 'koiralagopalpd@gmail.com',
+    website: 'https://bachat.gopalkoirala.com.np',
+    facebook: '',
+    whatsapp: '',
+    address: '',
+    note: 'गाउँले साझा बचत समूहको हिसाब पारदर्शी, सुरक्षित र सहज बनाउन तयार गरिएको डिजिटल प्रणाली।',
+    photo: './owner-photo.jpg'
+  };
+  const hasCustomIdentity = !!(saved.name || saved.mobile || saved.email || saved.website);
+  return {
+    name: saved.name || fallback.name,
+    title: saved.title || (hasCustomIdentity ? '' : fallback.title),
+    mobile: saved.mobile || '',
+    email: saved.email || (hasCustomIdentity ? '' : fallback.email),
+    website: saved.website || (hasCustomIdentity ? '' : fallback.website),
+    facebook: saved.facebook || '',
+    whatsapp: saved.whatsapp || '',
+    address: saved.address || '',
+    note: saved.note || (hasCustomIdentity ? '' : fallback.note),
+    photo: saved.photo || fallback.photo
+  };
+}
+
 function appOwnerCardHtml(data) {
-  const o = (data.settings && data.settings.appOwner) || {};
+  const o = getEffectiveAppOwner(data);
   const photo = o.photo || './owner-photo.jpg';
-  if (!o.name && !o.mobile && !o.email && !o.website) {
-    return '<div class="ao-card ao-empty">एप परिचय विवरण सेट गरिएको छैन</div>';
-  }
   function esc(s) { return String(s || '').replace(/</g, ''); }
   function row(label, val, href) {
     if (!val) return '';
@@ -810,7 +906,7 @@ function appOwnerCardHtml(data) {
         '<div class="ao-top">' +
           '<img class="ao-photo" src="' + photo + '" alt="" width="64" height="64" onerror="this.style.display=\'none\'"/>' +
           '<div class="ao-id">' +
-            '<div class="ao-label">एप परिचय · About Us</div>' +
+            '<div class="ao-label">एप परिचय · About Us (v' + APP_VERSION + ')</div>' +
             '<div class="ao-name">' + esc(o.name || '—') + '</div>' +
             (o.title ? '<div class="ao-title">' + esc(o.title) + '</div>' : '') +
           '</div>' +
@@ -1401,9 +1497,16 @@ function _doStartNewMonth() {
     yearBS = last.yearBS;
     if (monthIndex === 0) yearBS++;
   } else {
-    const now = new Date();
-    yearBS = now.getFullYear() + 57;
-    monthIndex = 0;
+    const nepal = getNepalNow();
+    const bs = adToBsParts(nepal);
+    if (bs) {
+      monthIndex = (bs.monthIndex + 9) % 12;
+      yearBS = bs.monthIndex >= 3 ? bs.year : (bs.year - 1);
+    } else {
+      const now = new Date();
+      yearBS = now.getFullYear() + 57;
+      monthIndex = 0;
+    }
   }
 
   const month = Accounting.createMonth(data, monthIndex, yearBS);
@@ -1854,7 +1957,7 @@ function buildLoanMemberDeclarationParagraphs(ctx) {
 
   return `
     <p>म <strong>${gName}</strong> को सदस्य <strong>${mName}</strong>, आज मिति <strong>${dStr}</strong> मा यो ऋण स्वीकारोक्ति पत्रमा हस्ताक्षर गर्दछु कि आजभन्दा पहिले मैले समूहमा तिर्न बाँकी रहेको ऋणको सावाँ <strong>रु. ${prevStr}</strong> थियो। आज घर–परिवारको सल्लाह र सहमतिमा मैले समूहबाट थप <strong>रु. ${amtStr}</strong> ऋण लिएको छु। यसअनुसार आजबाट मैले समूहलाई तिर्नुपर्ने जम्मा ऋणको सावाँ <strong>रु. ${totStr}</strong> कायम भएको छ।</p>
-    <p>उक्त ऋणको ब्याज समूहले पारित गरेको मासिक <strong>${rateStr}%</strong> ब्याजदरका आधारमा प्रत्येक महिना अनिवार्य रूपमा बुझाउने छु र सावाँ रकम समूहको नियम तथा विधानभित्र रही नियमित किस्ताबन्दीमा तिर्दै जानेछु। यो ऋण मैले लिएको होइन भनी कुनै पनि किसिमको झूठो दाबी गर्ने छैन। यदि समयमा सावाँ तथा ब्याज नतिरेमा समूहको निर्णय र प्रचलित नेपाल कानुनअनुसार हुने सजाय तथा कारबाही भोग्न मञ्जुर भई राजीखुसीले यो डिजिटल सहि–छाप गरेको छु।</p>
+    <p>उक्त ऋणको ब्याज समूहले पारित गरेको मासिक <strong>${rateStr}%</strong> ब्याजदरका आधारमा प्रत्येक महिना अनिवार्य रूपमा बुझाउने छु र सावाँ रकम समूहको नियम तथा विधानभित्र रही नियमित किस्ताबन्दीमा तिर्दै जानेछु। यो ऋण मैले लिएको होइन भनी कुनै पनि किसिमको झूठो दाबी गर्ने छैन। यदि समयमा सावाँ तथा ब्याज नतिरेमा समूहको विधान, सामूहिक बैठकको निर्णय तथा प्रचलित व्यवस्था अनुसारको दायित्व पूरा गर्न मञ्जुर भई राजीखुसीले यो डिजिटल सहि–छाप गरेको छु।</p>
     ${noteHtml}
   `;
 }
@@ -3042,19 +3145,25 @@ function showMemberInviteModal(memberId, pin, isTemp) {
   const member = data.members.find(m => m.id === memberId);
   if (!member) return;
   const gName = (data.group && data.group.name) || 'समूह बचत';
-  const appUrl = (typeof location !== 'undefined' && location.origin) ? (location.origin + '/') : '';
+  const curHost = (typeof location !== 'undefined' && location.hostname) || '';
+  const appUrl = (typeof location !== 'undefined' && location.origin && curHost && curHost !== 'localhost' && !curHost.includes('127.0.0.1') && !curHost.endsWith('.run.app'))
+    ? (location.origin + '/')
+    : 'https://bachat.gopalkoirala.com.np/';
   const msg =
     `🙏 नमस्कार ${member.name} ज्यू,\n` +
     `तपाईंको मोबाइल नम्बर (${member.mobile}) '${gName}' डिजिटल बचत एपमा दर्ता भएको छ।\n\n` +
     `🔑 लगइन विवरण:\n` +
-    `• लिन्क: ${appUrl}\n` +
+    `• एप लिन्क: ${appUrl}\n` +
     `• मोबाइल (Username): ${member.mobile}\n` +
     `• ${isTemp ? 'अस्थायी (Temp) PIN' : 'PIN'}: ${pin}\n\n` +
-    `📲 पहिलो पटक चलाउने तरिका:\n` +
-    `१) माथिको लिन्क Chrome (iPhone भए Safari) मा खोलेर मोबाइल र ${isTemp ? 'Temp PIN' : 'PIN'} हाली Login गर्नुहोस्।\n` +
+    `📲 सुरु गर्ने सरल तरिका:\n` +
+    `१) माथिको लिन्क Chrome (iPhone भए Safari) मा खोलेर मोबाइल नम्बर र ${isTemp ? 'Temp PIN' : 'PIN'} हाली Login गर्नुहोस्।\n` +
     (isTemp ? `२) भित्र पस्नासाथ पहिले आफ्नो सम्झिने नयाॅ ४ अंकको गोप्य PIN अनिवार्य सेट गर्नुहोस्।\n` : `२) सेटिङबाट चाहेको बेला PIN फेर्न सक्नुहुन्छ।\n`) +
-    `३) त्यसपछि आउने सूचना (Notification) अनिवार्य 'Allow' गर्नुहोस् — बैठक र बचत घण्टी मोबाइलमा बज्छ।\n` +
-    `४) एप सेभ गर्न: Chrome को माथि ⋮ थिची 'Add to Home screen / Install' गर्नुहोस् (वा ★ Bookmark गर्नुहोस्) ताकि अर्को पटक सिधै खोल्न सकियोस्।\n\n` +
+    `३) समूहको नियम, सर्त र सहमति (User Agreement) तथा एप जानकारी पढी टिक लगाएर पुष्टि (Confirm) गर्नुहोस्।\n` +
+    `४) बैठक रिमाइन्डर र रसिद सूचनाका लागि Notification अनिवार्य 'Allow' गर्नुहोस्।\n` +
+    `५) एप सेभ गर्न: Chrome को माथि ⋮ थिची 'Add to Home screen / Install' गर्नुहोस् (iPhone भए Share → Add to Home Screen)।\n\n` +
+    `📒 पारदर्शिता नियम:\n` +
+    `महिना बन्द भएपछि एपमै आफ्नो पासबुक र डिजिटल रसिद जाँच्नुहोला; हिसाबमा फरक लागे अर्को बैठक अगावै सेटिङ → सुझाव तथा गुनासोबाट पठाउनुहोला।\n\n` +
     `धन्यवाद — ${gName}`;
 
   const waNum = formatWhatsAppPhone(member.mobile);
@@ -3526,6 +3635,7 @@ function buildPassbookTwoBoxHtml(data, member, options = {}) {
 }
 
 function renderPassbookContent(memberId) {
+  window._openPassbookMemberId = memberId;
   const data = DB.load();
   const member = (data.members || []).find(m => m.id === memberId);
   if (!member) return UI.toast('सदस्य भेटिएन', 'error');
@@ -3985,17 +4095,21 @@ function showComplaints() {
   } else {
     sorted.forEach(c => {
       const m = (data.members || []).find(x => x && x.id === c.memberId);
+      const isUpd = c.source === 'app_update';
+      const updBadge = isUpd
+        ? `<span style="font-size:0.7rem;font-weight:700;padding:2px 6px;border-radius:6px;background:${c.updateDecision === 'disagree' ? '#fff3cd' : '#e7f1ff'};color:${c.updateDecision === 'disagree' ? '#664d03' : '#084298'}">🆕 अपडेट v${escapeHtmlChat(c.updateVersion || '')}</span>`
+        : '';
       const pill = c.resolved
-        ? '<span class="complaint-pill-resolved">✅ समाधान भयो</span>'
-        : '<span class="complaint-pill-open">⏳ समाधान बाँकी</span>';
+        ? `<span class="complaint-pill-resolved">${isUpd && c.updateDecision === 'agree' ? '✅ सहमत / समाधान' : '✅ समाधान भयो'}</span>`
+        : `<span class="complaint-pill-open">${isUpd && c.updateDecision === 'disagree' ? '⚠️ असहमत / सुझाव' : '⏳ समाधान बाँकी'}</span>`;
       const repCount = (c.replies || []).length;
       html += `<div class="section-card" style="cursor:pointer;${!c.resolved ? 'border:1.5px solid #fd7e14;background:#fffbf5' : ''}" onclick="openComplaintDetail('${c.id}')">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
-          <div class="fw-bold">${escapeHtmlChat(m ? m.name : c.memberId)}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
+          <div class="fw-bold">${escapeHtmlChat((m ? m.name : null) || c.memberName || c.memberId)} ${updBadge}</div>
           ${pill}
         </div>
         <div class="text-muted" style="font-size:0.75rem">${new Date(c.time).toLocaleString('ne-NP')}${repCount ? ' · ' + repCount + ' जवाफ' : ''}</div>
-        <p class="mt-1" style="margin-bottom:0">${escapeHtmlChat((c.text || '').substring(0, 80))}${(c.text || '').length > 80 ? '...' : ''}</p>
+        <p class="mt-1" style="margin-bottom:0">${escapeHtmlChat((c.text || '').substring(0, 95))}${(c.text || '').length > 95 ? '...' : ''}</p>
       </div>`;
     });
   }
@@ -4186,8 +4300,8 @@ function getDefaultTermsClauses(groupName, domain) {
   return [
     {
       id: 'tc1',
-      title: '१. परिचय तथा कार्यक्षेत्र',
-      detail: `यो वेब/मोबाइल एप ("${gName}" · ${dom}) समूहका सदस्यहरूबीच आन्तरिक मासिक बचत, ऋण, ब्याज र कोस हिसाब पारदर्शी रूपमा व्यवस्थापन गर्न सञ्चालन गरिएको निजी सामुदायिक प्रणाली हो। यो कुनै सार्वजनिक बैंक वा बाह्य वित्तीय संस्था होइन।`
+      title: '१. परिचय, अनौपचारिक समूह स्वरूप र कार्यक्षेत्र',
+      detail: `यो वेब/मोबाइल एप ("${gName}" · ${dom}) गाउँ/टोलका सदस्यहरूको आपसी विश्वास, पारदर्शिता र सामूहिक सहमतिमा आधारित अनौपचारिक आन्तरिक साझा बचत समूह व्यवस्थापन प्रणाली हो। यो दर्ता भएको वा सार्वजनिक बैंक/सहकारी वित्तीय संस्था होइन। सबै सदस्यहरूले कागजी खाताको सट्टा यस एपमा देखिने हिसाब, रसिद र डिजिटल मञ्जुरीलाई समूहको आधिकारिक अभिलेख मान्ने सहमति जनाउँछन्।`
     },
     {
       id: 'tc2',
@@ -4649,12 +4763,196 @@ async function saveEditedTerms() {
   openTermsModal();
 }
 
+// ========== APP UPDATE CHANGELOG POPUP & SETTINGS LOG ==========
+function openAppUpdateNoticeModal(opts = {}) {
+  const isGate = !!opts.gate;
+  const entry = opts.entry || getLatestAppUpdateEntry();
+  const status = hasAnsweredCurrentAppUpdate();
+  const prevDec = (status.ack && status.ack.version === entry.version) ? status.ack.decision : '';
+  const prevNote = (status.ack && status.ack.version === entry.version) ? (status.ack.note || '') : '';
+
+  const bulletsHtml = (entry.highlights || [])
+    .map((h) => `<li>${escapeHtmlChat(h)}</li>`)
+    .join('');
+
+  const html = `
+    <div class="upd-banner">
+      <strong>🆕 एप अपडेट जानकारी (संस्करण v${escapeHtmlChat(entry.version)}):</strong>
+      ${entry.dateBS ? `<span> · ${escapeHtmlChat(entry.dateBS)}</span>` : ''}<br>
+      <div style="margin-top:3px">हिसाब किताब र एप प्रयोगसम्बन्धी भएका मुख्य सुधार/सुविधाहरू तल दिइएका छन्। कृपया पढेर आफ्नो सहमति वा सुझाव दिनुहोस्:</div>
+    </div>
+    <div class="section-card" style="padding:10px 12px;margin-bottom:10px">
+      <div class="fw-bold" style="margin-bottom:6px;font-size:0.9rem">📌 ${escapeHtmlChat(entry.title || 'प्रमुख विशेषताहरू')}</div>
+      <ul class="upd-highlights">${bulletsHtml}</ul>
+    </div>
+    <div style="font-size:0.83rem;font-weight:700;margin-bottom:4px">तपाईंको मञ्जुरी (अनिवार्य टिक लगाउनुहोस्):</div>
+    <div class="upd-choice-grid" id="upd-choice-grid">
+      <label class="upd-choice-card agree ${prevDec === 'agree' ? 'selected' : ''}" onclick="_selectAppUpdateChoice('agree')">
+        <input type="radio" name="upd-decision" value="agree" ${prevDec === 'agree' ? 'checked' : ''}>
+        <div><strong>✅ सहमत छु</strong><br><span class="text-muted" style="font-size:0.76rem">यी हिसाब नियम र सुविधाहरू मलाई पूर्ण रूपमा मञ्जुर छन्।</span></div>
+      </label>
+      <label class="upd-choice-card disagree ${prevDec === 'disagree' ? 'selected' : ''}" onclick="_selectAppUpdateChoice('disagree')">
+        <input type="radio" name="upd-decision" value="disagree" ${prevDec === 'disagree' ? 'checked' : ''}>
+        <div><strong>⚠️ असहमत छु / सुझाव छ</strong><br><span class="text-muted" style="font-size:0.76rem">मलाई यसमा केही प्रश्न, असहमति वा सुझाव छ (तल लेख्नुहोस्)।</span></div>
+      </label>
+    </div>
+    <div class="form-group mt-2">
+      <label>सुझाव वा टिप्पणी <span class="text-muted" style="font-weight:400">(असहमत भएमा अनिवार्य · Admin ले देख्नुहुनेछ)</span></label>
+      <textarea id="upd-ack-note" rows="3" placeholder="तपाईंको विचार वा सुझाव भए यहाँ लेख्नुहोस्...">${escapeHtmlChat(prevNote)}</textarea>
+    </div>
+    <button type="button" id="upd-ack-submit-btn" class="btn btn-primary btn-block" onclick="submitAppUpdateResponse('${escapeHtmlChat(entry.version)}', ${isGate ? 'true' : 'false'})">📤 पुष्टि गरी Admin मा पठाउनुहोस्</button>
+    <button type="button" class="btn btn-outline btn-sm btn-block mt-1" onclick="openAppUpdateLogModal({ fromNotice: true, gate: ${isGate ? 'true' : 'false'} })">📜 पूरा एप अपडेट लग हेर्नुहोस्</button>
+  `;
+
+  window._pendingAppUpdateGateOpen = isGate;
+  UI.showModal(
+    '🆕 एप अपडेट · v' + entry.version,
+    html,
+    isGate ? '' : '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>',
+    isGate ? { root: true, noClose: true } : { replace: !!opts.replace }
+  );
+}
+
+function _selectAppUpdateChoice(val) {
+  const cards = document.querySelectorAll('#upd-choice-grid .upd-choice-card');
+  cards.forEach((c) => {
+    c.classList.remove('selected');
+    const inp = c.querySelector('input[type="radio"]');
+    if (inp && inp.value === val) {
+      inp.checked = true;
+      c.classList.add('selected');
+    }
+  });
+}
+
+async function submitAppUpdateResponse(version, isGate) {
+  const checked = document.querySelector('input[name="upd-decision"]:checked');
+  if (!checked) {
+    return UI.toast('कृपया पहिले "सहमत छु" वा "असहमत / सुझाव छ" मा टिक लगाउनुहोस्', 'error');
+  }
+  const decision = checked.value === 'disagree' ? 'disagree' : 'agree';
+  const noteEl = document.getElementById('upd-ack-note');
+  const note = ((noteEl && noteEl.value) || '').trim();
+  if (decision === 'disagree' && !note) {
+    if (noteEl) noteEl.focus();
+    return UI.toast('असहमत वा सुझाव छ भने कृपया तल कारण/सुझाव लेख्नुहोस्', 'error');
+  }
+  const btn = document.getElementById('upd-ack-submit-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ पठाउँदैछ...'; }
+  try {
+    const res = await DB.submitAppUpdateAck({ version, decision, note });
+    if (!res || !res.ok) {
+      return UI.toast((res && res.error) || 'पठाउन सकिएन — कृपया पुनः प्रयास गर्नुहोस्', 'error');
+    }
+    APP_DATA = DB.load();
+    window._pendingAppUpdateGateOpen = false;
+    UI._noClose = false;
+    closeModal();
+    try { renderSettingsTab(); } catch (e) {}
+    UI.toast(
+      res.queued
+        ? 'तपाईंको मञ्जुरी सुरक्षित भयो (नेट आउनासाथ Admin मा जान्छ) ✅'
+        : 'तपाईंको मञ्जुरी / सुझाव सुरक्षित भई Admin मा पुग्यो ✅',
+      'success'
+    );
+    if (isGate && Auth.isMember && Auth.isMember()) {
+      setTimeout(runMemberOnboardingGate, 220);
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📤 पुष्टि गरी Admin मा पठाउनुहोस्'; }
+  }
+}
+
+function openAppUpdateLogModal(opts = {}) {
+  const data = DB.load();
+  const isAdminOrTr = Auth.isAdmin && Auth.isAdmin();
+  const myStatus = hasAnsweredCurrentAppUpdate();
+
+  const timelineHtml = APP_UPDATE_LOG.map((entry, idx) => {
+    const bullets = (entry.highlights || []).map((h) => `<li>${escapeHtmlChat(h)}</li>`).join('');
+    const isLatest = idx === 0;
+    const badge = isLatest ? `<span class="terms-ver-badge">हालको संस्करण</span>` : `<span class="text-muted" style="font-size:0.73rem">पुरानो</span>`;
+    return `
+      <div class="upd-log-card">
+        <div class="upd-log-head">
+          <div>
+            <strong>v${escapeHtmlChat(entry.version)} — ${escapeHtmlChat(entry.title)}</strong>
+            ${entry.dateBS ? `<div class="text-muted" style="font-size:0.74rem">${escapeHtmlChat(entry.dateBS)}</div>` : ''}
+          </div>
+          ${badge}
+        </div>
+        <ul class="upd-highlights">${bullets}</ul>
+      </div>
+    `;
+  }).join('');
+
+  let memberBox = '';
+  if (!isAdminOrTr) {
+    if (myStatus.answered && myStatus.ack) {
+      const agreed = myStatus.ack.decision !== 'disagree';
+      memberBox = `
+        <div style="background:${agreed ? '#d1e7dd' : '#fff3cd'};border:1px solid ${agreed ? '#badbcc' : '#ffe69c'};color:${agreed ? '#0f5132' : '#664d03'};border-radius:10px;padding:9px 12px;margin-bottom:10px;font-size:0.82rem">
+          <div>${agreed ? '✅' : '⚠️'} <strong>v${escapeHtmlChat(APP_VERSION)} मा तपाईंको प्रतिक्रिया: ${agreed ? 'सहमत छु' : 'असहमत / सुझाव पठाइएको'}</strong></div>
+          ${myStatus.ack.note ? `<div style="margin-top:3px">सुझाव: "${escapeHtmlChat(myStatus.ack.note)}"</div>` : ''}
+          <button type="button" class="btn btn-outline btn-sm mt-1" onclick="openAppUpdateNoticeModal({ replace: true, gate: false })">✏️ प्रतिक्रिया परिवर्तन / सुझाव थप्नुहोस्</button>
+        </div>
+      `;
+    } else {
+      memberBox = `
+        <button type="button" class="btn btn-primary btn-block mb-2" onclick="openAppUpdateNoticeModal({ replace: true, gate: ${opts.gate ? 'true' : 'false'} })">✅ v${escapeHtmlChat(APP_VERSION)} पढेर सहमत / असहमत टिक लगाउनुहोस्</button>
+      `;
+    }
+  }
+
+  let complianceHtml = '';
+  if (isAdminOrTr) {
+    const comp = getAppUpdateAckCompliance(data);
+    const rowsHtml = comp.rows.map((r) => {
+      const m = r.member;
+      let pill = '<span class="terms-pill-wait">⏳ हेर्न बाँकी</span>';
+      if (r.status === 'agree') pill = '<span class="terms-pill-ok">✅ सहमत</span>';
+      else if (r.status === 'disagree') pill = '<span class="complaint-pill-open">⚠️ असहमत / सुझाव</span>';
+      return `<div class="terms-status-row">
+        <div>
+          <strong>${escapeHtmlChat(m.name)}</strong>
+          ${r.note ? `<div class="text-muted" style="font-size:0.72rem">सुझाव: ${escapeHtmlChat(r.note)}</div>` : ''}
+        </div>
+        <div>${pill}</div>
+      </div>`;
+    }).join('') || '<div class="text-muted text-center" style="padding:8px">सदस्य छैनन्</div>';
+
+    complianceHtml = `
+      <details style="margin-top:8px;margin-bottom:10px;background:#fff;border:1px solid #dee2e6;border-radius:12px;padding:8px 10px" open>
+        <summary style="cursor:pointer;font-weight:700;font-size:0.84rem;color:#122;display:flex;justify-content:space-between;align-items:center">
+          <span>📋 सदस्य अपडेट मञ्जुरी (v${escapeHtmlChat(comp.version)})</span>
+          <span class="terms-pill-ok">✅ ${comp.agreed} · ⚠️ ${comp.disagreed} · ⏳ ${comp.pending}</span>
+        </summary>
+        <div style="margin-top:8px;max-height:200px;overflow-y:auto;border-top:1px solid #eef2f6">${rowsHtml}</div>
+        ${(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) ? `<button type="button" class="btn btn-warning btn-sm btn-block mt-1" onclick="showComplaints()">📢 सुझाव तथा गुनासोमा हेर्नुहोस्</button>` : ''}
+      </details>
+    `;
+  }
+
+  const backBtn = opts.fromNotice
+    ? `<button class="btn btn-outline" onclick="openAppUpdateNoticeModal({ replace: true, gate: ${opts.gate ? 'true' : 'false'} })">← मञ्जुरी फारममा फर्कनुहोस्</button>`
+    : '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>';
+
+  UI.showModal(
+    '📜 एप अपडेट लग',
+    memberBox + complianceHtml + timelineHtml,
+    backBtn,
+    opts.gate ? { replace: true, noClose: true } : { replace: !!opts.replace }
+  );
+}
+
 // ========== SETTINGS ==========
 function renderSettingsTab() {
   const container = document.getElementById('settings-content');
   const dataForTerms = DB.load();
   const termsStatus = hasAcceptedCurrentTerms(dataForTerms);
   const termsComp = getTermsComplianceSummary(dataForTerms);
+  const updStatus = hasAnsweredCurrentAppUpdate();
+  const updComp = getAppUpdateAckCompliance(dataForTerms);
 
   if (!Auth.isAdmin()) {
     const dataM = dataForTerms;
@@ -4664,6 +4962,9 @@ function renderSettingsTab() {
     const termsBadge = termsStatus.accepted
       ? `<span class="terms-pill-ok" style="margin-left:6px">✅ v${termsStatus.curVer}</span>`
       : `<span class="terms-pill-wait" style="margin-left:6px">⚠️ मञ्जुरी बाँकी</span>`;
+    const updBadge = updStatus.answered
+      ? `<span class="terms-pill-ok" style="margin-left:6px">v${APP_VERSION}</span>`
+      : `<span class="terms-pill-wait" style="margin-left:6px">🆕 v${APP_VERSION}</span>`;
     container.innerHTML = `
       <div class="section-card">
         <div class="section-title">⚙️ सेटिङ</div>
@@ -4671,6 +4972,7 @@ function renderSettingsTab() {
         <button class="btn btn-warning btn-block mb-1" onclick="openMemberFeedbackHub()">📢 सुझाव तथा गुनासो${fbBadge}</button>
         <button class="btn btn-success btn-block mb-1" onclick="enablePushFromSettings()">🔔 पुश सूचना (Notification)</button>
         <button class="btn btn-outline btn-block mb-1" onclick="openTermsModal()">📜 नियम, सर्त र गोपनीयता ${termsBadge}</button>
+        <button class="btn btn-outline btn-block mb-1" onclick="openAppUpdateLogModal()">🆕 एप अपडेट लग ${updBadge}</button>
         <button class="btn btn-outline btn-block mb-1" onclick="showMemberGuideTour(0, true)">❓ एप चलाउने गाइड</button>
         <button class="btn btn-danger btn-block mb-2" onclick="doLogout()">🚪 लगआउट</button>
       </div>
@@ -4710,7 +5012,7 @@ function renderSettingsTab() {
           </li>
           <li class="settings-item" onclick="openTreasurerMoreSettings()">
             <div class="settings-icon" style="background:#e7f1ff">⚙️</div>
-            <div class="settings-text"><div class="title">थप सेटिङ (More Settings)</div><div class="desc">क्लाउड सिंक · हिसाब मिलान अडिट · नियम तथा सर्त</div></div>
+            <div class="settings-text"><div class="title">थप सेटिङ (More Settings)</div><div class="desc">क्लाउड सिंक · हिसाब मिलान अडिट · नियम तथा सर्त · अपडेट लग</div></div>
             <div class="settings-arrow">›</div>
           </li>
           <li class="settings-item" onclick="doLogout()">
@@ -4720,6 +5022,7 @@ function renderSettingsTab() {
           </li>
         </ul>
       </div>
+      ${appOwnerCardHtml(data)}
     `;
     return;
   }
@@ -4746,6 +5049,11 @@ function renderSettingsTab() {
         <li class="settings-item" onclick="openSystemHealthReport()">
           <div class="settings-icon" style="background:#d1e7dd">🛠️</div>
           <div class="settings-text"><div class="title">प्रणाली स्वास्थ्य, भण्डारण र गतिविधि</div><div class="desc">Cloudflare सीमा, D1/R2 भण्डारण, त्रुटि समाधान र गतिविधि</div></div>
+          <div class="settings-arrow">›</div>
+        </li>
+        <li class="settings-item" onclick="openAppUpdateLogModal()">
+          <div class="settings-icon" style="background:#e7f1ff">🆕</div>
+          <div class="settings-text"><div class="title">एप अपडेट लग र सदस्य मञ्जुरी (v${APP_VERSION})</div><div class="desc">सहमत: ${updComp.agreed} · असहमत/सुझाव: ${updComp.disagreed} · बाँकी: ${updComp.pending}</div></div>
           <div class="settings-arrow">›</div>
         </li>
         <li class="settings-item" onclick="openTermsModal()">
@@ -4816,12 +5124,14 @@ function renderSettingsTab() {
       </ul>
     </div>
     <input type="file" id="import-file" accept=".json" class="hidden" onchange="doImport(event)">
+    ${appOwnerCardHtml(data)}
   `;
 }
 
 function openTreasurerMoreSettings() {
   const data = DB.load();
   const termsComp = getTermsComplianceSummary(data);
+  const updComp = getAppUpdateAckCompliance(data);
   const html = `
     <ul class="settings-list">
       <li class="settings-item" onclick="showCloudSetup()">
@@ -4832,6 +5142,11 @@ function openTreasurerMoreSettings() {
       <li class="settings-item" onclick="runAccountingAuditCheck()">
         <div class="settings-icon" style="background:#d1e7dd">🧮</div>
         <div class="settings-text"><div class="title">हिसाब मिलान अडिट</div><div class="desc">सम्पत्ति, नगद, ऋण र सदस्य हिसाब क्रस-चेक</div></div>
+        <div class="settings-arrow">›</div>
+      </li>
+      <li class="settings-item" onclick="openAppUpdateLogModal()">
+        <div class="settings-icon" style="background:#e7f1ff">🆕</div>
+        <div class="settings-text"><div class="title">एप अपडेट लग (v${APP_VERSION})</div><div class="desc">सहमत: ${updComp.agreed} · असहमत/सुझाव: ${updComp.disagreed} · बाँकी: ${updComp.pending}</div></div>
         <div class="settings-arrow">›</div>
       </li>
       <li class="settings-item" onclick="openTermsModal()">
@@ -6116,13 +6431,33 @@ async function confirmLogoutWithPin() {
 async function clearPushOnLogout() {
   try {
     if (!navigator.serviceWorker) return;
-    const reg = await navigator.serviceWorker.getRegistration('./');
-    const sub = reg && await reg.pushManager.getSubscription();
-    if (sub) {
-      await DB.apiFetch('/push/unsubscribe', {
-        method: 'POST',
-        body: JSON.stringify({ endpoint: sub.endpoint })
-      });
+    const regs = await Promise.race([
+      (typeof navigator.serviceWorker.getRegistrations === 'function'
+        ? navigator.serviceWorker.getRegistrations()
+        : navigator.serviceWorker.getRegistration('./').then((r) => (r ? [r] : []))),
+      new Promise((r) => setTimeout(() => r([]), 1500))
+    ]);
+    const endpoints = [];
+    const subs = [];
+    for (const reg of (regs || [])) {
+      if (!reg || !reg.pushManager) continue;
+      const sub = await reg.pushManager.getSubscription().catch(() => null);
+      if (sub && sub.endpoint) {
+        endpoints.push(sub.endpoint);
+        subs.push(sub);
+      }
+    }
+    if (endpoints.length > 0 && typeof DB.getToken === 'function' && DB.getToken()) {
+      await Promise.race([
+        DB.apiFetch('/push/unsubscribe', {
+          method: 'POST',
+          body: JSON.stringify({ endpoint: endpoints[0], endpoints })
+        }).catch(() => {}),
+        new Promise((r) => setTimeout(r, 1500))
+      ]);
+    }
+    for (const sub of subs) {
+      await sub.unsubscribe().catch(() => {});
     }
   } catch (e) {}
 }
@@ -6134,20 +6469,25 @@ function lockAppSession() {
 }
 
 function showLockScreen() {
+  try {
+    document.body.classList.add('app-locked');
+  } catch (e) {}
+  const data = typeof DB !== 'undefined' && DB.load ? DB.load() : {};
+  const gName = escapeHtmlChat((data && data.group && data.group.name) || 'समूह बचत');
   let el = document.getElementById('session-lock-overlay');
   if (!el) {
     el = document.createElement('div');
     el.id = 'session-lock-overlay';
     el.innerHTML = `
-      <div style="background:#fff;border-radius:16px;padding:24px 20px;max-width:320px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.2)">
-        <div style="font-size:2rem;margin-bottom:8px">🔒</div>
-        <div style="font-weight:700;margin-bottom:4px">एप लक भयो</div>
-        <p style="font-size:0.85rem;color:#666;margin-bottom:12px">१५ मिनेट नचलाएको / सुरक्षार्थ। लगइन मै छ — PIN हालेर खोल्नुहोस्।</p>
+      <div style="background:#fff;border-radius:18px;padding:26px 20px;max-width:330px;width:92%;text-align:center;box-shadow:0 14px 40px rgba(0,0,0,.35)">
+        <div style="font-size:2.2rem;margin-bottom:6px">🔒</div>
+        <div id="lock-group-name" style="font-size:0.8rem;font-weight:700;color:#0d6efd;margin-bottom:2px">${gName}</div>
+        <div style="font-weight:700;font-size:1.05rem;margin-bottom:4px;color:#0f172a">एप सुरक्षित लक भयो</div>
+        <p style="font-size:0.82rem;color:#475569;margin-bottom:14px;line-height:1.45">गोपनीयताका लागि भित्रको हिसाब छोपिएको छ। लगइन मै छ — खोल्न आफ्नो ४ अंकको PIN हाल्नुहोस्।</p>
         <input type="text" id="lock-pin-input" class="masked-secret" inputmode="numeric" maxlength="4" placeholder="PIN (४ अंक)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"
           style="width:100%;padding:12px;font-size:1.2rem;text-align:center;border:2px solid #0d6efd;border-radius:10px;letter-spacing:8px">
         <button type="button" class="btn btn-primary btn-block" style="margin-top:12px" onclick="unlockAppSession()">🔓 खोल्नुहोस्</button>
       </div>`;
-    el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
     document.body.appendChild(el);
     const inp = document.getElementById('lock-pin-input');
     if (inp) {
@@ -6155,6 +6495,8 @@ function showLockScreen() {
       setTimeout(() => inp.focus(), 200);
     }
   } else {
+    const gEl = document.getElementById('lock-group-name');
+    if (gEl) gEl.innerHTML = gName;
     el.style.display = 'flex';
     const inp = document.getElementById('lock-pin-input');
     if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 200); }
@@ -6162,6 +6504,9 @@ function showLockScreen() {
 }
 
 function hideLockScreen() {
+  try {
+    document.body.classList.remove('app-locked');
+  } catch (e) {}
   const el = document.getElementById('session-lock-overlay');
   if (el) el.style.display = 'none';
 }
@@ -6182,6 +6527,11 @@ async function unlockAppSession() {
   hideLockScreen();
   UI.toast('खुल्यो', 'success');
 
+  // नयाँ कोड deploy भएको रहेछ भने logout नगरी तुरुन्त सक्रिय पारी अद्यावधिक गर्ने
+  if (navigator.onLine && typeof window._checkSwUpdateNow === 'function') {
+    window._checkSwUpdateNow(true).catch(() => {});
+  }
+
   const refreshUnlockedViews = () => {
     try {
       APP_DATA = DB.load();
@@ -6201,7 +6551,7 @@ async function unlockAppSession() {
   };
   refreshUnlockedViews();
   setTimeout(refreshUnlockedViews, 120);
-  const checkTermsAfterUnlock = () => {
+  const checkTermsAndUpdatesAfterUnlock = () => {
     try {
       if (Auth.isMember && Auth.isMember()) {
         runMemberOnboardingGate();
@@ -6213,12 +6563,12 @@ async function unlockAppSession() {
   if (navigator.onLine && typeof DB.pullLatest === 'function') {
     DB.pullLatest(true).then((pulled) => {
       if (pulled) refreshUnlockedViews();
-      checkTermsAfterUnlock();
+      checkTermsAndUpdatesAfterUnlock();
     }).catch(() => {
-      checkTermsAfterUnlock();
+      checkTermsAndUpdatesAfterUnlock();
     });
   } else {
-    setTimeout(checkTermsAfterUnlock, 180);
+    setTimeout(checkTermsAndUpdatesAfterUnlock, 180);
   }
 }
 
@@ -6631,7 +6981,13 @@ function onCloudDataRemote(remote) {
       if (document.getElementById('tab-settings') && document.getElementById('tab-settings').classList.contains('active')) {
         renderSettingsTab();
       }
-      // खुला रहेको सदस्य प्रोफाइल मोडल / Admin सदस्य विवरण मोडल स्वतः ताजा पार्ने
+      if (document.getElementById('tab-vidhan') && document.getElementById('tab-vidhan').classList.contains('active')) {
+        const activeId = (document.activeElement && document.activeElement.id) || '';
+        if (!activeId.startsWith('sug-reply-')) {
+          renderVidhanTab();
+        }
+      }
+      // खुला रहेको मोडलहरू (प्रोफाइल, पासबुक, कलेक्सन सारांश, गुनासो) स्वतः ताजा पार्ने
       const overlay = document.getElementById('modal-overlay');
       const modalOpen = overlay && !overlay.classList.contains('hidden');
       const mTitle = document.getElementById('modal-title') ? document.getElementById('modal-title').textContent : '';
@@ -6640,16 +6996,30 @@ function onCloudDataRemote(remote) {
           openMemberOwnProfileModal({ replace: true });
         } else if (Auth.isAdmin && Auth.isAdmin() && window._openMemberDetailId && mTitle.startsWith('👤 ')) {
           openMemberDetail(window._openMemberDetailId, { replace: true });
+        } else if (window._openPassbookMemberId && mTitle.startsWith('📖 पासबुक')) {
+          renderPassbookContent(window._openPassbookMemberId);
+        } else if (Auth.isMember && Auth.isMember() && mTitle === '📋 मेरो कलेक्सन सारांश') {
+          showMemberCollectionSummary(Auth.currentUser.memberId);
+        } else if (Auth.isMember && Auth.isMember() && mTitle === '📢 सुझाव तथा गुनासो') {
+          const fbDraft = document.getElementById('fb-text');
+          if (!fbDraft || !fbDraft.value.trim()) {
+            openMemberFeedbackHub();
+          }
+        } else if (mTitle === '📢 सदस्य गुनासो तथा समाधान') {
+          showComplaints();
         }
       } else if (!(Auth.isLocked && Auth.isLocked())) {
-        // Admin ले नियम-सर्त परिमार्जन गर्दा चलिरहेको सदस्य/कोषाध्यक्ष सत्रमा तुरुन्त पुनः सहमति जानकारी देखाउने
+        // Admin ले नियम-सर्त परिमार्जन गर्दा वा नयाॅ एप अपडेट हुँदा चलिरहेको सत्रमा तुरुन्त देखाउने
         const ts = hasAcceptedCurrentTerms(remote);
+        const upd = hasAnsweredCurrentAppUpdate();
         if (!ts.accepted && !window._pendingTermsGateOpen) {
           if (Auth.isMember && Auth.isMember()) {
             runMemberOnboardingGate();
           } else if (Auth.isTreasurer && Auth.isTreasurer()) {
             checkTreasurerTermsGate();
           }
+        } else if (Auth.isMember && Auth.isMember() && !upd.answered && !window._pendingAppUpdateGateOpen) {
+          runMemberOnboardingGate();
         }
       }
     } catch (e) {}
@@ -7030,12 +7400,10 @@ function nthWeekdayOfBsMonth(year, monthIndex, weekday, n) {
   return { day: day, ad: bsToAdDate(year, monthIndex, day), year: year, monthIndex: monthIndex };
 }
 
-function fiscalYearLabel(yearBS, monthIndex) {
-  // साउन (3) देखि नयाँ आर्थिक वर्ष
-  if (monthIndex >= 3) {
-    return yearBS + '/' + String(yearBS + 1).slice(-2);
-  }
-  return (yearBS - 1) + '/' + String(yearBS).slice(-2);
+function fiscalYearLabel(yearBS, _monthIndex) {
+  // Accounting.NEPALI_MONTHS (साउन = 0 ... असार = 11) मा yearBS नै सो आर्थिक वर्षको सुरुवाती वर्ष हो
+  const y = Number(yearBS) || ((adToBsParts(getNepalNow()) || {}).year || 2083);
+  return y + '/' + String(y + 1).slice(-2);
 }
 
 function nextBillNumber(data, yearBS, monthIndex) {

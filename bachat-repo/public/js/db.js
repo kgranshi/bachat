@@ -13,6 +13,7 @@ const DB = {
   PENDING_KEY: 'gs_pending_sync',
   PENDING_CHAT_KEY: 'gs_pending_chat',
   PENDING_TERMS_KEY: 'gs_pending_terms_accept',
+  PENDING_UPDATE_ACK_KEY: 'gs_pending_update_ack_v1',
 
   _cache: null,
   _cloud: false,
@@ -23,8 +24,10 @@ const DB = {
   _pollTimer: null,
   _onRemote: null,
   _onlineBound: false,
+  _lastFocusPullAt: 0,
   _serverVersion: 0,
   _hasAdminOnServer: false,
+  _appUpdateAcks: {},
 
   apiUrl(path) {
     return '/api' + (path.startsWith('/') ? path : '/' + path);
@@ -407,6 +410,7 @@ const DB = {
     }
     await this.flushChatQueue();
     await this.flushPendingTermsAccept();
+    await this.flushPendingUpdateAck();
     try {
       const since = force ? -1 : this.getServerVersion();
       const res = await this.apiFetch('/state?sinceVersion=' + encodeURIComponent(since), { method: 'GET' });
@@ -423,6 +427,12 @@ const DB = {
       }
       if (res.body.termsAcceptance) {
         this.applyUserTermsAcceptance(res.body.termsAcceptance);
+      }
+      if (res.body.appUpdateAck) {
+        this.applyUserAppUpdateAck(res.body.appUpdateAck);
+      }
+      if (res.body.appUpdateAcks) {
+        this.applyAppUpdateSummary(res.body.appUpdateAcks);
       }
 
       if (!res.body.unchanged && res.body.data) {
@@ -594,6 +604,102 @@ const DB = {
     } catch (e) {}
     try { localStorage.setItem(this.PENDING_TERMS_KEY, JSON.stringify({ version: ver, acceptedAt })); } catch (e) {}
     return { ok: true, queued: true, acceptance: rec };
+  },
+
+  getUserAppUpdateAck(userObj) {
+    const key = this.getUserReadKey(userObj);
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem('gs_app_upd_ack_' + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  },
+
+  applyUserAppUpdateAck(rec, userObj) {
+    const key = this.getUserReadKey(userObj);
+    if (!key || !rec || typeof rec !== 'object') return null;
+    const prev = this.getUserAppUpdateAck(userObj);
+    if (prev && prev.version === rec.version && String(prev.answeredAt || '') > String(rec.answeredAt || '')) {
+      return prev;
+    }
+    const next = {
+      version: String(rec.version || ''),
+      decision: rec.decision === 'disagree' ? 'disagree' : 'agree',
+      note: String(rec.note || ''),
+      answeredAt: rec.answeredAt || new Date().toISOString()
+    };
+    try { localStorage.setItem('gs_app_upd_ack_' + key, JSON.stringify(next)); } catch (e) {}
+    return next;
+  },
+
+  applyAppUpdateSummary(allAcks) {
+    if (allAcks && typeof allAcks === 'object') {
+      this._appUpdateAcks = allAcks;
+    }
+    return this._appUpdateAcks || {};
+  },
+
+  getAppUpdateSummary() {
+    return this._appUpdateAcks || {};
+  },
+
+  async flushPendingUpdateAck() {
+    if (!this.getToken() || !navigator.onLine) return false;
+    let pending = null;
+    try {
+      const raw = localStorage.getItem(this.PENDING_UPDATE_ACK_KEY);
+      pending = raw ? JSON.parse(raw) : null;
+    } catch (e) { pending = null; }
+    if (!pending || !pending.version) return true;
+    try {
+      const res = await this.apiFetch('/app-update/ack', {
+        method: 'POST',
+        body: JSON.stringify(pending)
+      });
+      if (res.ok && res.body && res.body.ok) {
+        try { localStorage.removeItem(this.PENDING_UPDATE_ACK_KEY); } catch (e) {}
+        if (res.body.appUpdateAck) this.applyUserAppUpdateAck(res.body.appUpdateAck);
+        if (res.body.appUpdateAcks) this.applyAppUpdateSummary(res.body.appUpdateAcks);
+        if (res.body.version) this.setServerVersion(res.body.version);
+        if (res.body.data) this._applyServerPayload(res.body.data, null, res.body.version);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  },
+
+  async submitAppUpdateAck({ version, decision, note }) {
+    const ver = String(version || '').trim();
+    const dec = decision === 'disagree' ? 'disagree' : 'agree';
+    const noteText = String(note || '').trim();
+    const answeredAt = new Date().toISOString();
+    const payload = { version: ver, decision: dec, note: noteText, answeredAt };
+    const rec = this.applyUserAppUpdateAck(payload);
+    if (!this.getToken() || !navigator.onLine) {
+      try { localStorage.setItem(this.PENDING_UPDATE_ACK_KEY, JSON.stringify(payload)); } catch (e) {}
+      return { ok: true, queued: true, ack: rec };
+    }
+    try {
+      const res = await this.apiFetch('/app-update/ack', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      if (res.ok && res.body && res.body.ok) {
+        try { localStorage.removeItem(this.PENDING_UPDATE_ACK_KEY); } catch (e) {}
+        if (res.body.appUpdateAck) this.applyUserAppUpdateAck(res.body.appUpdateAck);
+        if (res.body.appUpdateAcks) this.applyAppUpdateSummary(res.body.appUpdateAcks);
+        if (res.body.version) this.setServerVersion(res.body.version);
+        if (res.body.data) this._applyServerPayload(res.body.data, null, res.body.version);
+        return { ok: true, ack: res.body.ack || rec };
+      }
+      if (res.status >= 400 && res.status < 500) {
+        return { ok: false, error: (res.body && res.body.error) || 'पठाउन सकिएन' };
+      }
+    } catch (e) {}
+    try { localStorage.setItem(this.PENDING_UPDATE_ACK_KEY, JSON.stringify(payload)); } catch (e) {}
+    return { ok: true, queued: true, ack: rec };
   },
 
   async initCloud(onRemoteChange) {
@@ -862,10 +968,19 @@ const DB = {
   bindOnlineSync() {
     if (this._onlineBound) return;
     this._onlineBound = true;
+    const triggerQuickPull = () => {
+      const now = Date.now();
+      if (now - (this._lastFocusPullAt || 0) < 2000) return;
+      this._lastFocusPullAt = now;
+      if (this.getToken() && navigator.onLine) {
+        this.pullLatest(false);
+      }
+    };
     window.addEventListener('online', () => {
       this._updatePendingIndicator();
       this.flushChatQueue().catch(() => {});
       this.flushPendingTermsAccept().catch(() => {});
+      this.flushPendingUpdateAck().catch(() => {});
       this.flushPending().then((ok) => {
         if (ok && typeof UI !== 'undefined' && UI.toast) {
           UI.toast('नेट आयो · हिसाब सुरक्षित सिंक भयो ✅', 'success');
@@ -879,10 +994,10 @@ const DB = {
       }
     });
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && this.getToken() && navigator.onLine) {
-        this.pullLatest(false);
-      }
+      if (document.visibilityState === 'visible') triggerQuickPull();
     });
+    window.addEventListener('focus', triggerQuickPull);
+    window.addEventListener('pageshow', triggerQuickPull);
   },
 
   dedupeMembers(members) {
