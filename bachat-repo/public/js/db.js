@@ -1224,5 +1224,82 @@ const DB = {
       reader.onerror = () => reject(new Error('फाइल पढ्न सकिएन'));
       reader.readAsText(file);
     });
+  },
+
+  async fetchRegistrationMembers() {
+    try {
+      const resp = await fetch('./api/registration-members', { cache: 'no-store' });
+      const body = await resp.json().catch(() => null);
+      if (resp.ok && body && body.ok) return body;
+      return { ok: false, error: (body && body.error) || 'सदस्य सूची लोड गर्न सकिएन' };
+    } catch (e) {
+      return { ok: false, error: 'इन्टरनेट वा सर्भर जडान भएन' };
+    }
+  },
+
+  async submitMemberRegistration(payload) {
+    try {
+      const resp = await fetch('./api/member-registration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+      });
+      const body = await resp.json().catch(() => null);
+      if (resp.ok && body && body.ok) return body;
+      return { ok: false, error: (body && body.error) || 'विवरण सेभ गर्न सकिएन' };
+    } catch (e) {
+      return { ok: false, error: 'इन्टरनेट वा सर्भर जडान भएन' };
+    }
+  },
+
+  async getAdminRegistrations() {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'रजिस्ट्रेसन विवरण हेर्न इन्टरनेट चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/admin/registrations');
+      if (res.ok && res.body && res.body.ok) return res.body;
+      return { ok: false, error: (res.body && res.body.error) || 'विवरण लोड भएन' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
+  },
+
+  async approveMemberRegistration(payload) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'User ID बनाउन इन्टरनेट चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/admin/registrations/approve', {
+        method: 'POST',
+        body: JSON.stringify(payload || {})
+      });
+      if (res.ok && res.body && res.body.ok) {
+        if (res.body.version) this.setServerVersion(res.body.version);
+        if (res.body.data) this._applyServerPayload(res.body.data, null, res.body.version);
+        this._cloud = true;
+        return res.body;
+      }
+      return { ok: false, error: (res.body && res.body.error) || 'User ID बनाउन सकिएन' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
+  },
+
+  async deleteMemberRegistration(memberId) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'इन्टरनेट चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/admin/registrations/delete', {
+        method: 'POST',
+        body: JSON.stringify({ memberId })
+      });
+      if (res.ok && res.body && res.body.ok) return res.body;
+      return { ok: false, error: (res.body && res.body.error) || 'मेटाउन सकिएन' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
   }
 };
+

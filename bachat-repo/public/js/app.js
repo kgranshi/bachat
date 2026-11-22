@@ -120,7 +120,15 @@ async function initApp() {
     }
   }, 30000);
 
-  if (Auth.restoreSession()) {
+  let isRegLink = false;
+  try {
+    const up = new URLSearchParams(window.location.search || '');
+    isRegLink = up.get('register') === '1' || up.get('form') === 'register';
+  } catch (e) {}
+
+  if (isRegLink) {
+    openMemberRegistrationScreen();
+  } else if (Auth.restoreSession()) {
     applyAppTheme(DB.load());
     showMainApp();
     const lastAct = parseInt(localStorage.getItem('gs_last_activity') || '0', 10);
@@ -224,14 +232,19 @@ function showMainApp() {
     }
   }
   if (Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) {
+    setTimeout(() => { refreshAdminRegistrationBadge().catch(() => {}); }, 800);
     try {
       const u = new URL(window.location.href);
-      if (u.searchParams.get('open') === 'health') {
+      const openParam = u.searchParams.get('open');
+      if (openParam === 'health' || openParam === 'registrations') {
         u.searchParams.delete('open');
         if (window.history && window.history.replaceState) {
           window.history.replaceState({}, '', u.pathname + (u.search || '') + (u.hash || ''));
         }
-        setTimeout(() => { openSystemHealthReport(); }, 450);
+        setTimeout(() => {
+          if (openParam === 'health') openSystemHealthReport();
+          else openAdminRegistrationsModal();
+        }, 450);
       }
     } catch (e) {}
   }
@@ -2758,6 +2771,7 @@ function renderAdminProfile(container) {
     <div class="section-card">
       <div class="section-title">👥 सदस्य व्यवस्थापन (${activeMembers.length} जना)</div>
       ${isTreasurerWriter ? `<button class="btn btn-success btn-block mb-1" onclick="showNewMemberForm()">➕ नयाँ सदस्य प्रवेश</button>` : ''}
+      ${isPrimaryAdmin ? `<button class="btn btn-primary btn-block mb-1" onclick="openAdminRegistrationsModal()">📲 User ID रजिस्ट्रेसन फारम / प्राप्त विवरण${(window._pendingRegCount || 0) > 0 ? ' (' + window._pendingRegCount + ' नयाँ)' : ''}</button>` : ''}
       ${isPrimaryAdmin && pendingPins > 0 ? `<button class="btn btn-warning btn-block mb-1" onclick="showPinRequests()">🔢 बाँकी PIN अनुरोध (${pendingPins})</button>` : ''}
       ${(isPrimaryAdmin || isTreasurerWriter) && openFbTotal > 0 ? `<button class="btn btn-danger btn-block mb-1" onclick="showComplaints()">📢 समाधान बाँकी गुनासोहरू (${openFbTotal})</button>` : ''}
       <div class="search-box">
@@ -5066,6 +5080,14 @@ function renderSettingsTab() {
         <li class="settings-item" onclick="editTreasurer()">
           <div class="settings-icon" style="background:#fff3cd">💼</div>
           <div class="settings-text"><div class="title">कोषाध्यक्ष (हिसाब लेख्ने)</div><div class="desc">${trDesc}</div></div>
+          <div class="settings-arrow">›</div>
+        </li>
+        <li class="settings-item" onclick="openAdminRegistrationsModal()">
+          <div class="settings-icon" style="background:#d1e7dd">📲</div>
+          <div class="settings-text">
+            <div class="title">सदस्य User ID रजिस्ट्रेसन फारम ${(window._pendingRegCount || 0) > 0 ? `<span class="badge-unread">${window._pendingRegCount} नयाँ</span>` : ''}</div>
+            <div class="desc" id="admin-reg-settings-desc">म्यासेन्जर फारम लिङ्क सेयर गर्नुहोस् · प्राप्त WhatsApp नम्बरबाट User ID बनाउनुहोस्</div>
+          </div>
           <div class="settings-arrow">›</div>
         </li>
         <li class="settings-item" onclick="openSystemHealthReport()">
@@ -7743,3 +7765,484 @@ window.confirmClearAccountingOnly = confirmClearAccountingOnly;
 window.runClearAccountingOnly = runClearAccountingOnly;
 
 window.fixDuplicateMembersNow = fixDuplicateMembersNow;
+
+// ========== SHAREABLE PUBLIC MEMBER USER ID REGISTRATION FORM & ADMIN APPROVAL ==========
+window._regMembersCache = [];
+window._regGroupName = 'समूह बचत';
+window._regSelectedId = '';
+
+function getRegistrationFormShareUrl() {
+  try {
+    const h = (typeof location !== 'undefined' && location.hostname) || '';
+    if (typeof location !== 'undefined' && location.origin && h && h !== 'localhost' && !h.includes('127.0.0.1') && !h.endsWith('.run.app')) {
+      return location.origin + '/?register=1';
+    }
+  } catch (e) {}
+  return 'https://bachat.gopalkoirala.com.np/?register=1';
+}
+
+async function openMemberRegistrationScreen() {
+  try { hideLockScreen(); } catch (e) {}
+  document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
+  const scr = document.getElementById('register-screen');
+  if (scr) scr.classList.add('active');
+
+  const loadBox = document.getElementById('reg-loading-box');
+  const fieldsBox = document.getElementById('reg-fields-box');
+  const succBox = document.getElementById('reg-success-box');
+  if (loadBox) loadBox.classList.remove('hidden');
+  if (fieldsBox) fieldsBox.classList.add('hidden');
+  if (succBox) succBox.classList.add('hidden');
+
+  const res = await DB.fetchRegistrationMembers();
+  if (loadBox) loadBox.classList.add('hidden');
+  if (!res || !res.ok) {
+    if (fieldsBox) fieldsBox.classList.remove('hidden');
+    const listEl = document.getElementById('reg-member-list');
+    if (listEl) {
+      listEl.innerHTML = `<div style="padding:10px;color:#842029;background:#f8d7da;border-radius:8px;font-size:0.82rem">⚠️ ${escapeHtmlChat((res && res.error) || 'सदस्य सूची लोड हुन सकेन')}</div>`;
+    }
+    return;
+  }
+
+  window._regGroupName = res.groupName || 'समूह बचत';
+  window._regMembersCache = Array.isArray(res.members) ? res.members : [];
+  window._regSelectedId = '';
+
+  const titleEl = document.getElementById('reg-group-title');
+  if (titleEl) titleEl.textContent = window._regGroupName;
+
+  if (fieldsBox) fieldsBox.classList.remove('hidden');
+  resetMemberRegistrationForm(false);
+}
+
+function renderRegMembersList(filterQuery) {
+  const selEl = document.getElementById('reg-member-select');
+  const listEl = document.getElementById('reg-member-list');
+  const q = String(filterQuery || '').trim().toLowerCase();
+  const all = Array.isArray(window._regMembersCache) ? window._regMembersCache : [];
+  const filtered = q
+    ? all.filter((m) => (m.name || '').toLowerCase().includes(q) || (m.id || '').toLowerCase().includes(q))
+    : all;
+
+  if (selEl) {
+    const opts = ['<option value="">-- यहाँबाट वा तलको सूचीबाट नाम छान्नुहोस् (' + filtered.length + ' जना) --</option>'];
+    filtered.forEach((m, i) => {
+      const stTxt = m.regStatus === 'pending' ? ' [पठाइसकेको]' : (m.hasPin ? ' [ID बनेको]' : '');
+      const selectedAttr = window._regSelectedId === m.id ? ' selected' : '';
+      opts.push(`<option value="${escapeHtmlChat(m.id)}"${selectedAttr}>${escapeHtmlChat(m.id)} · ${escapeHtmlChat(m.name)}${stTxt}</option>`);
+    });
+    selEl.innerHTML = opts.join('');
+    if (window._regSelectedId) selEl.value = window._regSelectedId;
+  }
+
+  if (listEl) {
+    if (!filtered.length) {
+      listEl.innerHTML = '<div class="text-muted text-center" style="padding:10px;font-size:0.82rem">मिल्दो नाम भेटिएन</div>';
+      return;
+    }
+    listEl.innerHTML = filtered.map((m) => {
+      const isSel = window._regSelectedId === m.id;
+      let pill = '<span class="reg-status-pill wait">भर्न बाँकी</span>';
+      if (m.regStatus === 'pending') pill = '<span class="reg-status-pill pending">⏳ पठाइसकेको</span>';
+      else if (m.regStatus === 'approved' || m.hasPin) pill = '<span class="reg-status-pill approved">✅ ID बनेको</span>';
+      return `
+        <button type="button" class="reg-member-item${isSel ? ' selected' : ''}" onclick="onRegMemberSelect('${escapeHtmlChat(m.id)}')">
+          <div><span class="reg-id-tag">${escapeHtmlChat(m.id)}</span><strong>${escapeHtmlChat(m.name)}</strong></div>
+          ${pill}
+        </button>
+      `;
+    }).join('');
+  }
+}
+
+function filterRegMembers() {
+  const inp = document.getElementById('reg-search-input');
+  const q = inp ? inp.value : '';
+  renderRegMembersList(q);
+}
+
+function onRegMemberSelect(memberId) {
+  const id = String(memberId || '').trim();
+  window._regSelectedId = id;
+  const selEl = document.getElementById('reg-member-select');
+  if (selEl && selEl.value !== id) selEl.value = id;
+
+  const banner = document.getElementById('reg-selected-banner');
+  const idInp = document.getElementById('reg-member-id');
+  const origInp = document.getElementById('reg-original-name');
+  const corrInp = document.getElementById('reg-corrected-name');
+  const hintEl = document.getElementById('reg-existing-hint');
+  const mobInp = document.getElementById('reg-whatsapp-mobile');
+
+  const m = (window._regMembersCache || []).find((x) => x.id === id);
+  if (!m) {
+    if (banner) banner.classList.add('hidden');
+    if (idInp) idInp.value = '';
+    if (origInp) origInp.value = '';
+    if (corrInp) corrInp.value = '';
+    renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
+    return;
+  }
+
+  if (banner) banner.classList.remove('hidden');
+  if (idInp) idInp.value = m.id;
+  if (origInp) origInp.value = m.name || '';
+  if (corrInp) corrInp.value = m.name || '';
+  if (hintEl) {
+    if (m.regStatus === 'pending') {
+      hintEl.innerHTML = `⏳ यो सदस्यको विवरण पहिले पठाइएको छ (${escapeHtmlChat(m.maskedMobile || '')}) — सच्याउनुपरे नयाँ नम्बर हालेर फेरि सेभ गर्न सकिन्छ।`;
+    } else if (m.hasPin) {
+      hintEl.innerHTML = `✅ यो सदस्यको User ID पहिले नै छ (${escapeHtmlChat(m.maskedMobile || '')}) — नम्बर वा नाम सच्याउनुपरे मात्र तल भरेर सेभ गर्नुहोस्।`;
+    } else {
+      hintEl.innerHTML = 'नाम ठीक छ भने नबदल्नुहोस्; हिज्जे वा पूरा नाम सच्याउनुपरे तल टाइप गरी WhatsApp नम्बर राख्नुहोस्।';
+    }
+  }
+  renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
+  if (mobInp) setTimeout(() => { try { mobInp.focus(); } catch (e) {} }, 60);
+}
+
+async function submitMemberRegistration() {
+  const memberId = String(window._regSelectedId || (document.getElementById('reg-member-id') && document.getElementById('reg-member-id').value) || '').trim();
+  const correctedName = String((document.getElementById('reg-corrected-name') && document.getElementById('reg-corrected-name').value) || '').trim();
+  const whatsappMobile = String((document.getElementById('reg-whatsapp-mobile') && document.getElementById('reg-whatsapp-mobile').value) || '').trim();
+  const note = String((document.getElementById('reg-note') && document.getElementById('reg-note').value) || '').trim();
+
+  if (!memberId) {
+    return UI.toast('पहिले सूचीबाट आफ्नो नाम र Member ID छान्नुहोस्', 'error');
+  }
+  const digits = whatsappMobile.replace(/\D/g, '');
+  if (!digits || digits.length < 7) {
+    return UI.toast('मान्य WhatsApp / मोबाइल नम्बर लेख्नुहोस्', 'error');
+  }
+
+  const btn = document.getElementById('reg-submit-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ सेभ हुँदैछ...'; }
+  const res = await DB.submitMemberRegistration({ memberId, correctedName, whatsappMobile, note });
+  if (btn) { btn.disabled = false; btn.textContent = '💾 विवरण सेभ गर्नुहोस्'; }
+
+  if (!res || !res.ok) {
+    return UI.toast((res && res.error) || 'विवरण सेभ गर्न सकिएन', 'error');
+  }
+
+  const cached = (window._regMembersCache || []).find((x) => x.id === memberId);
+  if (cached) {
+    cached.submitted = true;
+    cached.regStatus = 'pending';
+    cached.maskedMobile = res.maskedMobile || '';
+  }
+
+  const fieldsBox = document.getElementById('reg-fields-box');
+  const succBox = document.getElementById('reg-success-box');
+  const sumEl = document.getElementById('reg-success-summary');
+  if (fieldsBox) fieldsBox.classList.add('hidden');
+  if (succBox) succBox.classList.remove('hidden');
+  if (sumEl) {
+    const nameChanged = !!(res.correctedName && res.correctedName !== res.originalName);
+    sumEl.innerHTML =
+      `<div><strong>Member ID:</strong> ${escapeHtmlChat(res.memberId)}</div>` +
+      `<div><strong>समूहमा नाम:</strong> ${escapeHtmlChat(res.originalName)}</div>` +
+      (nameChanged ? `<div><strong>सच्याइएको नाम:</strong> ${escapeHtmlChat(res.correctedName)}</div>` : '') +
+      `<div><strong>WhatsApp / मोबाइल:</strong> ${escapeHtmlChat(res.whatsappMobile)}</div>`;
+  }
+  UI.toast('✅ विवरण सुरक्षित सेभ भयो!', 'success');
+}
+
+function resetMemberRegistrationForm(clearSuccess = true) {
+  window._regSelectedId = '';
+  const searchInp = document.getElementById('reg-search-input');
+  const selEl = document.getElementById('reg-member-select');
+  const banner = document.getElementById('reg-selected-banner');
+  const idInp = document.getElementById('reg-member-id');
+  const origInp = document.getElementById('reg-original-name');
+  const corrInp = document.getElementById('reg-corrected-name');
+  const mobInp = document.getElementById('reg-whatsapp-mobile');
+  const noteInp = document.getElementById('reg-note');
+  if (searchInp) searchInp.value = '';
+  if (selEl) selEl.value = '';
+  if (banner) banner.classList.add('hidden');
+  if (idInp) idInp.value = '';
+  if (origInp) origInp.value = '';
+  if (corrInp) corrInp.value = '';
+  if (mobInp) mobInp.value = '';
+  if (noteInp) noteInp.value = '';
+  if (clearSuccess) {
+    const fieldsBox = document.getElementById('reg-fields-box');
+    const succBox = document.getElementById('reg-success-box');
+    if (succBox) succBox.classList.add('hidden');
+    if (fieldsBox) fieldsBox.classList.remove('hidden');
+  }
+  renderRegMembersList('');
+}
+
+function exitRegistrationToApp() {
+  try {
+    const u = new URL(window.location.href);
+    u.searchParams.delete('register');
+    u.searchParams.delete('form');
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState({}, '', u.pathname + (u.search || '') + (u.hash || ''));
+    }
+  } catch (e) {}
+  if (Auth.restoreSession()) {
+    applyAppTheme(DB.load());
+    showMainApp();
+  } else {
+    showLoginScreen();
+  }
+}
+
+async function refreshAdminRegistrationBadge() {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) || !navigator.onLine) return;
+  const res = await DB.getAdminRegistrations();
+  if (!res || !res.ok || !res.summary) return;
+  const nextCnt = Number(res.summary.pendingCount || 0);
+  const changed = window._pendingRegCount !== nextCnt;
+  window._pendingRegCount = nextCnt;
+  if (changed) {
+    try { renderSettingsTab(); } catch (e) {}
+  }
+  try {
+    const el = document.getElementById('admin-reg-settings-desc');
+    if (el) {
+      el.textContent = `लिङ्क पठाउनुहोस् · बाँकी: ${res.summary.pendingCount} · बनेको: ${res.summary.approvedCount} · भर्न बाँकी: ${res.summary.notSubmittedCount}`;
+    }
+  } catch (e) {}
+}
+
+function buildRegistrationInviteText() {
+  const data = DB.load();
+  const gName = (data.group && data.group.name) || 'समूह बचत';
+  const url = getRegistrationFormShareUrl();
+  return `🙏 नमस्कार!\n'${gName}' को डिजिटल बचत एपमा तपाईंको User ID र लगइन PIN बनाउन कृपया तलको लिङ्क खोली आफ्नो नाम र WhatsApp नम्बर भरेर सेभ गर्नुहोस्:\n👉 ${url}\n\n(लिङ्क खोलेपछि सूचीबाट आफ्नो नाम छान्नुहोस्, नाम सच्याउनुपरे सच्याउनुहोस् र WhatsApp मोबाइल नम्बर हालेर सेभ थिच्नुहोस्।)`;
+}
+
+function copyRegistrationShareMessage() {
+  const txt = buildRegistrationInviteText();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(() => UI.toast('म्यासेन्जर/WhatsApp सन्देश Copy भयो ✅', 'success')).catch(() => {
+      UI.toast('Copy गर्न सकिएन — लिङ्क सिधै सार्नुहोस्', 'error');
+    });
+  } else {
+    UI.toast('लिङ्क माथिबाट Copy गर्नुहोस्', '');
+  }
+}
+
+function copyRegistrationRawUrl() {
+  const url = getRegistrationFormShareUrl();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => UI.toast('फारम लिङ्क Copy भयो ✅', 'success')).catch(() => {
+      UI.toast(url, '');
+    });
+  } else {
+    UI.toast(url, '');
+  }
+}
+
+function shareRegistrationLinkWhatsApp() {
+  const txt = buildRegistrationInviteText();
+  location.href = `https://wa.me/?text=${encodeURIComponent(txt)}`;
+}
+
+async function openAdminRegistrationsModal() {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) {
+    return UI.toast('Admin लाई मात्र उपलब्ध छ', 'error');
+  }
+  UI.showModal(
+    '📲 सदस्य User ID रजिस्ट्रेसन फारम',
+    '<div class="empty-state"><div class="spinner" style="margin:0 auto 10px"></div>प्राप्त विवरण लोड हुँदैछ...</div>',
+    '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>',
+    { root: true }
+  );
+
+  const res = await DB.getAdminRegistrations();
+  if (!res || !res.ok) {
+    UI.showModal(
+      '📲 सदस्य User ID रजिस्ट्रेसन',
+      `<div class="sys-health-issue error">⚠️ ${escapeHtmlChat((res && res.error) || 'विवरण लोड गर्न सकिएन')}</div>`,
+      '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>'
+    );
+    return;
+  }
+
+  const shareUrl = getRegistrationFormShareUrl();
+  const sum = res.summary || { totalMembers: 0, pendingCount: 0, approvedCount: 0, notSubmittedCount: 0 };
+  window._pendingRegCount = Number(sum.pendingCount || 0);
+  try { renderSettingsTab(); } catch (e) {}
+
+  const regs = Array.isArray(res.registrations) ? res.registrations : [];
+  window._adminRegMap = {};
+  regs.forEach((r) => {
+    if (r && r.memberId) window._adminRegMap[r.memberId] = r;
+  });
+  const pending = regs.filter((r) => r.status === 'pending');
+  const approved = regs.filter((r) => r.status === 'approved');
+  const missing = Array.isArray(res.notSubmittedMembers) ? res.notSubmittedMembers : [];
+
+  const shareCardHtml = `
+    <div style="background:#e7f1ff;border:1.5px solid #9ec5fe;border-radius:12px;padding:11px;margin-bottom:12px">
+      <div style="font-weight:700;color:#084298;font-size:0.88rem;margin-bottom:4px">🔗 म्यासेन्जर / WhatsApp मा पठाउने फारम लिङ्क</div>
+      <div style="background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:7px 9px;font-size:0.78rem;word-break:break-all;color:#0f172a;margin-bottom:8px">${escapeHtmlChat(shareUrl)}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <button type="button" class="btn btn-primary btn-sm" onclick="copyRegistrationShareMessage()">📋 सन्देश + लिङ्क Copy</button>
+        <button type="button" class="btn btn-success btn-sm" onclick="shareRegistrationLinkWhatsApp()">💬 WhatsApp सेयर</button>
+        <button type="button" class="btn btn-light btn-sm" onclick="copyRegistrationRawUrl()">🔗 लिङ्क मात्र Copy</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeModal();openMemberRegistrationScreen()">👁️ फारम खोली हेर्नुहोस्</button>
+      </div>
+    </div>
+  `;
+
+  const statsHtml = `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;font-size:0.76rem">
+      <span class="terms-pill-wait">⏳ ID बनाउन बाँकी: ${sum.pendingCount}</span>
+      <span class="terms-pill-ok">✅ ID बनिसकेको: ${sum.approvedCount}</span>
+      <span style="background:#e2e8f0;color:#334155;padding:3px 9px;border-radius:999px;font-weight:700">📋 भर्न बाँकी: ${sum.notSubmittedCount} / ${sum.totalMembers}</span>
+    </div>
+  `;
+
+  let pendingHtml = '';
+  if (pending.length === 0) {
+    pendingHtml = '<div style="background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;padding:12px;text-align:center;color:#64748b;font-size:0.84rem;margin-bottom:12px">अहिले ID बनाउन बाँकी नयाँ फारम विवरण छैन।</div>';
+  } else {
+    pendingHtml = pending.map((r) => {
+      const mid = r.memberId;
+      const rnd = generateRandomPin();
+      const hasNameFix = !!(r.correctedName && r.correctedName !== r.originalName);
+      const dtTxt = r.updatedAt ? new Date(r.updatedAt).toLocaleString('ne-NP') : '';
+      return `
+        <div class="reg-admin-card pending">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px">
+            <div><span class="reg-id-tag">${escapeHtmlChat(mid)}</span><strong>${escapeHtmlChat(r.originalName)}</strong></div>
+            <span class="reg-status-pill pending">⏳ नयाँ प्राप्त</span>
+          </div>
+          ${hasNameFix ? `
+            <div style="background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:6px 8px;font-size:0.8rem;color:#664d03;margin:5px 0">
+              ✏️ <strong>सदस्यले नाम सच्याउन पठाएको:</strong> ${escapeHtmlChat(r.correctedName)}
+              <label style="display:flex;align-items:center;gap:6px;margin-top:4px;cursor:pointer;font-weight:600">
+                <input type="checkbox" id="reg-apply-name-${escapeHtmlChat(mid)}" checked style="width:16px;height:16px">
+                यही सच्याइएको नाम सदस्य प्रोफाइलमा लागू गर्नुहोस्
+              </label>
+            </div>
+          ` : ''}
+          <div style="font-size:0.85rem;margin:4px 0">📱 <strong>WhatsApp / मोबाइल:</strong> <span style="color:#0d6efd;font-weight:700">${escapeHtmlChat(r.whatsappMobile)}</span></div>
+          ${r.note ? `<div style="font-size:0.78rem;color:#475569;margin-bottom:4px">📝 टिप्पणी: ${escapeHtmlChat(r.note)}</div>` : ''}
+          ${r.conflictReason ? `<div style="font-size:0.78rem;color:#842029;background:#f8d7da;padding:5px 8px;border-radius:8px;margin-bottom:6px">⚠️ ${escapeHtmlChat(r.conflictReason)}</div>` : ''}
+          ${dtTxt ? `<div class="text-muted" style="font-size:0.72rem;margin-bottom:6px">पठाएको: ${escapeHtmlChat(dtTxt)}</div>` : ''}
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+            <input type="text" id="reg-pin-${escapeHtmlChat(mid)}" maxlength="4" inputmode="numeric" value="${rnd}" style="width:95px;padding:7px;border:1.5px solid #cbd5e1;border-radius:8px;text-align:center;font-weight:700;letter-spacing:2px;font-size:0.95rem">
+            <button type="button" class="btn btn-light btn-sm" onclick="document.getElementById('reg-pin-${escapeHtmlChat(mid)}').value=generateRandomPin()">🎲</button>
+            <label style="display:flex;align-items:center;gap:5px;font-size:0.77rem;cursor:pointer;flex:1">
+              <input type="checkbox" id="reg-temp-${escapeHtmlChat(mid)}" checked style="width:16px;height:16px">
+              Temp PIN (फेरि फेर्नुपर्ने)
+            </label>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="btn btn-success btn-sm" style="flex:1" onclick="approveAdminRegItem('${escapeHtmlChat(mid)}')">✅ User ID र PIN बनाउनुहोस्</button>
+            <button type="button" class="btn btn-light btn-sm" onclick="deleteAdminRegItem('${escapeHtmlChat(mid)}')" title="विवरण हटाउनुहोस्">🗑️</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  let approvedHtml = '';
+  if (approved.length > 0) {
+    approvedHtml = `
+      <div class="section-title mt-2" style="font-size:0.9rem">✅ User ID बनिसकेका सदस्य (${approved.length})</div>
+      ${approved.map((r) => `
+        <div class="reg-admin-card approved">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <div><span class="reg-id-tag">${escapeHtmlChat(r.memberId)}</span><strong>${escapeHtmlChat(r.currentMemberName || r.originalName)}</strong></div>
+            <span class="reg-status-pill approved">✅ ID बन्यो</span>
+          </div>
+          <div style="font-size:0.8rem;color:#475569;margin-top:3px">📱 ${escapeHtmlChat(r.whatsappMobile)}</div>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <button type="button" class="btn btn-info btn-sm" style="flex:1" onclick="showSetPin('${escapeHtmlChat(r.memberId)}')">🎲 नयाँ PIN / WhatsApp पठाउनुहोस्</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="openMemberDetail('${escapeHtmlChat(r.memberId)}')">प्रोफाइल</button>
+          </div>
+        </div>
+      `).join('')}
+    `;
+  }
+
+  let missingHtml = '';
+  if (missing.length > 0) {
+    missingHtml = `
+      <div class="section-title mt-2" style="font-size:0.9rem">📋 फारम भर्न बाँकी सदस्य (${missing.length})</div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:8px 10px;max-height:170px;overflow-y:auto;font-size:0.82rem">
+        ${missing.map((m) => `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #eef2f7">
+            <div><span class="reg-id-tag">${escapeHtmlChat(m.id)}</span>${escapeHtmlChat(m.name)}</div>
+            <span style="font-size:0.74rem;color:${m.hasPin ? '#0f5132' : '#64748b'}">${m.hasPin ? 'पहिले नै ID छ' : 'नभरेको'}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  const bodyHtml = `
+    ${shareCardHtml}
+    ${statsHtml}
+    <div class="section-title" style="font-size:0.92rem">⏳ प्राप्त विवरण — हेरेर User ID बनाउनुहोस् (${pending.length})</div>
+    ${pendingHtml}
+    ${approvedHtml}
+    ${missingHtml}
+  `;
+
+  UI.showModal(
+    '📲 सदस्य User ID रजिस्ट्रेसन फारम',
+    bodyHtml,
+    '<button class="btn btn-light" onclick="openAdminRegistrationsModal()">🔄 रिफ्रेस</button><button class="btn btn-outline" onclick="closeModal()">बन्द</button>',
+    { root: true }
+  );
+}
+
+async function approveAdminRegItem(memberId) {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) {
+    return UI.toast('Admin लाई मात्र अनुमति छ', 'error');
+  }
+  const rec = (window._adminRegMap && window._adminRegMap[memberId]) || null;
+  if (!rec) {
+    return UI.toast('विवरण भेटिएन — कृपया रिफ्रेस गर्नुहोस्', 'error');
+  }
+  const pinEl = document.getElementById('reg-pin-' + memberId);
+  const tempEl = document.getElementById('reg-temp-' + memberId);
+  const nameChkEl = document.getElementById('reg-apply-name-' + memberId);
+  const pin = String((pinEl && pinEl.value) || '').trim();
+  const isTemp = tempEl ? !!tempEl.checked : true;
+  const applyName = nameChkEl ? !!nameChkEl.checked : true;
+
+  if (!/^\d{4}$/.test(pin)) {
+    return UI.toast('PIN ठीक ४ अंकको हुनुपर्छ', 'error');
+  }
+
+  const res = await DB.approveMemberRegistration({
+    memberId,
+    pin,
+    isTemp,
+    applyName,
+    name: rec.correctedName || rec.originalName,
+    whatsappMobile: rec.whatsappMobile
+  });
+  if (!res || !res.ok) {
+    return UI.toast((res && res.error) || 'User ID बनाउन सकिएन', 'error');
+  }
+
+  APP_DATA = DB.load();
+  window._pendingRegCount = Math.max(0, Number(window._pendingRegCount || 1) - 1);
+  try { renderProfileTab(); } catch (e) {}
+  try { renderSettingsTab(); } catch (e) {}
+  UI.toast('✅ User ID र PIN सुरक्षित बन्यो! अब WhatsApp पठाउनुहोस्।', 'success');
+  showMemberInviteModal(memberId, pin, isTemp);
+}
+
+async function deleteAdminRegItem(memberId) {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return;
+  const res = await DB.deleteMemberRegistration(memberId);
+  if (!res || !res.ok) {
+    return UI.toast((res && res.error) || 'हटाउन सकिएन', 'error');
+  }
+  UI.toast('विवरण हटाइयो', 'success');
+  openAdminRegistrationsModal();
+}
+

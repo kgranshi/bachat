@@ -100,3 +100,19 @@ CREATE TABLE IF NOT EXISTS user_activity_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_activity_created ON user_activity_logs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS member_registrations (
+  id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL UNIQUE,
+  original_name TEXT NOT NULL,
+  corrected_name TEXT NOT NULL DEFAULT '',
+  whatsapp_mobile TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_pin_at TEXT,
+  submitted_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reg_status_time ON member_registrations(status, updated_at DESC);
+

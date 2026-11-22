@@ -107,6 +107,25 @@ function normalizeMobile(m) {
   return digits.length >= 7 ? digits : String(m || '').trim();
 }
 
+function normalizeWhatsappInput(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (d.startsWith('00')) d = d.slice(2);
+  if (d.length === 13 && d.startsWith('977') && /^9[678]/.test(d.slice(3))) {
+    d = d.slice(3);
+  }
+  if (d.length === 11 && d.startsWith('0') && /^9[678]/.test(d.slice(1))) {
+    d = d.slice(1);
+  }
+  return d;
+}
+
+function maskPhone(m) {
+  const d = String(m || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.length <= 4) return '••' + d.slice(-2);
+  return d.slice(0, 2) + '••••' + d.slice(-3);
+}
+
 function stripSecretsFromState(data) {
   const clean = JSON.parse(JSON.stringify(data || defaultState()));
   if (clean.admin) {
@@ -1075,7 +1094,20 @@ const SCHEMA_STATEMENTS = [
     severity TEXT NOT NULL DEFAULT 'info',
     created_at TEXT NOT NULL
   )`,
-  `CREATE INDEX IF NOT EXISTS idx_activity_created ON user_activity_logs(created_at DESC)`
+  `CREATE INDEX IF NOT EXISTS idx_activity_created ON user_activity_logs(created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS member_registrations (
+    id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL UNIQUE,
+    original_name TEXT NOT NULL,
+    corrected_name TEXT NOT NULL DEFAULT '',
+    whatsapp_mobile TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_pin_at TEXT,
+    submitted_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_reg_status_time ON member_registrations(status, updated_at DESC)`
 ];
 
 const CLIENT_ACTIVITY_TITLES = {
@@ -1196,6 +1228,135 @@ export async function onRequest(context) {
       const groupName = (state.data && state.data.group && state.data.group.name) || 'समूह बचत';
       const terms = (state.data && state.data.settings && state.data.settings.terms) || null;
       return json({ ok: true, groupName, terms });
+    }
+
+    // 3c. Public Member User ID Registration Form — list active members (ID + Name + submission status ONLY; zero private financial/phone exposure)
+    if (path === '/registration-members' && method === 'GET') {
+      const state = await loadStateRow(env.DB);
+      const st = state.data || defaultState();
+      const grp = st.group || {};
+      const regRows = await env.DB
+        .prepare('SELECT member_id, status, whatsapp_mobile, corrected_name, submitted_at, updated_at FROM member_registrations')
+        .all()
+        .catch(() => ({ results: [] }));
+      const regMap = {};
+      for (const r of regRows.results || []) {
+        if (r && r.member_id) regMap[String(r.member_id)] = r;
+      }
+      const members = (st.members || [])
+        .filter((m) => m && m.active !== false)
+        .map((m, idx) => {
+          const r = regMap[String(m.id)] || null;
+          return {
+            id: m.id,
+            serialNo: idx + 1,
+            name: m.name || '',
+            hasPin: !!(m.hasPin || m.pin),
+            submitted: !!r,
+            regStatus: r ? r.status : null,
+            submittedAt: r ? (r.updated_at || r.submitted_at) : null,
+            maskedMobile: r ? maskPhone(r.whatsapp_mobile) : (m.mobile ? maskPhone(m.mobile) : '')
+          };
+        });
+      return json({
+        ok: true,
+        groupName: grp.name || 'समूह बचत',
+        groupAddress: grp.address || '',
+        groupLogo: grp.logo || '💰',
+        members
+      });
+    }
+
+    // 3d. Public Member User ID Registration Form — submit name correction + WhatsApp mobile number
+    if (path === '/member-registration' && method === 'POST') {
+      const ip = request.headers.get('CF-Connecting-IP') || 'local';
+      const attemptKey = 'reg:' + ip;
+      const nowMs = Date.now();
+      const att = await env.DB.prepare('SELECT attempts, locked_until FROM login_attempts WHERE ip_key = ?').bind(attemptKey).first();
+      if (att && att.locked_until > nowMs) {
+        return json({ ok: false, error: 'धेरै अनुरोध पठाइएकोले केही मिनेट पछि पुनः प्रयास गर्नुहोस्' }, 429);
+      }
+
+      const body = await request.json().catch(() => ({}));
+      const memberId = String((body && body.memberId) || '').trim();
+      const rawMobile = String((body && body.whatsappMobile) || '').trim();
+      const rawCorrected = String((body && body.correctedName) || '').trim().slice(0, 80);
+      const rawNote = String((body && body.note) || '').trim().slice(0, 160);
+
+      if (!memberId) {
+        return json({ ok: false, error: 'सूचीबाट आफ्नो नाम / Member ID छान्नुहोस्' }, 400);
+      }
+      const normMob = normalizeWhatsappInput(rawMobile);
+      if (!normMob || normMob.length < 7 || normMob.length > 15) {
+        return json({ ok: false, error: 'मान्य WhatsApp / मोबाइल नम्बर लेख्नुहोस् (कम्तिमा ७–१० अंक)' }, 400);
+      }
+      if (/^9[678]/.test(normMob) && normMob.length !== 10) {
+        return json({ ok: false, error: 'नेपाली मोबाइल नम्बर ठीक १० अंकको हुनुपर्छ (उदा: 98XXXXXXXX)' }, 400);
+      }
+
+      const state = await loadStateRow(env.DB);
+      const st = state.data || defaultState();
+      const member = (st.members || []).find((m) => m && m.id === memberId && m.active !== false);
+      if (!member) {
+        return json({ ok: false, error: 'समूह सदस्य सूचीमा छानिएको ID भेटिएन' }, 404);
+      }
+
+      const nextAtt = (att && (!att.locked_until || att.locked_until <= nowMs) ? att.attempts : 0) + 1;
+      const lockUntil = nextAtt >= 30 ? nowMs + 10 * 60 * 1000 : 0;
+      await env.DB
+        .prepare('INSERT INTO login_attempts (ip_key, attempts, locked_until) VALUES (?, ?, ?) ON CONFLICT(ip_key) DO UPDATE SET attempts=excluded.attempts, locked_until=excluded.locked_until')
+        .bind(attemptKey, nextAtt, lockUntil)
+        .run();
+
+      const originalName = String(member.name || '').trim();
+      const correctedName = (rawCorrected && rawCorrected !== originalName) ? rawCorrected : '';
+      const displayName = correctedName || originalName;
+      const now = new Date().toISOString();
+      const rowId = 'reg_' + Date.now() + '_' + randomHex(3);
+
+      await env.DB
+        .prepare(
+          `INSERT INTO member_registrations (id, member_id, original_name, corrected_name, whatsapp_mobile, note, status, created_pin_at, submitted_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
+           ON CONFLICT(member_id) DO UPDATE SET
+             original_name=excluded.original_name,
+             corrected_name=excluded.corrected_name,
+             whatsapp_mobile=excluded.whatsapp_mobile,
+             note=excluded.note,
+             status='pending',
+             updated_at=excluded.updated_at`
+        )
+        .bind(rowId, member.id, originalName, correctedName, normMob, rawNote, now, now)
+        .run();
+
+      waitUntil(logUserActivity(env.DB, {
+        userKey: 'reg:' + member.id,
+        actorName: displayName,
+        actorRole: 'member',
+        memberId: member.id,
+        eventType: 'member_registration',
+        title: '📝 User ID रजिस्ट्रेसन फारम भरियो',
+        detail: (correctedName ? (originalName + ' → ' + correctedName + ' · ') : '') + 'WhatsApp: ' + maskPhone(normMob) + ' (ID: ' + member.id + ')'
+      }));
+
+      waitUntil(sendPushToUserKey(env, 'admin', {
+        title: '📝 नयाँ User ID रजिस्ट्रेसन प्राप्त',
+        body: `${displayName} (${member.id}) ले WhatsApp नम्बर पठाउनुभयो — सेटिङमा हेरी ID बनाउनुहोस्।`,
+        tag: 'reg-' + member.id,
+        data: { url: './?open=registrations' }
+      }));
+
+      return json({
+        ok: true,
+        memberId: member.id,
+        originalName,
+        correctedName,
+        displayName,
+        whatsappMobile: normMob,
+        maskedMobile: maskPhone(normMob),
+        status: 'pending',
+        updatedAt: now
+      });
     }
 
     // 4. First-time admin bootstrap (only if NO admin exists)
@@ -2939,6 +3100,198 @@ export async function onRequest(context) {
         issues,
         activities: activities.slice(0, 25)
       });
+    }
+
+    // 19. Admin-only Member User ID Registrations (View, Approve/Create PIN, Delete)
+    if (path === '/admin/registrations' && method === 'GET') {
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'सदस्य रजिस्ट्रेसन विवरण Admin लाई मात्र उपलब्ध छ' }, 403);
+      }
+      const stateRow = await loadStateRow(env.DB);
+      const st = stateRow.data || defaultState();
+      const activeMembers = (st.members || []).filter((m) => m && m.active !== false);
+      const memberMap = {};
+      for (const m of activeMembers) memberMap[String(m.id)] = m;
+
+      const rowsRes = await env.DB
+        .prepare(
+          `SELECT id, member_id, original_name, corrected_name, whatsapp_mobile, note, status, created_pin_at, submitted_at, updated_at
+           FROM member_registrations
+           ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, updated_at DESC`
+        )
+        .all();
+
+      const adminUser = String((st.admin && st.admin.username) || '').trim();
+      const trUser = String((st.treasurer && st.treasurer.username) || '').trim();
+      const submittedSet = new Set();
+
+      const registrations = (rowsRes.results || []).map((r) => {
+        const mid = String(r.member_id || '');
+        submittedSet.add(mid);
+        const mem = memberMap[mid] || null;
+        const mob = String(r.whatsapp_mobile || '');
+        const conflictMember = activeMembers.find(
+          (x) => x.id !== mid && normalizeMobile(x.mobile) && normalizeMobile(x.mobile) === normalizeMobile(mob)
+        );
+        const conflictAdmin = (adminUser && mob === adminUser) || (trUser && mob === trUser);
+        return {
+          id: r.id,
+          memberId: mid,
+          originalName: r.original_name || (mem ? mem.name : mid),
+          correctedName: r.corrected_name || '',
+          currentMemberName: mem ? mem.name : (r.original_name || mid),
+          currentMemberMobile: mem ? (mem.mobile || '') : '',
+          hasPin: mem ? !!(mem.hasPin || mem.pin) : false,
+          whatsappMobile: mob,
+          note: r.note || '',
+          status: r.status || 'pending',
+          createdPinAt: r.created_pin_at || null,
+          submittedAt: r.submitted_at,
+          updatedAt: r.updated_at,
+          conflictReason: conflictAdmin
+            ? 'Admin/कोषाध्यक्ष Username सँग जुधेको छ'
+            : (conflictMember ? ('अर्का सदस्य (' + conflictMember.name + ') मा यही नम्बर छ') : '')
+        };
+      });
+
+      const notSubmittedMembers = activeMembers
+        .filter((m) => !submittedSet.has(String(m.id)))
+        .map((m) => ({
+          id: m.id,
+          name: m.name || '',
+          mobile: m.mobile || '',
+          hasPin: !!(m.hasPin || m.pin)
+        }));
+
+      const pendingCount = registrations.filter((r) => r.status === 'pending').length;
+      const approvedCount = registrations.filter((r) => r.status === 'approved').length;
+
+      return json({
+        ok: true,
+        registrations,
+        notSubmittedMembers,
+        summary: {
+          totalMembers: activeMembers.length,
+          submittedCount: registrations.length,
+          pendingCount,
+          approvedCount,
+          notSubmittedCount: notSubmittedMembers.length
+        }
+      });
+    }
+
+    if (path === '/admin/registrations/approve' && method === 'POST') {
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'User ID बनाउन Admin लाई मात्र अनुमति छ' }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const memberId = String((body && body.memberId) || '').trim();
+      const pin = String((body && body.pin) || '').trim();
+      const isTemp = body && body.isTemp !== undefined ? !!body.isTemp : true;
+      const applyName = body && body.applyName !== undefined ? !!body.applyName : true;
+
+      if (!memberId) return json({ ok: false, error: 'memberId आवश्यक छ' }, 400);
+      if (!/^\d{4}$/.test(pin)) {
+        return json({ ok: false, error: 'PIN ठीक ४ अंकको हुनुपर्छ' }, 400);
+      }
+
+      const regRow = await env.DB.prepare('SELECT * FROM member_registrations WHERE member_id = ?').bind(memberId).first();
+      const normMob = normalizeWhatsappInput((body && body.whatsappMobile) || (regRow && regRow.whatsapp_mobile) || '');
+      if (!normMob || normMob.length < 7 || normMob.length > 15) {
+        return json({ ok: false, error: 'मान्य WhatsApp / मोबाइल नम्बर चाहिन्छ' }, 400);
+      }
+
+      const curState = await loadStateRow(env.DB);
+      const stData = curState.data || defaultState();
+      const member = (stData.members || []).find((m) => m && m.id === memberId && m.active !== false);
+      if (!member) {
+        return json({ ok: false, error: 'सदस्य सूचीमा सक्रिय सदस्य भेटिएन' }, 404);
+      }
+
+      const adminUser = String((stData.admin && stData.admin.username) || '').trim();
+      const trUser = String((stData.treasurer && stData.treasurer.username) || '').trim();
+      if ((adminUser && normMob === adminUser) || (trUser && normMob === trUser)) {
+        return json({ ok: false, error: 'यो नम्बर Admin वा कोषाध्यक्ष Username सँग जुध्छ' }, 400);
+      }
+      const dupMember = (stData.members || []).find(
+        (x) => x && x.active !== false && x.id !== memberId && normalizeMobile(x.mobile) && normalizeMobile(x.mobile) === normalizeMobile(normMob)
+      );
+      if (dupMember) {
+        return json({ ok: false, error: `यो नम्बर पहिले नै अर्का सदस्य (${dupMember.name}) मा दर्ता छ` }, 400);
+      }
+
+      const candidateName = String((body && body.name) || (regRow && regRow.corrected_name) || '').trim().slice(0, 80);
+      const finalName = (applyName && candidateName) ? candidateName : String(member.name || memberId);
+      const now = new Date().toISOString();
+
+      member.mobile = normMob;
+      member.name = finalName;
+      member.hasPin = true;
+      member.mustChangePin = isTemp;
+      if (Array.isArray(stData.pinRequests)) {
+        stData.pinRequests.forEach((r) => {
+          if (r && r.memberId === memberId && r.status === 'pending') r.status = 'approved';
+        });
+      }
+
+      const pinHash = await hashSecret(pin);
+      await env.DB
+        .prepare(
+          `INSERT INTO auth_credentials (id, role, username, mobile, member_id, name, secret_hash, pin_hash, accounts_writer, active, updated_at)
+           VALUES (?, 'member', NULL, ?, ?, ?, ?, ?, 0, 1, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             mobile=excluded.mobile, name=excluded.name, secret_hash=excluded.secret_hash, pin_hash=excluded.pin_hash, active=1, updated_at=excluded.updated_at`
+        )
+        .bind('mem:' + memberId, normMob, memberId, finalName, pinHash, pinHash, now)
+        .run();
+
+      await setPinResetFlag(env.DB, memberId, isTemp);
+
+      if (regRow) {
+        await env.DB
+          .prepare("UPDATE member_registrations SET status='approved', whatsapp_mobile=?, created_pin_at=?, updated_at=? WHERE member_id=?")
+          .bind(normMob, now, now, memberId)
+          .run();
+      }
+
+      const nextVer = (curState.version || 0) + 1;
+      await env.DB
+        .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+        .bind(nextVer, JSON.stringify(stripSecretsFromState(stData)), now)
+        .run();
+
+      waitUntil(logUserActivity(env.DB, {
+        userKey: userReadKey(user),
+        actorName: user.name || 'Admin',
+        actorRole: user.role,
+        memberId,
+        eventType: 'registration_approved',
+        title: '✅ रजिस्ट्रेसनबाट User ID र PIN बन्यो',
+        detail: `${finalName} (${memberId}) · मोबाइल: ${maskPhone(normMob)}`
+      }));
+
+      const pinFlags = await getPinResetFlags(env.DB);
+      const termsAcceptances = await getTermsAcceptances(env.DB);
+      return json({
+        ok: true,
+        memberId,
+        name: finalName,
+        mobile: normMob,
+        isTemp,
+        version: nextVer,
+        data: sanitizeStateForRole(stData, user, pinFlags, termsAcceptances)
+      });
+    }
+
+    if (path === '/admin/registrations/delete' && method === 'POST') {
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'Admin लाई मात्र अनुमति छ' }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const memberId = String((body && body.memberId) || '').trim();
+      if (!memberId) return json({ ok: false, error: 'memberId चाहिन्छ' }, 400);
+      await env.DB.prepare('DELETE FROM member_registrations WHERE member_id = ?').bind(memberId).run();
+      return json({ ok: true, memberId });
     }
 
     return json({ ok: false, error: 'Route not found: ' + path }, 404);

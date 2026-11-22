@@ -1728,3 +1728,100 @@ body.app-locked #toast {
   margin-bottom: 6px;
 }
 
+/* ===== Shareable Member User ID Registration Screen ===== */
+#register-screen {
+  background: linear-gradient(160deg, #0d6efd 0%, #198754 100%);
+  align-items: center;
+  justify-content: flex-start;
+  padding: 18px 14px 32px;
+}
+.reg-container {
+  width: 100%;
+  max-width: 420px;
+  color: #fff;
+  text-align: center;
+}
+.reg-container h1 {
+  font-size: 1.35rem;
+  margin: 4px 0 2px;
+}
+.reg-readonly-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.reg-readonly-input {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+  font-weight: 700;
+  border-color: #cbd5e1 !important;
+}
+.reg-member-chips {
+  max-height: 185px;
+  overflow-y: auto;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 6px;
+  margin-top: 6px;
+}
+.reg-member-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #fff;
+  margin-bottom: 5px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  color: #0f172a;
+}
+.reg-member-item:last-child { margin-bottom: 0; }
+.reg-member-item.selected {
+  border-color: #0d6efd;
+  background: #e7f1ff;
+  box-shadow: 0 0 0 2px rgba(13,110,253,0.16);
+}
+.reg-id-tag {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #e2e8f0;
+  color: #1e293b;
+  padding: 2px 6px;
+  border-radius: 6px;
+  margin-right: 6px;
+}
+.reg-status-pill {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.reg-status-pill.pending { background: #fff3cd; color: #664d03; }
+.reg-status-pill.approved { background: #d1e7dd; color: #0f5132; }
+.reg-status-pill.wait { background: #e2e8f0; color: #475569; }
+.reg-admin-card {
+  background: #fff;
+  border: 1.5px solid #dee2e6;
+  border-radius: 12px;
+  padding: 11px 12px;
+  margin-bottom: 10px;
+}
+.reg-admin-card.pending {
+  border-color: #fd7e14;
+  background: #fffbf5;
+}
+.reg-admin-card.approved {
+  border-color: #badbcc;
+  background: #f8fffb;
+}
+
+

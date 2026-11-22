@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
   <title>समूह बचत एप</title>
-  <link rel="stylesheet" href="./css/styles.css?v=21">
+  <link rel="stylesheet" href="./css/styles.css?v=22">
 </head>
 <body translate="no" class="notranslate">
 <div id="app">
@@ -57,7 +57,8 @@
           </div>
 
           <p class="text-muted" style="font-size:0.72rem;margin-top:10px;text-align:center">admin: username + password · सदस्य: mobile + pin</p>
-          <div style="text-align:center;margin-top:8px">
+          <div style="text-align:center;margin-top:8px;display:flex;flex-direction:column;gap:6px;align-items:center">
+            <button type="button" class="btn-link-muted" onclick="openMemberRegistrationScreen()" style="color:#0d6efd;font-weight:600">📝 सदस्य User ID रजिस्ट्रेसन फारम भर्नुहोस्</button>
             <button type="button" class="btn-link-muted" onclick="openPublicTermsModal()">📜 नियम, सर्त तथा गोपनीयता नीति (Terms &amp; Conditions)</button>
           </div>
         </div>
@@ -95,6 +96,85 @@
           </div>
           <button type="button" class="btn btn-primary btn-block" onclick="createAccount()">✅ खाता बनाउनुहोस्</button>
           <button type="button" class="btn btn-outline btn-block" onclick="backToLoginOptions()">← फर्कनुहोस्</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shareable Public Member User ID Registration Form Screen -->
+    <div id="register-screen" class="screen">
+      <div class="reg-container">
+        <div class="logo-big" style="font-size:2.8rem;margin-bottom:4px">
+          <img src="./logo-group.png" alt="logo" width="60" height="60" style="border-radius:14px;object-fit:cover"/>
+        </div>
+        <h1 id="reg-group-title">समूह बचत एप</h1>
+        <p class="subtitle" style="margin-bottom:12px">📝 सदस्य User ID रजिस्ट्रेसन फारम</p>
+
+        <div id="reg-form-card" class="form-card" style="padding:16px">
+          <div id="reg-loading-box" style="text-align:center;padding:18px 8px">
+            <div class="spinner" style="border-color:rgba(13,110,253,0.2);border-top-color:#0d6efd;margin:0 auto 10px"></div>
+            <div style="font-size:0.86rem;color:#475569">सदस्य सूची लोड हुँदैछ...</div>
+          </div>
+
+          <div id="reg-fields-box" class="hidden">
+            <div style="background:#e7f1ff;border:1px solid #b6d4fe;border-radius:10px;padding:9px 11px;font-size:0.8rem;color:#084298;margin-bottom:12px;line-height:1.45">
+              तलको सूचीबाट आफ्नो <strong>नाम</strong> छान्नुहोस्। तपाईंको <strong>Member ID</strong> र <strong>नाम</strong> स्वतः भरिन्छ — नाम सच्याउनुपरे सच्याएर <strong>WhatsApp भएको मोबाइल नम्बर</strong> लेखी सेभ गर्नुहोस्।
+            </div>
+
+            <div class="form-group">
+              <label>१) समूहमा भएका सबै सदस्यहरू (आफ्नो नाम खोजेर थिच्नुहोस्)</label>
+              <input type="text" id="reg-search-input" placeholder="🔍 आफ्नो नाम वा Member ID टाइप गरी खोज्नुहोस्..." oninput="filterRegMembers()">
+              <select id="reg-member-select" onchange="onRegMemberSelect(this.value)" style="margin-top:6px">
+                <option value="">-- यहाँबाट वा तलको सूचीबाट नाम छान्नुहोस् --</option>
+              </select>
+              <div id="reg-member-list" class="reg-member-chips"></div>
+            </div>
+
+            <div id="reg-selected-banner" class="hidden" style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;padding:10px;margin-bottom:12px">
+              <div class="reg-readonly-row">
+                <div>
+                  <label style="font-size:0.75rem;color:#64748b;font-weight:700;display:block;margin-bottom:3px">Member ID</label>
+                  <input type="text" id="reg-member-id" class="reg-readonly-input" readonly>
+                </div>
+                <div>
+                  <label style="font-size:0.75rem;color:#64748b;font-weight:700;display:block;margin-bottom:3px">समूहमा दर्ता नाम</label>
+                  <input type="text" id="reg-original-name" class="reg-readonly-input" readonly>
+                </div>
+              </div>
+              <div id="reg-existing-hint" style="font-size:0.76rem;color:#475569;margin-top:4px"></div>
+            </div>
+
+            <div class="form-group">
+              <label>२) नाम सच्याउनुपरे यहाँ टाइप गर्नुहोस् (ठीक छ भने नबदल्नुहोस्)</label>
+              <input type="text" id="reg-corrected-name" placeholder="नाम सच्याउनुपरे पूरा नाम लेख्नुहोस्" maxlength="80">
+            </div>
+
+            <div class="form-group">
+              <label>३) WhatsApp भएको मोबाइल नम्बर <span style="color:#dc3545">*</span></label>
+              <input type="tel" id="reg-whatsapp-mobile" inputmode="numeric" placeholder="उदा: 98XXXXXXXX (विदेश भए देश कोड सहित)" autocomplete="off">
+              <div class="text-muted" style="font-size:0.73rem;margin-top:4px">Admin ले यही WhatsApp नम्बरमा तपाईंको एप लगइन र PIN पठाउनुहुनेछ।</div>
+            </div>
+
+            <div class="form-group" style="margin-bottom:10px">
+              <label>४) थप टिप्पणी (आवश्यक परे मात्र, वैकल्पिक)</label>
+              <input type="text" id="reg-note" placeholder="उदा: नामको हिज्जे सच्याएको छ / नयाँ नम्बर" maxlength="140">
+            </div>
+
+            <button type="button" id="reg-submit-btn" class="btn btn-success btn-lg btn-block" onclick="submitMemberRegistration()">💾 विवरण सेभ गर्नुहोस्</button>
+          </div>
+
+          <div id="reg-success-box" class="hidden" style="text-align:center;padding:8px 4px">
+            <div style="font-size:2.4rem;margin-bottom:6px">✅</div>
+            <h3 style="color:#0f5132;margin-bottom:6px">तपाईंको विवरण सुरक्षित सेभ भयो!</h3>
+            <div id="reg-success-summary" style="background:#d1e7dd;color:#0f5132;border-radius:10px;padding:10px 12px;font-size:0.84rem;text-align:left;line-height:1.55;margin-bottom:12px"></div>
+            <p style="font-size:0.8rem;color:#475569;margin-bottom:12px">
+              तपाईंको विवरण Admin को सेटिङमा पुगेको छ। Admin ले हेरेर तपाईंको User ID र PIN बनाई WhatsApp मा पठाउनुहुनेछ।
+            </p>
+            <button type="button" class="btn btn-primary btn-block" onclick="resetMemberRegistrationForm()">➕ अर्को सदस्यको विवरण भर्नुहोस्</button>
+          </div>
+
+          <div style="margin-top:12px;padding-top:10px;border-top:1px dashed #dee2e6;text-align:center">
+            <button type="button" class="btn btn-outline btn-sm btn-block" onclick="exitRegistrationToApp()">🔐 एप लगइन पेजमा जानुहोस्</button>
+          </div>
         </div>
       </div>
     </div>
@@ -266,11 +346,11 @@
     </div>
   </div>
 
-  <script src="./js/db.js?v=21"></script>
-  <script src="./js/accounting.js?v=21"></script>
-  <script src="./js/auth.js?v=21"></script>
-  <script src="./js/ui.js?v=21"></script>
-  <script src="./js/app.js?v=21"></script>
+  <script src="./js/db.js?v=22"></script>
+  <script src="./js/accounting.js?v=22"></script>
+  <script src="./js/auth.js?v=22"></script>
+  <script src="./js/ui.js?v=22"></script>
+  <script src="./js/app.js?v=22"></script>
   <script>
   if ('serviceWorker' in navigator) {
     window._swReloading = false;
