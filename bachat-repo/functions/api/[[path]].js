@@ -114,6 +114,7 @@ function stripSecretsFromState(data) {
       name: clean.admin.name || 'Admin',
       username: clean.admin.username || '',
       mobile: clean.admin.mobile || '',
+      email: clean.admin.email || '',
       memberId: null,
       hasPin: !!(clean.admin.pin || clean.admin.hasPin)
     };
@@ -697,6 +698,99 @@ function evaluateHealthErrorsFromState(st, stateBytes = 0, d1UsedBytes = 0) {
   return errors;
 }
 
+function getAdminAlertRecipient(env, st) {
+  return String(
+    (env && env.ADMIN_EMAIL) ||
+    (st && st.admin && st.admin.email) ||
+    (st && st.settings && st.settings.appOwner && st.settings.appOwner.email) ||
+    ''
+  ).trim();
+}
+
+function isEmailProviderConfigured(env) {
+  return Boolean(
+    (env && env.RESEND_API_KEY) ||
+    (env && env.BREVO_API_KEY) ||
+    (env && env.SEND_EMAIL && typeof env.SEND_EMAIL.send === 'function')
+  );
+}
+
+async function sendAdminHealthEmailApi(env, st, errors, nepalDate) {
+  const toEmail = getAdminAlertRecipient(env, st);
+  if (!toEmail || !toEmail.includes('@')) {
+    return { sent: false, status: 'no_admin_email', to: '' };
+  }
+  const groupName = (st && st.group && st.group.name) || 'समूह बचत';
+  const subject = `🚨 ${groupName}: प्रणाली स्वास्थ्य त्रुटि (${errors.length}) — ${nepalDate}`;
+  const lines = [
+    `${groupName} को मासिक स्वचालित स्वास्थ्य जाँच (${nepalDate}) मा निम्न गम्भीर त्रुटि फेला परेको छ:`,
+    ''
+  ];
+  errors.forEach((e, idx) => {
+    lines.push(`${idx + 1}. ${e.title}${e.solution ? ' — ' + e.solution : ''}`);
+  });
+  lines.push('');
+  lines.push('कृपया तुरुन्त Admin प्यानल → सेटिङ → "प्रणाली स्वास्थ्य र भण्डारण" खोलेर जाँच गर्नुहोस्।');
+  lines.push('स्वास्थ्य जाँच नखोलेसम्म हरेक १ घण्टामा Admin मोबाइलमा Push सूचना गइरहनेछ।');
+  const bodyText = lines.join('\n');
+
+  try {
+    if (env && env.RESEND_API_KEY) {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + env.RESEND_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: env.ALERT_FROM_EMAIL || 'Bachat System <onboarding@resend.dev>',
+          to: [toEmail],
+          subject,
+          text: bodyText
+        })
+      });
+      return { sent: res.ok, status: res.ok ? 'sent_resend' : 'error_resend_' + res.status, to: toEmail };
+    }
+
+    if (env && env.BREVO_API_KEY) {
+      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': env.BREVO_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          sender: { name: groupName, email: env.ALERT_FROM_EMAIL || 'noreply@bachat.gopalkoirala.com.np' },
+          to: [{ email: toEmail }],
+          subject,
+          textContent: bodyText
+        })
+      });
+      return { sent: res.ok, status: res.ok ? 'sent_brevo' : 'error_brevo_' + res.status, to: toEmail };
+    }
+
+    if (env && env.SEND_EMAIL && typeof env.SEND_EMAIL.send === 'function') {
+      const mod = await import('cloudflare:email');
+      const fromAddr = env.ALERT_FROM_EMAIL || 'noreply@bachat.gopalkoirala.com.np';
+      const subjectB64 = btoa(String.fromCharCode(...new TextEncoder().encode(subject)));
+      const rawMime =
+        `From: ${fromAddr}\r\n` +
+        `To: ${toEmail}\r\n` +
+        `Subject: =?UTF-8?B?${subjectB64}?=\r\n` +
+        `MIME-Version: 1.0\r\n` +
+        `Content-Type: text/plain; charset=UTF-8\r\n\r\n` +
+        bodyText;
+      const msg = new mod.EmailMessage(fromAddr, toEmail, rawMime);
+      await env.SEND_EMAIL.send(msg);
+      return { sent: true, status: 'sent_cf_email', to: toEmail };
+    }
+
+    return { sent: false, status: 'provider_not_configured', to: toEmail };
+  } catch (err) {
+    return { sent: false, status: 'send_failed', to: toEmail, error: err && err.message ? err.message : String(err) };
+  }
+}
+
 async function sendAdminHealthAlertPush(env, errors, notifyNum) {
   if (!errors || !errors.length) return 0;
   const firstTitle = errors[0].title || 'प्रणाली त्रुटि';
@@ -721,61 +815,26 @@ async function runBackgroundHealthAndReminderTick(env, opts = {}) {
   const nepalDate = nepal.toISOString().slice(0, 10);
   const nowIso = new Date(nowMs).toISOString();
   const bs = adToBsPartsApi(nepal);
+  const secondFridayDay = bs ? nthWeekdayOfBsMonthApi(bs.year, bs.monthIndex, 5, 2) : null;
+  const isSecondFriday = !!(bs && secondFridayDay && bs.day === secondFridayDay);
 
-  const loadHealthErrors = async () => {
+  const loadHealthWithState = async () => {
     try {
       const gs = await env.DB.prepare("SELECT version, data_json, updated_at FROM group_state WHERE id = 'main'").first();
-      if (!gs || !gs.data_json) return [];
+      if (!gs || !gs.data_json) return { st: null, errors: [] };
       const st = JSON.parse(gs.data_json);
-      return evaluateHealthErrorsFromState(st, String(gs.data_json || '').length, 0);
+      return { st, errors: evaluateHealthErrorsFromState(st, String(gs.data_json || '').length, 0) };
     } catch (e) {
-      return evaluateHealthErrorsFromState(null, 0, 0);
+      return { st: null, errors: evaluateHealthErrorsFromState(null, 0, 0) };
     }
   };
 
-  // १. बिहानी प्रणाली स्वास्थ्य जाँच (बिहान ६ बजेदेखि NPT)
-  if (nepalHour >= 6) {
-    const morningKey = 'health_morning_' + nepalDate;
-    const morningDone = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(morningKey).first();
-    if (!morningDone) {
-      const errors = await loadHealthErrors();
-      const errSig = errors.map((e) => e.code + ':' + e.title).join('|');
-      const curAlert = await getSecretJson(env.DB, 'health_alert_state');
-      if (errors.length > 0) {
-        const alreadyAckedToday = curAlert && curAlert.acknowledgedForDate === nepalDate && curAlert.acknowledgedSignature === errSig;
-        if (!alreadyAckedToday) {
-          const nextAlert = {
-            active: true,
-            alertDate: nepalDate,
-            detectedAt: (curAlert && curAlert.active && curAlert.detectedAt) || nowIso,
-            acknowledgedAt: null,
-            acknowledgedForDate: null,
-            acknowledgedSignature: null,
-            errorCount: errors.length,
-            errorSignature: errSig,
-            summary: errors[0].title,
-            lastNotifiedAt: nowIso,
-            notifyCount: 1
-          };
-          await sendAdminHealthAlertPush(env, errors, 1);
-          await setSecretJson(env.DB, 'health_alert_state', nextAlert);
-        }
-      } else if (curAlert && curAlert.active) {
-        await setSecretJson(env.DB, 'health_alert_state', Object.assign({}, curAlert, { active: false, autoClearedAt: nowIso }));
-      }
-      await env.DB
-        .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
-        .bind(morningKey, nowIso)
-        .run();
-    }
-  }
-
-  // २. त्रुटि रहेमा Admin ले नहेरेसम्म हरेक घण्टा Admin लाई मात्र Background Push
+  // १. अघिल्लो त्रुटि Admin ले नहेरेको भए हरेक १ घण्टामा Admin लाई मात्र Push
   const alertState = await getSecretJson(env.DB, 'health_alert_state');
   if (alertState && alertState.active && !alertState.acknowledgedAt) {
     const lastMs = Date.parse(alertState.lastNotifiedAt || 0) || 0;
     if (nowMs - lastMs >= 55 * 60 * 1000) {
-      const errors = await loadHealthErrors();
+      const { errors } = await loadHealthWithState();
       if (errors.length > 0) {
         const nextCount = Number(alertState.notifyCount || 0) + 1;
         await sendAdminHealthAlertPush(env, errors, nextCount);
@@ -800,39 +859,80 @@ async function runBackgroundHealthAndReminderTick(env, opts = {}) {
     }
   }
 
-  // ३. दोस्रो शुक्रबार बेलुकी रिमाइन्डर (साँझ ६/७/८ बजे >= 18:00 NPT मात्र, बिहान होइन)
-  if (bs) {
-    const secondFridayDay = nthWeekdayOfBsMonthApi(bs.year, bs.monthIndex, 5, 2);
-    if (secondFridayDay && bs.day === secondFridayDay && nepalHour >= 18) {
-      const jobKey = 'remind_' + bs.year + '_' + bs.monthIndex;
-      const already = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(jobKey).first();
-      if (!already) {
-        const satDay = bs.day + 1;
-        const mName = BS_MONTHS_NP_API[bs.monthIndex] || '';
-        const msgText =
-          `🔔 दोस्रो शनिबार — बचत बैठक सूचना (${mName} ${bs.year})\n` +
-          `भोलि (${mName} ${satDay} गते, दोस्रो शनिबार) समूहको नियमित मासिक बचत बैठक बस्ने छ।\n` +
-          `सदस्यज्यूहरूले आफ्नो पासबुक हेरी तोकिएको समयमा अनिवार्य बचत, ब्याज तथा किस्ता रकमसहित उपस्थित भइदिनुहोला। धन्यवाद!`;
+  if (!isSecondFriday) return;
 
-        await env.DB
-          .prepare(
-            `INSERT OR IGNORE INTO chat_messages (id, channel, from_id, from_name, from_role, text, type, bill_id, created_at)
-             VALUES (?, 'group', 'system', 'समूह सूचना', 'system', ?, 'auto_group', NULL, ?)`
-          )
-          .bind('rem_fri_' + bs.year + '_' + bs.monthIndex, msgText, nowIso)
-          .run();
-
-        await broadcastPush(env, {
-          title: '🔔 भोलि बचत बैठक छ',
-          body: `${mName} ${satDay} गते (दोस्रो शनिबार) — समयमै उपस्थित हुनुहोला।`,
-          tag: jobKey
-        });
-
-        await env.DB
-          .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
-          .bind(jobKey, nowIso)
-          .run();
+  // २. काम दोस्रो: हरेक नेपाली महिनाको दोस्रो शुक्रबार बिहान (>= 6:00 AM NPT) स्वतः स्वास्थ्य जाँच
+  if (nepalHour >= 6) {
+    const healthKey = 'health_check_' + bs.year + '_' + bs.monthIndex;
+    const healthDone = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(healthKey).first();
+    if (!healthDone) {
+      const { st, errors } = await loadHealthWithState();
+      const errSig = errors.map((e) => e.code + ':' + e.title).join('|');
+      const curAlert = await getSecretJson(env.DB, 'health_alert_state');
+      if (errors.length > 0) {
+        const alreadyAckedMonth = curAlert && curAlert.acknowledgedKey === healthKey && curAlert.acknowledgedSignature === errSig;
+        if (!alreadyAckedMonth) {
+          const emailRes = await sendAdminHealthEmailApi(env, st, errors, nepalDate);
+          await sendAdminHealthAlertPush(env, errors, 1);
+          const nextAlert = {
+            active: true,
+            healthKey,
+            alertDate: nepalDate,
+            detectedAt: nowIso,
+            acknowledgedAt: null,
+            acknowledgedKey: null,
+            acknowledgedSignature: null,
+            errorCount: errors.length,
+            errorSignature: errSig,
+            summary: errors[0].title,
+            emailStatus: emailRes.status,
+            emailTo: emailRes.to || '',
+            emailSentAt: emailRes.sent ? nowIso : null,
+            lastNotifiedAt: nowIso,
+            notifyCount: 1
+          };
+          await setSecretJson(env.DB, 'health_alert_state', nextAlert);
+        }
+      } else if (curAlert && curAlert.active) {
+        await setSecretJson(env.DB, 'health_alert_state', Object.assign({}, curAlert, { active: false, autoClearedAt: nowIso }));
       }
+      await env.DB
+        .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
+        .bind(healthKey, nowIso)
+        .run();
+    }
+  }
+
+  // ३. काम पहिलो: हरेक नेपाली महिनाको दोस्रो शुक्रबार बेलुकी (>= 18:00 NPT) बैठक रिमाइन्डर (महिनामा एक पटक मात्र)
+  if (nepalHour >= 18) {
+    const jobKey = 'remind_' + bs.year + '_' + bs.monthIndex;
+    const already = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(jobKey).first();
+    if (!already) {
+      const satDay = bs.day + 1;
+      const mName = BS_MONTHS_NP_API[bs.monthIndex] || '';
+      const msgText =
+        `🔔 दोस्रो शनिबार — बचत बैठक सूचना (${mName} ${bs.year})\n` +
+        `भोलि (${mName} ${satDay} गते, दोस्रो शनिबार) समूहको नियमित मासिक बचत बैठक बस्ने छ।\n` +
+        `सदस्यज्यूहरूले आफ्नो पासबुक हेरी तोकिएको समयमा अनिवार्य बचत, ब्याज तथा किस्ता रकमसहित उपस्थित भइदिनुहोला। धन्यवाद!`;
+
+      await env.DB
+        .prepare(
+          `INSERT OR IGNORE INTO chat_messages (id, channel, from_id, from_name, from_role, text, type, bill_id, created_at)
+           VALUES (?, 'group', 'system', 'समूह सूचना', 'system', ?, 'auto_group', NULL, ?)`
+        )
+        .bind('rem_fri_' + bs.year + '_' + bs.monthIndex, msgText, nowIso)
+        .run();
+
+      await broadcastPush(env, {
+        title: '🔔 भोलि बचत बैठक छ',
+        body: `${mName} ${satDay} गते (दोस्रो शनिबार) — समयमै उपस्थित हुनुहोला।`,
+        tag: jobKey
+      });
+
+      await env.DB
+        .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
+        .bind(jobKey, nowIso)
+        .run();
     }
   }
 }
@@ -1494,10 +1594,12 @@ export async function onRequest(context) {
 
         const curState = await loadStateRow(env.DB);
         const stData = curState.data || defaultState();
+        const nextEmail = body.email !== undefined ? String(body.email || '').trim() : ((stData.admin && stData.admin.email) || '');
         stData.admin = Object.assign({}, stData.admin || {}, {
           name: nextName,
           username: nextUser,
           mobile: nextMob,
+          email: nextEmail,
           memberId: null,
           hasPin: !!nextPinHash
         });
@@ -2337,7 +2439,9 @@ export async function onRequest(context) {
 
       const nepalNow = getNepalNowApi();
       const nepalDate = nepalNow.toISOString().slice(0, 10);
-      const nowIso = new Date().toISOString();
+      const bsNow = adToBsPartsApi(nepalNow);
+      const currentHealthKey = bsNow ? ('health_check_' + bsNow.year + '_' + bsNow.monthIndex) : ('health_' + nepalDate);
+      const nowIso = new Date(Date.now()).toISOString();
       const errSig = criticalErrors.map((e) => e.code + ':' + e.title).join('|');
       let healthAlertState = await getSecretJson(env.DB, 'health_alert_state');
       let alertAcknowledged = false;
@@ -2348,35 +2452,48 @@ export async function onRequest(context) {
           active: false,
           acknowledgedAt: nowIso,
           acknowledgedBy: user.username || 'admin',
-          acknowledgedForDate: nepalDate,
+          acknowledgedKey: (healthAlertState && healthAlertState.healthKey) || currentHealthKey,
           acknowledgedSignature: errSig
         });
         await setSecretJson(env.DB, 'health_alert_state', healthAlertState);
       } else if (criticalErrors.length > 0) {
-        const alreadyAckedToday = healthAlertState && healthAlertState.acknowledgedForDate === nepalDate && healthAlertState.acknowledgedSignature === errSig;
-        if (!alreadyAckedToday && !(healthAlertState && healthAlertState.active)) {
+        const alreadyAckedMonth = healthAlertState && healthAlertState.acknowledgedKey === currentHealthKey && healthAlertState.acknowledgedSignature === errSig;
+        if (!alreadyAckedMonth && !(healthAlertState && healthAlertState.active)) {
+          const emailRes = await sendAdminHealthEmailApi(env, st, criticalErrors, nepalDate);
+          await sendAdminHealthAlertPush(env, criticalErrors, 1);
           healthAlertState = {
             active: true,
+            healthKey: currentHealthKey,
             alertDate: nepalDate,
             detectedAt: nowIso,
             acknowledgedAt: null,
-            acknowledgedForDate: null,
+            acknowledgedKey: null,
             acknowledgedSignature: null,
             errorCount: criticalErrors.length,
             errorSignature: errSig,
             summary: criticalErrors[0].title,
+            emailStatus: emailRes.status,
+            emailTo: emailRes.to || '',
+            emailSentAt: emailRes.sent ? nowIso : null,
             lastNotifiedAt: nowIso,
             notifyCount: 1
           };
-          await sendAdminHealthAlertPush(env, criticalErrors, 1);
           await setSecretJson(env.DB, 'health_alert_state', healthAlertState);
         }
       }
+
+      const emailAlert = {
+        providerReady: isEmailProviderConfigured(env),
+        recipient: getAdminAlertRecipient(env, st),
+        lastEmailStatus: (healthAlertState && healthAlertState.emailStatus) || '',
+        lastEmailAt: (healthAlertState && healthAlertState.emailSentAt) || null
+      };
 
       return json({
         ok: true,
         alertAcknowledged,
         healthAlertState,
+        emailAlert,
         checkedAt: nowIso,
         version: stateRow.version,
         stateUpdatedAt: stateRow.updatedAt,

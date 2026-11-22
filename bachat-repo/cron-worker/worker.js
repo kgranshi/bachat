@@ -280,6 +280,88 @@ async function evaluateCriticalHealthErrors(db) {
   return errors;
 }
 
+async function sendAdminHealthEmail(env, st, errors, nepalDate) {
+  const toEmail = String(
+    (env && env.ADMIN_EMAIL) ||
+    (st && st.admin && st.admin.email) ||
+    (st && st.settings && st.settings.appOwner && st.settings.appOwner.email) ||
+    ''
+  ).trim();
+  if (!toEmail || !toEmail.includes('@')) {
+    return { sent: false, status: 'no_admin_email', to: '' };
+  }
+
+  const groupName = (st && st.group && st.group.name) || 'समूह बचत';
+  const subject = `🚨 ${groupName}: प्रणाली स्वास्थ्य त्रुटि (${errors.length}) — ${nepalDate}`;
+  const lines = [
+    `${groupName} को मासिक स्वचालित स्वास्थ्य जाँच (${nepalDate}) मा निम्न गम्भीर त्रुटि फेला परेको छ:`,
+    ''
+  ];
+  errors.forEach((e, idx) => {
+    lines.push(`${idx + 1}. ${e.title}`);
+  });
+  lines.push('');
+  lines.push('कृपया तुरुन्त Admin प्यानल → सेटिङ → "प्रणाली स्वास्थ्य र भण्डारण" खोलेर जाँच गर्नुहोस्।');
+  lines.push('स्वास्थ्य जाँच नखोलेसम्म हरेक १ घण्टामा Admin मोबाइलमा Push सूचना गइरहनेछ।');
+  const bodyText = lines.join('\n');
+
+  try {
+    if (env && env.RESEND_API_KEY) {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + env.RESEND_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: env.ALERT_FROM_EMAIL || 'Bachat System <onboarding@resend.dev>',
+          to: [toEmail],
+          subject,
+          text: bodyText
+        })
+      });
+      return { sent: res.ok, status: res.ok ? 'sent_resend' : 'error_resend_' + res.status, to: toEmail };
+    }
+
+    if (env && env.BREVO_API_KEY) {
+      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': env.BREVO_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          sender: { name: groupName, email: env.ALERT_FROM_EMAIL || 'noreply@bachat.gopalkoirala.com.np' },
+          to: [{ email: toEmail }],
+          subject,
+          textContent: bodyText
+        })
+      });
+      return { sent: res.ok, status: res.ok ? 'sent_brevo' : 'error_brevo_' + res.status, to: toEmail };
+    }
+
+    if (env && env.SEND_EMAIL && typeof env.SEND_EMAIL.send === 'function') {
+      const mod = await import('cloudflare:email');
+      const fromAddr = env.ALERT_FROM_EMAIL || 'noreply@bachat.gopalkoirala.com.np';
+      const subjectB64 = btoa(String.fromCharCode(...textEncoder.encode(subject)));
+      const rawMime =
+        `From: ${fromAddr}\r\n` +
+        `To: ${toEmail}\r\n` +
+        `Subject: =?UTF-8?B?${subjectB64}?=\r\n` +
+        `MIME-Version: 1.0\r\n` +
+        `Content-Type: text/plain; charset=UTF-8\r\n\r\n` +
+        bodyText;
+      const msg = new mod.EmailMessage(fromAddr, toEmail, rawMime);
+      await env.SEND_EMAIL.send(msg);
+      return { sent: true, status: 'sent_cf_email', to: toEmail };
+    }
+
+    return { sent: false, status: 'provider_not_configured', to: toEmail };
+  } catch (err) {
+    return { sent: false, status: 'send_failed', to: toEmail, error: err && err.message ? err.message : String(err) };
+  }
+}
+
 async function sendAdminHealthPush(db, errors, countNum) {
   const vapidRow = await db.prepare("SELECT value FROM system_secrets WHERE key = 'vapid_keys'").first();
   if (!vapidRow || !vapidRow.value) return 0;
@@ -315,57 +397,22 @@ export default {
     const nepalDate = nepal.toISOString().slice(0, 10);
     const nowIso = new Date(Date.now()).toISOString();
     const bs = adToBsParts(nepal);
+    const secondFridayDay = bs ? nthWeekdayOfBsMonth(bs.year, bs.monthIndex, 5, 2) : null;
+    const isSecondFriday = !!(bs && secondFridayDay && bs.day === secondFridayDay);
 
-    // १. बिहानी प्रणाली स्वास्थ्य जाँच (बिहान ६ बजेदेखि NPT)
-    if (nepalHour >= 6) {
-      const morningKey = `health_morning_${nepalDate}`;
-      const morningDone = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(morningKey).first();
-      if (!morningDone) {
-        const errors = await evaluateCriticalHealthErrors(env.DB);
-        const errSig = errors.map((e) => e.code + ':' + e.title).join('|');
-        const curAlert = await getSecretJson(env.DB, 'health_alert_state');
-        if (errors.length > 0) {
-          const alreadyAckedToday = curAlert && curAlert.acknowledgedForDate === nepalDate && curAlert.acknowledgedSignature === errSig;
-          if (!alreadyAckedToday) {
-            const nextAlert = {
-              active: true,
-              alertDate: nepalDate,
-              detectedAt: (curAlert && curAlert.active && curAlert.detectedAt) || nowIso,
-              acknowledgedAt: null,
-              acknowledgedForDate: null,
-              acknowledgedSignature: null,
-              errorCount: errors.length,
-              errorSignature: errSig,
-              summary: errors[0].title,
-              lastNotifiedAt: nowIso,
-              notifyCount: 1
-            };
-            await sendAdminHealthPush(env.DB, errors, 1);
-            await setSecretJson(env.DB, 'health_alert_state', nextAlert);
-          }
-        } else if (curAlert && curAlert.active) {
-          await setSecretJson(env.DB, 'health_alert_state', Object.assign({}, curAlert, { active: false, autoClearedAt: nowIso }));
-        }
-        await env.DB
-          .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
-          .bind(morningKey, nowIso)
-          .run();
-      }
-    }
-
-    // २. स्वास्थ्य जाँचमा त्रुटि छ र Admin ले नहेरेसम्म हरेक घण्टा (Admin लाई मात्र) पुश सूचना
-    const alertState = await getSecretJson(env.DB, 'health_alert_state');
-    if (alertState && alertState.active && !alertState.acknowledgedAt) {
-      const lastMs = Date.parse(alertState.lastNotifiedAt || 0) || 0;
+    // १. यदि अघिल्लो स्वास्थ्य जाँचको त्रुटि Admin ले नहेरेको भए हरेक १ घण्टामा Admin लाई मात्र Push
+    const existingAlert = await getSecretJson(env.DB, 'health_alert_state');
+    if (existingAlert && existingAlert.active && !existingAlert.acknowledgedAt) {
+      const lastMs = Date.parse(existingAlert.lastNotifiedAt || 0) || 0;
       if (Date.now() - lastMs >= 55 * 60 * 1000) {
         const errors = await evaluateCriticalHealthErrors(env.DB);
         if (errors.length > 0) {
-          const nextCount = Number(alertState.notifyCount || 0) + 1;
+          const nextCount = Number(existingAlert.notifyCount || 0) + 1;
           await sendAdminHealthPush(env.DB, errors, nextCount);
           await setSecretJson(
             env.DB,
             'health_alert_state',
-            Object.assign({}, alertState, {
+            Object.assign({}, existingAlert, {
               errorCount: errors.length,
               errorSignature: errors.map((e) => e.code + ':' + e.title).join('|'),
               summary: errors[0].title,
@@ -377,16 +424,59 @@ export default {
           await setSecretJson(
             env.DB,
             'health_alert_state',
-            Object.assign({}, alertState, { active: false, autoClearedAt: nowIso })
+            Object.assign({}, existingAlert, { active: false, autoClearedAt: nowIso })
           );
         }
       }
     }
 
-    // ३. दोस्रो शुक्रबार बेलुकी रिमाइन्डर (साँझ ६/७/८ बजे >= 18:00 NPT मात्र, बिहान होइन)
-    if (!bs) return;
-    const secondFridayDay = nthWeekdayOfBsMonth(bs.year, bs.monthIndex, 5, 2);
-    if (!secondFridayDay || bs.day !== secondFridayDay) return;
+    if (!isSecondFriday) return;
+
+    // २. काम दोस्रो: हरेक नेपाली महिनाको दोस्रो शुक्रबार बिहान (>= 6:00 AM NPT) स्वतः स्वास्थ्य जाँच
+    if (nepalHour >= 6) {
+      const healthKey = `health_check_${bs.year}_${bs.monthIndex}`;
+      const healthDone = await env.DB.prepare('SELECT job_key FROM schedule_log WHERE job_key = ?').bind(healthKey).first();
+      if (!healthDone) {
+        const errors = await evaluateCriticalHealthErrors(env.DB);
+        const errSig = errors.map((e) => e.code + ':' + e.title).join('|');
+        const curAlert = await getSecretJson(env.DB, 'health_alert_state');
+        if (errors.length > 0) {
+          let stObj = null;
+          try {
+            const gs = await env.DB.prepare("SELECT data_json FROM group_state WHERE id = 'main'").first();
+            stObj = gs && gs.data_json ? JSON.parse(gs.data_json) : null;
+          } catch (e) {}
+          const emailRes = await sendAdminHealthEmail(env, stObj, errors, nepalDate);
+          await sendAdminHealthPush(env.DB, errors, 1);
+          const nextAlert = {
+            active: true,
+            healthKey,
+            alertDate: nepalDate,
+            detectedAt: nowIso,
+            acknowledgedAt: null,
+            acknowledgedKey: null,
+            acknowledgedSignature: null,
+            errorCount: errors.length,
+            errorSignature: errSig,
+            summary: errors[0].title,
+            emailStatus: emailRes.status,
+            emailTo: emailRes.to || '',
+            emailSentAt: emailRes.sent ? nowIso : null,
+            lastNotifiedAt: nowIso,
+            notifyCount: 1
+          };
+          await setSecretJson(env.DB, 'health_alert_state', nextAlert);
+        } else if (curAlert && curAlert.active) {
+          await setSecretJson(env.DB, 'health_alert_state', Object.assign({}, curAlert, { active: false, autoClearedAt: nowIso }));
+        }
+        await env.DB
+          .prepare('INSERT OR IGNORE INTO schedule_log (job_key, ran_at) VALUES (?, ?)')
+          .bind(healthKey, nowIso)
+          .run();
+      }
+    }
+
+    // ३. काम पहिलो: हरेक नेपाली महिनाको दोस्रो शुक्रबार बेलुकी (>= 18:00 NPT) बैठक रिमाइन्डर (महिनामा एक पटक मात्र)
     if (nepalHour < 18) return;
 
     const jobKey = `remind_${bs.year}_${bs.monthIndex}`;

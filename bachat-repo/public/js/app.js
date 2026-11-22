@@ -4112,12 +4112,14 @@ async function toggleComplaintResolve(cId, resolvedVal) {
 function editAdminProfile() {
   if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) return UI.toast('Admin मात्र प्रोफाइल बदल्न सक्नुहुन्छ', 'error');
   const data = DB.load();
+  const curEmail = data.admin.email || (data.settings && data.settings.appOwner && data.settings.appOwner.email) || '';
   const html = `
     <p class="text-muted" style="font-size:0.8rem;margin-bottom:10px">Admin ले सेटिङ, विधान, सदस्य PIN, गुनासो र कोषाध्यक्ष नियुक्ति व्यवस्थापन गर्नुहुन्छ (हिसाब लेखन कोषाध्यक्षबाट मात्र हुन्छ)।</p>
-    <div class="form-group"><label>नाम</label><input type="text" id="ea-name" value="${data.admin.name}"></div>
-    <div class="form-group"><label>Username</label><input type="text" id="ea-user" value="${data.admin.username}" autocomplete="off"></div>
+    <div class="form-group"><label>नाम</label><input type="text" id="ea-name" value="${escapeHtmlChat(data.admin.name)}"></div>
+    <div class="form-group"><label>Username</label><input type="text" id="ea-user" value="${escapeHtmlChat(data.admin.username)}" autocomplete="off"></div>
     <div class="form-group"><label>नयाँ Password (खाली राखे नबदलिने)</label><input type="text" id="ea-pass" class="masked-secret" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"></div>
-    <div class="form-group"><label>मोबाइल</label><input type="tel" id="ea-mobile" value="${data.admin.mobile}"></div>
+    <div class="form-group"><label>मोबाइल</label><input type="tel" id="ea-mobile" value="${escapeHtmlChat(data.admin.mobile)}"></div>
+    <div class="form-group"><label>इमेल (त्रुटि अलर्टका लागि)</label><input type="email" id="ea-email" value="${escapeHtmlChat(curEmail)}" placeholder="example@gmail.com"></div>
     <div class="form-group"><label>नयाँ PIN (खाली राखे नबदलिने)</label><input type="text" id="ea-pin" class="masked-secret" maxlength="4" inputmode="numeric" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other"></div>
     <button class="btn btn-primary btn-block" onclick="saveAdminProfile()">💾 सेभ</button>
   `;
@@ -4131,6 +4133,7 @@ async function saveAdminProfile() {
   const nextUser = document.getElementById('ea-user').value.trim() || data.admin.username;
   const pass = document.getElementById('ea-pass').value;
   const nextMobile = document.getElementById('ea-mobile').value.trim() || data.admin.mobile;
+  const nextEmail = (document.getElementById('ea-email') ? document.getElementById('ea-email').value.trim() : '');
   const pin = document.getElementById('ea-pin').value;
   if (pin && (pin.length !== 4 || !/^\d{4}$/.test(pin))) {
     return UI.toast('PIN ४ अंकको हुनुपर्छ', 'error');
@@ -4142,6 +4145,7 @@ async function saveAdminProfile() {
     username: nextUser,
     password: pass || undefined,
     mobile: nextMobile,
+    email: nextEmail,
     pin: pin || undefined
   });
   if (!credRes || !credRes.ok) {
@@ -4909,6 +4913,15 @@ async function openSystemHealthReport() {
     ? `<div class="sys-health-issue ok" style="margin-bottom:8px">✅ घण्टे स्वास्थ्य अलर्ट बन्द गरियो (Admin ले स्वास्थ्य जाँच हेर्नुभयो)</div>`
     : '';
 
+  const emailInfo = res.emailAlert || {};
+  const emailLine = emailInfo.providerReady
+    ? (emailInfo.recipient
+        ? `सक्रिय (${escapeHtmlChat(emailInfo.recipient)})`
+        : 'Admin इमेल खाली छ (Admin प्रोफाइल वा एप परिचयमा इमेल राख्नुहोस्)')
+    : (emailInfo.recipient
+        ? `इमेल: ${escapeHtmlChat(emailInfo.recipient)} · Cloudflare मा RESEND_API_KEY / Email Binding आवश्यक`
+        : 'इमेल ठेगाना र Cloudflare Email सेटअप बाँकी');
+
   const html = `
     <div class="text-muted mb-1" style="font-size:0.75rem">अन्तिम जाँच: ${new Date(res.checkedAt).toLocaleString('ne-NP')} · सर्भर संस्करण v${res.version}</div>
     ${ackNote}
@@ -4921,6 +4934,7 @@ async function openSystemHealthReport() {
       <div class="report-row"><span class="label">छलफल चौतारी (${res.d1.chatCount} सन्देश)</span><span class="value">${_formatBytesReadable(res.d1.chatBytes)}</span></div>
       <div class="report-row"><span class="label">बन्द महिना स्न्यापसट (${res.d1.snapshotCount} वटा)</span><span class="value">${_formatBytesReadable(res.d1.snapshotBytes)}</span></div>
       <div class="report-row"><span class="label">पुश सूचना दर्ता डिभाइस</span><span class="value">${res.d1.pushDevices} डिभाइस (${res.d1.pushUsers} प्रयोगकर्ता)</span></div>
+      <div class="report-row"><span class="label">त्रुटि इमेल अलर्ट</span><span class="value" style="font-size:0.76rem">${emailLine}</span></div>
       ${r2StatusHtml}
       <div class="text-muted mt-1" style="font-size:0.72rem">Free Plan दैनिक सीमा: D1 Read ५० लाख · Write १ लाख · Pages १ लाख अनुरोध (समुदाय बचतका लागि पर्याप्त)</div>
     </div>
@@ -7170,26 +7184,24 @@ async function maybeRunSecondFridayHealthScan() {
     const nepal = getNepalNow();
     const bs = adToBsParts(nepal);
     if (!bs) return false;
-    // बिहानी स्वास्थ्य जाँच (बिहान ६ बजेदेखि NPT)
-    if (nepal.getHours() < 6) return false;
+    // हरेक नेपाली महिनाको दोस्रो शुक्रबार बिहान (>= 6:00 AM NPT) मात्र
+    const fri = nthWeekdayOfBsMonth(bs.year, bs.monthIndex, 5, 2);
+    if (!fri || bs.day !== fri.day || nepal.getHours() < 6) return false;
 
-    const nDate = nepal.getFullYear() + '-' + String(nepal.getMonth() + 1).padStart(2, '0') + '-' + String(nepal.getDate()).padStart(2, '0');
-    const scanKey = 'gs_admin_health_scan_day_' + nDate;
+    const scanKey = 'gs_admin_health_scan_' + bs.year + '_' + bs.monthIndex;
     try {
       if (localStorage.getItem(scanKey)) return false;
       localStorage.setItem(scanKey, new Date().toISOString());
     } catch (e) {}
 
-    // ?background=1 पठाउँदा त्रुटि भए Admin लाई अलर्ट सेट हुन्छ, तर Admin ले नहेरेसम्म acknowledge हुँदैन
+    // ?background=1 पठाउँदा त्रुटि भए Email + Admin Push अलर्ट सेट हुन्छ, तर Admin ले नहेरेसम्म acknowledge हुँदैन
     const res = await DB.getSystemHealth({ background: true });
     if (!res || !res.ok) return false;
     const errs = (res.issues || []).filter(i => i && i.severity === 'error');
-    const fri = nthWeekdayOfBsMonth(bs.year, bs.monthIndex, 5, 2);
-    const isSecondFriday = !!(fri && bs.day === fri.day);
 
     if (errs.length > 0) {
       UI.toast('🚨 प्रणाली स्वास्थ्यमा गम्भीर त्रुटि (' + errs.length + ')! कृपया सेटिङ → प्रणाली स्वास्थ्य खोलेर हेर्नुहोस्।', 'error');
-    } else if (isSecondFriday) {
+    } else {
       UI.toast('✅ दोस्रो शुक्रबार बिहानी जाँच: प्रणाली १००% स्वस्थ छ', 'success');
     }
     return true;
