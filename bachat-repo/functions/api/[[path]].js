@@ -1301,6 +1301,21 @@ export async function onRequest(context) {
         return json({ ok: false, error: 'समूह सदस्य सूचीमा छानिएको ID भेटिएन' }, 404);
       }
 
+      // One-time lock: once a member has submitted or already has an active PIN/ID, block duplicate submissions
+      const existingReg = await env.DB
+        .prepare('SELECT id, status, whatsapp_mobile FROM member_registrations WHERE member_id = ?')
+        .bind(member.id)
+        .first();
+      if (existingReg || member.hasPin || member.pin) {
+        return json({
+          ok: false,
+          locked: true,
+          regStatus: (existingReg && existingReg.status) || 'approved',
+          maskedMobile: maskPhone((existingReg && existingReg.whatsapp_mobile) || member.mobile || ''),
+          error: 'तपाईंको विवरण पहिले नै रजिस्ट्रेसन भइसकेको छ! कृपया आफ्नो WhatsApp म्यासेज जाँच गर्नुहोस्।'
+        }, 409);
+      }
+
       const nextAtt = (att && (!att.locked_until || att.locked_until <= nowMs) ? att.attempts : 0) + 1;
       const lockUntil = nextAtt >= 30 ? nowMs + 10 * 60 * 1000 : 0;
       await env.DB

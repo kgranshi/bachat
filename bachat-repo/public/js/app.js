@@ -7843,9 +7843,10 @@ function renderRegMembersList(filterQuery) {
     }
     listEl.innerHTML = filtered.map((m) => {
       const isSel = window._regSelectedId === m.id;
+      const isLocked = !!(m.submitted || m.hasPin);
       let pill = '<span class="reg-status-pill wait">भर्न बाँकी</span>';
-      if (m.regStatus === 'pending') pill = '<span class="reg-status-pill pending">⏳ पठाइसकेको</span>';
-      else if (m.regStatus === 'approved' || m.hasPin) pill = '<span class="reg-status-pill approved">✅ ID बनेको</span>';
+      if (m.regStatus === 'approved' || m.hasPin) pill = '<span class="reg-status-pill approved">🔒 ID बनिसक्यो</span>';
+      else if (isLocked) pill = '<span class="reg-status-pill pending">🔒 रजिस्टर भइसक्यो</span>';
       return `
         <button type="button" class="reg-member-item${isSel ? ' selected' : ''}" onclick="onRegMemberSelect('${escapeHtmlChat(m.id)}')">
           <div><span class="reg-id-tag">${escapeHtmlChat(m.id)}</span><strong>${escapeHtmlChat(m.name)}</strong></div>
@@ -7874,10 +7875,15 @@ function onRegMemberSelect(memberId) {
   const corrInp = document.getElementById('reg-corrected-name');
   const hintEl = document.getElementById('reg-existing-hint');
   const mobInp = document.getElementById('reg-whatsapp-mobile');
+  const inputWrap = document.getElementById('reg-input-wrap');
+  const lockedBox = document.getElementById('reg-locked-box');
+  const lockedMsg = document.getElementById('reg-locked-msg');
 
   const m = (window._regMembersCache || []).find((x) => x.id === id);
   if (!m) {
     if (banner) banner.classList.add('hidden');
+    if (lockedBox) lockedBox.classList.add('hidden');
+    if (inputWrap) inputWrap.classList.remove('hidden');
     if (idInp) idInp.value = '';
     if (origInp) origInp.value = '';
     if (corrInp) corrInp.value = '';
@@ -7889,14 +7895,29 @@ function onRegMemberSelect(memberId) {
   if (idInp) idInp.value = m.id;
   if (origInp) origInp.value = m.name || '';
   if (corrInp) corrInp.value = m.name || '';
-  if (hintEl) {
-    if (m.regStatus === 'pending') {
-      hintEl.innerHTML = `⏳ यो सदस्यको विवरण पहिले पठाइएको छ (${escapeHtmlChat(m.maskedMobile || '')}) — सच्याउनुपरे नयाँ नम्बर हालेर फेरि सेभ गर्न सकिन्छ।`;
-    } else if (m.hasPin) {
-      hintEl.innerHTML = `✅ यो सदस्यको User ID पहिले नै छ (${escapeHtmlChat(m.maskedMobile || '')}) — नम्बर वा नाम सच्याउनुपरे मात्र तल भरेर सेभ गर्नुहोस्।`;
-    } else {
-      hintEl.innerHTML = 'नाम ठीक छ भने नबदल्नुहोस्; हिज्जे वा पूरा नाम सच्याउनुपरे तल टाइप गरी WhatsApp नम्बर राख्नुहोस्।';
+
+  const isLocked = !!(m.submitted || m.hasPin);
+  if (isLocked) {
+    if (inputWrap) inputWrap.classList.add('hidden');
+    if (lockedBox) lockedBox.classList.remove('hidden');
+    const mobHint = m.maskedMobile ? ` (नम्बर: <strong>${escapeHtmlChat(m.maskedMobile)}</strong>)` : '';
+    if (hintEl) {
+      hintEl.innerHTML = `🔒 <strong>रजिस्टर भइसकेको छ</strong>${mobHint} — दोस्रो पटक भर्न मिल्दैन।`;
     }
+    if (lockedMsg) {
+      lockedMsg.innerHTML =
+        `तपाईंको विवरण पहिले नै रजिस्ट्रेसन भइसकेको छ${mobHint}।<br>` +
+        `<strong>कृपया आफ्नो WhatsApp म्यासेज जाँच गर्नुहोस्।</strong>` +
+        `<div style="margin-top:6px;font-size:0.75rem;color:#475569">(नम्बर वा नाम गलत भएमा Admin सँग सम्पर्क गरी रिसेट गर्न अनुरोध गर्नुहोस्)</div>`;
+    }
+    renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
+    return;
+  }
+
+  if (lockedBox) lockedBox.classList.add('hidden');
+  if (inputWrap) inputWrap.classList.remove('hidden');
+  if (hintEl) {
+    hintEl.innerHTML = 'नाम ठीक छ भने नबदल्नुहोस्; हिज्जे वा पूरा नाम सच्याउनुपरे तल टाइप गरी WhatsApp नम्बर राख्नुहोस् (सेभ गरेपछि लक हुनेछ)।';
   }
   renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
   if (mobInp) setTimeout(() => { try { mobInp.focus(); } catch (e) {} }, 60);
@@ -7911,6 +7932,11 @@ async function submitMemberRegistration() {
   if (!memberId) {
     return UI.toast('पहिले सूचीबाट आफ्नो नाम र Member ID छान्नुहोस्', 'error');
   }
+  const existingMem = (window._regMembersCache || []).find((x) => x.id === memberId);
+  if (existingMem && (existingMem.submitted || existingMem.hasPin)) {
+    onRegMemberSelect(memberId);
+    return UI.toast('रजिस्टर भइसकेको छ — कृपया WhatsApp म्यासेज जाँच गर्नुहोस्', 'error');
+  }
   const digits = whatsappMobile.replace(/\D/g, '');
   if (!digits || digits.length < 7) {
     return UI.toast('मान्य WhatsApp / मोबाइल नम्बर लेख्नुहोस्', 'error');
@@ -7922,6 +7948,12 @@ async function submitMemberRegistration() {
   if (btn) { btn.disabled = false; btn.textContent = '💾 विवरण सेभ गर्नुहोस्'; }
 
   if (!res || !res.ok) {
+    if (res && res.locked && existingMem) {
+      existingMem.submitted = true;
+      existingMem.regStatus = res.regStatus || 'pending';
+      if (res.maskedMobile) existingMem.maskedMobile = res.maskedMobile;
+      onRegMemberSelect(memberId);
+    }
     return UI.toast((res && res.error) || 'विवरण सेभ गर्न सकिएन', 'error');
   }
 
@@ -7931,6 +7963,7 @@ async function submitMemberRegistration() {
     cached.regStatus = 'pending';
     cached.maskedMobile = res.maskedMobile || '';
   }
+  renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
 
   const fieldsBox = document.getElementById('reg-fields-box');
   const succBox = document.getElementById('reg-success-box');
@@ -7943,9 +7976,10 @@ async function submitMemberRegistration() {
       `<div><strong>Member ID:</strong> ${escapeHtmlChat(res.memberId)}</div>` +
       `<div><strong>समूहमा नाम:</strong> ${escapeHtmlChat(res.originalName)}</div>` +
       (nameChanged ? `<div><strong>सच्याइएको नाम:</strong> ${escapeHtmlChat(res.correctedName)}</div>` : '') +
-      `<div><strong>WhatsApp / मोबाइल:</strong> ${escapeHtmlChat(res.whatsappMobile)}</div>`;
+      `<div><strong>WhatsApp / मोबाइल:</strong> ${escapeHtmlChat(res.whatsappMobile)}</div>` +
+      `<div style="margin-top:6px;font-weight:700;color:#0f5132">🔒 तपाईंको नाम र नम्बर रजिस्टर भई लक गरिएको छ — कृपया WhatsApp म्यासेज जाँच गर्नुहोस्।</div>`;
   }
-  UI.toast('✅ विवरण सुरक्षित सेभ भयो!', 'success');
+  UI.toast('✅ विवरण सुरक्षित सेभ र लक भयो!', 'success');
 }
 
 function resetMemberRegistrationForm(clearSuccess = true) {
@@ -7958,9 +7992,13 @@ function resetMemberRegistrationForm(clearSuccess = true) {
   const corrInp = document.getElementById('reg-corrected-name');
   const mobInp = document.getElementById('reg-whatsapp-mobile');
   const noteInp = document.getElementById('reg-note');
+  const inputWrap = document.getElementById('reg-input-wrap');
+  const lockedBox = document.getElementById('reg-locked-box');
   if (searchInp) searchInp.value = '';
   if (selEl) selEl.value = '';
   if (banner) banner.classList.add('hidden');
+  if (lockedBox) lockedBox.classList.add('hidden');
+  if (inputWrap) inputWrap.classList.remove('hidden');
   if (idInp) idInp.value = '';
   if (origInp) origInp.value = '';
   if (corrInp) corrInp.value = '';

@@ -1246,7 +1246,14 @@ const DB = {
       });
       const body = await resp.json().catch(() => null);
       if (resp.ok && body && body.ok) return body;
-      return { ok: false, error: (body && body.error) || 'विवरण सेभ गर्न सकिएन' };
+      return {
+        ok: false,
+        status: resp.status,
+        locked: !!(body && body.locked),
+        regStatus: (body && body.regStatus) || null,
+        maskedMobile: (body && body.maskedMobile) || '',
+        error: (body && body.error) || 'विवरण सेभ गर्न सकिएन'
+      };
     } catch (e) {
       return { ok: false, error: 'इन्टरनेट वा सर्भर जडान भएन' };
     }
