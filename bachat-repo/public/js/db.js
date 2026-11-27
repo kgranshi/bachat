@@ -1226,20 +1226,20 @@ const DB = {
     });
   },
 
-  async fetchRegistrationMembers() {
+  async fetchRegistrationInfo() {
     try {
-      const resp = await fetch('./api/registration-members', { cache: 'no-store' });
+      const resp = await fetch('./api/registration-info', { cache: 'no-store' });
       const body = await resp.json().catch(() => null);
       if (resp.ok && body && body.ok) return body;
-      return { ok: false, error: (body && body.error) || 'सदस्य सूची लोड गर्न सकिएन' };
+      return { ok: false, error: (body && body.error) || 'फारम जानकारी लोड गर्न सकिएन' };
     } catch (e) {
       return { ok: false, error: 'इन्टरनेट वा सर्भर जडान भएन' };
     }
   },
 
-  async submitMemberRegistration(payload) {
+  async verifyRegistrationMember(payload) {
     try {
-      const resp = await fetch('./api/member-registration', {
+      const resp = await fetch('./api/registration/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {})
@@ -1249,10 +1249,62 @@ const DB = {
       return {
         ok: false,
         status: resp.status,
-        locked: !!(body && body.locked),
-        regStatus: (body && body.regStatus) || null,
-        maskedMobile: (body && body.maskedMobile) || '',
-        error: (body && body.error) || 'विवरण सेभ गर्न सकिएन'
+        code: (body && body.code) || '',
+        suggestion: (body && body.suggestion) || '',
+        error: (body && body.error) || 'जाँच गर्न सकिएन'
+      };
+    } catch (e) {
+      return { ok: false, error: 'इन्टरनेट वा सर्भर जडान भएन' };
+    }
+  },
+
+  async subscribeRegistrationPush(payload) {
+    try {
+      const resp = await fetch('./api/registration/push-subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+      });
+      const body = await resp.json().catch(() => null);
+      if (resp.ok && body && body.ok) return body;
+      return { ok: false, error: (body && body.error) || 'नोटिफिकेसन दर्ता असफल' };
+    } catch (e) {
+      return { ok: false, error: 'इन्टरनेट जडान भएन' };
+    }
+  },
+
+  async submitSelfRegistration(payload) {
+    try {
+      const resp = await fetch('./api/registration/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+      });
+      const body = await resp.json().catch(() => null);
+      if (resp.ok && body && body.ok) return body;
+      return {
+        ok: false,
+        status: resp.status,
+        error: (body && body.error) || 'रजिस्ट्रेसन पठाउन सकिएन'
+      };
+    } catch (e) {
+      return { ok: false, error: 'इन्टरनेट वा सर्भर जडान भएन' };
+    }
+  },
+
+  async completeTempPinRegistration(payload) {
+    try {
+      const resp = await fetch('./api/registration/complete-temp-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+      });
+      const body = await resp.json().catch(() => null);
+      if (resp.ok && body && body.ok) return body;
+      return {
+        ok: false,
+        status: resp.status,
+        error: (body && body.error) || 'PIN परिवर्तन गर्न सकिएन'
       };
     } catch (e) {
       return { ok: false, error: 'इन्टरनेट वा सर्भर जडान भएन' };
@@ -1274,7 +1326,7 @@ const DB = {
 
   async approveMemberRegistration(payload) {
     if (!this.getToken() || !navigator.onLine) {
-      return { ok: false, error: 'User ID बनाउन इन्टरनेट चाहिन्छ' };
+      return { ok: false, error: 'User ID स्वीकृत गर्न इन्टरनेट चाहिन्छ' };
     }
     try {
       const res = await this.apiFetch('/admin/registrations/approve', {
@@ -1287,7 +1339,23 @@ const DB = {
         this._cloud = true;
         return res.body;
       }
-      return { ok: false, error: (res.body && res.body.error) || 'User ID बनाउन सकिएन' };
+      return { ok: false, error: (res.body && res.body.error) || 'User ID स्वीकृत गर्न सकिएन' };
+    } catch (e) {
+      return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
+    }
+  },
+
+  async rejectMemberRegistration(payload) {
+    if (!this.getToken() || !navigator.onLine) {
+      return { ok: false, error: 'इन्टरनेट चाहिन्छ' };
+    }
+    try {
+      const res = await this.apiFetch('/admin/registrations/reject', {
+        method: 'POST',
+        body: JSON.stringify(payload || {})
+      });
+      if (res.ok && res.body && res.body.ok) return res.body;
+      return { ok: false, error: (res.body && res.body.error) || 'रद्द गर्न सकिएन' };
     } catch (e) {
       return { ok: false, error: 'सर्भरसँग सम्पर्क भएन' };
     }

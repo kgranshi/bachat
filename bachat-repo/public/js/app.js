@@ -5,11 +5,23 @@
 let APP_DATA = null;
 
 // ========== APP VERSION & USER-FACING CHANGELOG (नेपाली भाषा · हिसाब र सुविधा मात्र) ==========
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const APP_UPDATE_LOG = [
+  {
+    version: '1.0.1',
+    dateBS: '२०८३ अद्यावधिक संस्करण',
+    accountingImpact: false,
+    title: 'सदस्य स्व-रजिस्ट्रेसन, गोपनीयता सुरक्षा र सहज अपडेट जानकारी',
+    highlights: [
+      'नयाँ सदस्यका लागि लगइन बटम मुनि नै सुरक्षित "User ID स्व-रजिस्ट्रेसन फारम" सुविधा — दर्ता पूरा नाम र मोबाइल नम्बर जाँच गरी सर्त मञ्जुरी, सूचना अनुमति र आफ्नै ४ अंकको PIN सेट गर्न सकिने।',
+      'रजिस्ट्रेसन स्वीकृत वा रद्द हुनासाथ सम्बन्धित सदस्यको मोबाइलमै सिधै सूचना (Notification) पुग्ने र स्वीकृत भएपछि मात्र लगइन खुल्ने व्यवस्था।',
+      'सामान्य एप सुधार हुँदा सदस्यलाई बारम्बार सहमति टिक लगाइरहनु नपर्ने — सबै परिवर्तन विवरण सेटिङको "एप अपडेट लग" मा सधैँ हेर्न सकिने र हिसाब-नियममा परिवर्तन भए मात्र जानकारी देखाइने व्यवस्था।'
+    ]
+  },
   {
     version: '1.0.0',
     dateBS: '२०८३ पहिलो आधिकारिक संस्करण',
+    accountingImpact: false,
     title: 'पूर्ण हिसाब, सुरक्षा र सदस्य पारदर्शिता सुरुवात',
     highlights: [
       'मासिक बचत, ब्याज, सावाँ, जरिवाना, बाँकी ऋण र अग्रिम रकमको शुद्ध हिसाब तथा प्रत्येक महिनाको डिजिटल बिल/रसिद हेर्ने सुविधा।',
@@ -22,47 +34,49 @@ const APP_UPDATE_LOG = [
 ];
 
 function getLatestAppUpdateEntry() {
-  return APP_UPDATE_LOG[0] || { version: APP_VERSION, dateBS: '', title: 'नयाँ अपडेट', highlights: [] };
+  return APP_UPDATE_LOG[0] || { version: APP_VERSION, dateBS: '', accountingImpact: false, title: 'नयाँ अपडेट', highlights: [] };
 }
 
-function hasAnsweredCurrentAppUpdate() {
+function hasUnseenAccountingUpdateNotice() {
   const u = (typeof Auth !== 'undefined' && Auth.currentUser) || null;
-  if (!u || typeof DB === 'undefined' || typeof DB.getUserAppUpdateAck !== 'function') {
-    return { answered: true, ack: null, version: APP_VERSION };
+  const latest = getLatestAppUpdateEntry();
+  if (!u || !latest || latest.accountingImpact !== true) {
+    return { needsNotice: false, entry: latest, version: APP_VERSION };
   }
-  const ack = DB.getUserAppUpdateAck(u);
+  const mid = u.memberId || u.username || 'u';
+  let seenVer = '';
+  try { seenVer = localStorage.getItem('gs_seen_upd_notice_' + mid) || ''; } catch (e) {}
   return {
-    answered: !!(ack && ack.version === APP_VERSION),
-    ack: ack || null,
+    needsNotice: seenVer !== APP_VERSION,
+    entry: latest,
     version: APP_VERSION
   };
 }
 
-function getAppUpdateAckCompliance(data) {
-  const summary = (typeof DB !== 'undefined' && typeof DB.getAppUpdateSummary === 'function') ? DB.getAppUpdateSummary() : {};
-  const active = (data && Array.isArray(data.members) ? data.members : []).filter((m) => m && m.active !== false);
-  let agreed = 0;
-  let disagreed = 0;
-  const rows = active.map((m) => {
-    const rec = summary['mem:' + String(m.id)] || null;
-    const isCur = rec && rec.version === APP_VERSION;
-    const status = isCur ? rec.decision : 'pending';
-    if (status === 'agree') agreed++;
-    else if (status === 'disagree') disagreed++;
-    return {
-      member: m,
-      status,
-      note: isCur ? (rec.note || '') : '',
-      answeredAt: isCur ? (rec.answeredAt || '') : ''
-    };
-  });
+function markAccountingUpdateNoticeSeen() {
+  const u = (typeof Auth !== 'undefined' && Auth.currentUser) || null;
+  if (!u) return;
+  const mid = u.memberId || u.username || 'u';
+  try { localStorage.setItem('gs_seen_upd_notice_' + mid, APP_VERSION); } catch (e) {}
+}
+
+function hasAnsweredCurrentAppUpdate() {
+  const st = hasUnseenAccountingUpdateNotice();
+  return {
+    answered: !st.needsNotice,
+    ack: null,
+    version: APP_VERSION
+  };
+}
+
+function getAppUpdateAckCompliance() {
   return {
     version: APP_VERSION,
-    total: active.length,
-    agreed,
-    disagreed,
-    pending: Math.max(0, active.length - agreed - disagreed),
-    rows
+    total: 0,
+    agreed: 0,
+    disagreed: 0,
+    pending: 0,
+    rows: []
   };
 }
 
@@ -266,10 +280,10 @@ function runMemberOnboardingGate() {
     openTermsModal({ gate: true, isUpdated: termsStatus.isUpdated });
     return;
   }
-  // ३. एप अपडेट जानकारी (हिसाब तथा सुविधा परिवर्तन) + सहमत / असहमत अनिवार्य टिक
-  const updStatus = hasAnsweredCurrentAppUpdate();
-  if (!updStatus.answered) {
-    openAppUpdateNoticeModal({ gate: true });
+  // ३. हिसाब-नियम सम्बन्धी महत्वपूर्ण अपडेट भए मात्र जानकारी (सामान्य कोड अपडेटमा पपअप नदेखाउने)
+  const updNotice = hasUnseenAccountingUpdateNotice();
+  if (updNotice.needsNotice) {
+    openAppUpdateNoticeModal({ gate: true, entry: updNotice.entry });
     return;
   }
   // ४. पुश नोटिफिकेसन अनुमति गेट
@@ -4796,16 +4810,13 @@ async function saveEditedTerms() {
   openTermsModal();
 }
 
-// ========== APP UPDATE CHANGELOG POPUP & SETTINGS LOG ==========
+// ========== APP UPDATE CHANGELOG POPUP (ACCOUNTING CHANGES ONLY) & SETTINGS LOG ==========
 function openAppUpdateNoticeModal(opts = {}) {
   const isGate = !!opts.gate;
   const entry = opts.entry || getLatestAppUpdateEntry();
-  const status = hasAnsweredCurrentAppUpdate();
-  if (status.answered && status.ack && status.ack.version === entry.version) {
+  if (!entry || entry.accountingImpact !== true) {
     return openAppUpdateLogModal({ replace: !!opts.replace, gate: false });
   }
-  const prevDec = '';
-  const prevNote = '';
 
   const bulletsHtml = (entry.highlights || [])
     .map((h) => `<li>${escapeHtmlChat(h)}</li>`)
@@ -4813,107 +4824,55 @@ function openAppUpdateNoticeModal(opts = {}) {
 
   const html = `
     <div class="upd-banner">
-      <strong>🆕 एप अपडेट जानकारी (संस्करण v${escapeHtmlChat(entry.version)}):</strong>
+      <strong>📊 हिसाब सम्बन्धी महत्वपूर्ण जानकारी (संस्करण v${escapeHtmlChat(entry.version)}):</strong>
       ${entry.dateBS ? `<span> · ${escapeHtmlChat(entry.dateBS)}</span>` : ''}<br>
-      <div style="margin-top:3px">हिसाब किताब र एप प्रयोगसम्बन्धी भएका मुख्य सुधार/सुविधाहरू तल दिइएका छन्। कृपया पढेर आफ्नो सहमति वा सुझाव दिनुहोस्:</div>
+      <div style="margin-top:3px">हिसाब किताब र समूहको नियमसम्बन्धी भएका परिवर्तनहरूको जानकारी तल दिइएको छ:</div>
     </div>
-    <div class="section-card" style="padding:10px 12px;margin-bottom:10px">
-      <div class="fw-bold" style="margin-bottom:6px;font-size:0.9rem">📌 ${escapeHtmlChat(entry.title || 'प्रमुख विशेषताहरू')}</div>
+    <div class="section-card" style="padding:10px 12px;margin-bottom:12px">
+      <div class="fw-bold" style="margin-bottom:6px;font-size:0.9rem">📌 ${escapeHtmlChat(entry.title || 'प्रमुख जानकारी')}</div>
       <ul class="upd-highlights">${bulletsHtml}</ul>
     </div>
-    <div style="font-size:0.83rem;font-weight:700;margin-bottom:4px">तपाईंको मञ्जुरी (अनिवार्य टिक लगाउनुहोस्):</div>
-    <div class="upd-choice-grid" id="upd-choice-grid">
-      <label class="upd-choice-card agree ${prevDec === 'agree' ? 'selected' : ''}" onclick="_selectAppUpdateChoice('agree')">
-        <input type="radio" name="upd-decision" value="agree" ${prevDec === 'agree' ? 'checked' : ''}>
-        <div><strong>✅ सहमत छु</strong><br><span class="text-muted" style="font-size:0.76rem">यी हिसाब नियम र सुविधाहरू मलाई पूर्ण रूपमा मञ्जुर छन्।</span></div>
-      </label>
-      <label class="upd-choice-card disagree ${prevDec === 'disagree' ? 'selected' : ''}" onclick="_selectAppUpdateChoice('disagree')">
-        <input type="radio" name="upd-decision" value="disagree" ${prevDec === 'disagree' ? 'checked' : ''}>
-        <div><strong>⚠️ असहमत छु / सुझाव छ</strong><br><span class="text-muted" style="font-size:0.76rem">मलाई यसमा केही प्रश्न, असहमति वा सुझाव छ (तल लेख्नुहोस्)।</span></div>
-      </label>
-    </div>
-    <div class="form-group mt-2">
-      <label>सुझाव वा टिप्पणी <span class="text-muted" style="font-weight:400">(असहमत भएमा अनिवार्य · Admin ले देख्नुहुनेछ)</span></label>
-      <textarea id="upd-ack-note" rows="3" placeholder="तपाईंको विचार वा सुझाव भए यहाँ लेख्नुहोस्...">${escapeHtmlChat(prevNote)}</textarea>
-    </div>
-    <button type="button" id="upd-ack-submit-btn" class="btn btn-primary btn-block" onclick="submitAppUpdateResponse('${escapeHtmlChat(entry.version)}', ${isGate ? 'true' : 'false'})">📤 पुष्टि गरी Admin मा पठाउनुहोस्</button>
-    <button type="button" class="btn btn-outline btn-sm btn-block mt-1" onclick="openAppUpdateLogModal({ fromNotice: true, gate: ${isGate ? 'true' : 'false'} })">📜 पूरा एप अपडेट लग हेर्नुहोस्</button>
+    <button type="button" class="btn btn-primary btn-block" onclick="acknowledgeAccountingNotice('${isGate ? '1' : '0'}')">✅ बुझें / ठीक छ</button>
+    <button type="button" class="btn btn-outline btn-sm btn-block mt-1" onclick="openAppUpdateLogModal({ replace: true, gate: ${isGate ? 'true' : 'false'} })">📜 पूरा एप अपडेट लग हेर्नुहोस्</button>
   `;
 
   window._pendingAppUpdateGateOpen = isGate;
   UI.showModal(
-    '🆕 एप अपडेट · v' + entry.version,
+    '📊 हिसाब अपडेट जानकारी · v' + entry.version,
     html,
     isGate ? '' : '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>',
     isGate ? { root: true, noClose: true } : { replace: !!opts.replace }
   );
 }
 
-function _selectAppUpdateChoice(val) {
-  const cards = document.querySelectorAll('#upd-choice-grid .upd-choice-card');
-  cards.forEach((c) => {
-    c.classList.remove('selected');
-    const inp = c.querySelector('input[type="radio"]');
-    if (inp && inp.value === val) {
-      inp.checked = true;
-      c.classList.add('selected');
-    }
-  });
-}
-
-async function submitAppUpdateResponse(version, isGate) {
-  const checked = document.querySelector('input[name="upd-decision"]:checked');
-  if (!checked) {
-    return UI.toast('कृपया पहिले "सहमत छु" वा "असहमत / सुझाव छ" मा टिक लगाउनुहोस्', 'error');
-  }
-  const decision = checked.value === 'disagree' ? 'disagree' : 'agree';
-  const noteEl = document.getElementById('upd-ack-note');
-  const note = ((noteEl && noteEl.value) || '').trim();
-  if (decision === 'disagree' && !note) {
-    if (noteEl) noteEl.focus();
-    return UI.toast('असहमत वा सुझाव छ भने कृपया तल कारण/सुझाव लेख्नुहोस्', 'error');
-  }
-  const btn = document.getElementById('upd-ack-submit-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ पठाउँदैछ...'; }
-  try {
-    const res = await DB.submitAppUpdateAck({ version, decision, note });
-    if (!res || !res.ok) {
-      return UI.toast((res && res.error) || 'पठाउन सकिएन — कृपया पुनः प्रयास गर्नुहोस्', 'error');
-    }
-    APP_DATA = DB.load();
-    window._pendingAppUpdateGateOpen = false;
-    UI._noClose = false;
-    closeModal();
-    try { renderSettingsTab(); } catch (e) {}
-    UI.toast(
-      res.queued
-        ? 'तपाईंको मञ्जुरी सुरक्षित भयो (नेट आउनासाथ Admin मा जान्छ) ✅'
-        : 'तपाईंको मञ्जुरी / सुझाव सुरक्षित भई Admin मा पुग्यो ✅',
-      'success'
-    );
-    if (isGate && Auth.isMember && Auth.isMember()) {
-      setTimeout(runMemberOnboardingGate, 220);
-    }
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '📤 पुष्टि गरी Admin मा पठाउनुहोस्'; }
+function acknowledgeAccountingNotice(isGateFlag) {
+  markAccountingUpdateNoticeSeen();
+  window._pendingAppUpdateGateOpen = false;
+  UI._noClose = false;
+  closeModal();
+  if (isGateFlag === '1' && Auth.isMember && Auth.isMember()) {
+    setTimeout(runMemberOnboardingGate, 200);
   }
 }
 
 function openAppUpdateLogModal(opts = {}) {
-  const data = DB.load();
-  const isAdminOrTr = Auth.isAdmin && Auth.isAdmin();
-  const myStatus = hasAnsweredCurrentAppUpdate();
-
+  if (opts.gate) {
+    markAccountingUpdateNoticeSeen();
+  }
   const timelineHtml = APP_UPDATE_LOG.map((entry, idx) => {
     const bullets = (entry.highlights || []).map((h) => `<li>${escapeHtmlChat(h)}</li>`).join('');
     const isLatest = idx === 0;
     const badge = isLatest ? `<span class="terms-ver-badge">हालको संस्करण</span>` : `<span class="text-muted" style="font-size:0.73rem">पुरानो</span>`;
+    const acctBadge = entry.accountingImpact
+      ? `<span style="display:inline-block;background:#fff3cd;color:#664d03;font-size:0.7rem;font-weight:700;padding:2px 7px;border-radius:999px;margin-top:3px">📊 हिसाब-नियम अपडेट</span>`
+      : '';
     return `
       <div class="upd-log-card">
         <div class="upd-log-head">
           <div>
             <strong>v${escapeHtmlChat(entry.version)} — ${escapeHtmlChat(entry.title)}</strong>
             ${entry.dateBS ? `<div class="text-muted" style="font-size:0.74rem">${escapeHtmlChat(entry.dateBS)}</div>` : ''}
+            ${acctBadge}
           </div>
           ${badge}
         </div>
@@ -4922,62 +4881,17 @@ function openAppUpdateLogModal(opts = {}) {
     `;
   }).join('');
 
-  let memberBox = '';
-  if (!isAdminOrTr) {
-    if (myStatus.answered && myStatus.ack) {
-      const agreed = myStatus.ack.decision !== 'disagree';
-      memberBox = `
-        <div style="background:${agreed ? '#d1e7dd' : '#fff3cd'};border:1px solid ${agreed ? '#badbcc' : '#ffe69c'};color:${agreed ? '#0f5132' : '#664d03'};border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:0.82rem">
-          <div>${agreed ? '✅' : '⚠️'} <strong>v${escapeHtmlChat(APP_VERSION)} मा तपाईंको प्रतिक्रिया दर्ता भइसकेको छ: ${agreed ? 'सहमत छु' : 'असहमत / सुझाव पठाइएको'}</strong></div>
-          ${myStatus.ack.note ? `<div style="margin-top:4px">तपाईंको टिप्पणी: "${escapeHtmlChat(myStatus.ack.note)}"</div>` : ''}
-          <div style="margin-top:5px;font-size:0.75rem;opacity:0.88">एकपटक प्रतिक्रिया जनाइसकेपछि पुनः परिवर्तन गर्न मिल्दैन — यहाँ के-के परिवर्तन भयो भन्ने जानकारी मात्र हेर्न सक्नुहुन्छ।</div>
-        </div>
-      `;
-    } else {
-      memberBox = `
-        <button type="button" class="btn btn-primary btn-block mb-2" onclick="openAppUpdateNoticeModal({ replace: true, gate: ${opts.gate ? 'true' : 'false'} })">✅ v${escapeHtmlChat(APP_VERSION)} पढेर सहमत / असहमत टिक लगाउनुहोस्</button>
-      `;
-    }
-  }
-
-  let complianceHtml = '';
-  if (isAdminOrTr) {
-    const comp = getAppUpdateAckCompliance(data);
-    const rowsHtml = comp.rows.map((r) => {
-      const m = r.member;
-      let pill = '<span class="terms-pill-wait">⏳ हेर्न बाँकी</span>';
-      if (r.status === 'agree') pill = '<span class="terms-pill-ok">✅ सहमत</span>';
-      else if (r.status === 'disagree') pill = '<span class="complaint-pill-open">⚠️ असहमत / सुझाव</span>';
-      return `<div class="terms-status-row">
-        <div>
-          <strong>${escapeHtmlChat(m.name)}</strong>
-          ${r.note ? `<div class="text-muted" style="font-size:0.72rem">सुझाव: ${escapeHtmlChat(r.note)}</div>` : ''}
-        </div>
-        <div>${pill}</div>
-      </div>`;
-    }).join('') || '<div class="text-muted text-center" style="padding:8px">सदस्य छैनन्</div>';
-
-    complianceHtml = `
-      <details style="margin-top:8px;margin-bottom:10px;background:#fff;border:1px solid #dee2e6;border-radius:12px;padding:8px 10px" open>
-        <summary style="cursor:pointer;font-weight:700;font-size:0.84rem;color:#122;display:flex;justify-content:space-between;align-items:center">
-          <span>📋 सदस्य अपडेट मञ्जुरी (v${escapeHtmlChat(comp.version)})</span>
-          <span class="terms-pill-ok">✅ ${comp.agreed} · ⚠️ ${comp.disagreed} · ⏳ ${comp.pending}</span>
-        </summary>
-        <div style="margin-top:8px;max-height:200px;overflow-y:auto;border-top:1px solid #eef2f6">${rowsHtml}</div>
-        ${(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin()) ? `<button type="button" class="btn btn-warning btn-sm btn-block mt-1" onclick="showComplaints()">📢 सुझाव तथा गुनासोमा हेर्नुहोस्</button>` : ''}
-      </details>
-    `;
-  }
-
-  const backBtn = opts.fromNotice
-    ? `<button class="btn btn-outline" onclick="openAppUpdateNoticeModal({ replace: true, gate: ${opts.gate ? 'true' : 'false'} })">← मञ्जुरी फारममा फर्कनुहोस्</button>`
-    : '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>';
+  const infoBanner = `
+    <div style="background:#e7f1ff;border:1px solid #b6d4fe;color:#084298;border-radius:10px;padding:9px 11px;margin-bottom:10px;font-size:0.8rem;line-height:1.45">
+      📜 यहाँ एपमा थपिएका सुविधा तथा हिसाबकिताब सम्बन्धी परिवर्तनहरूको पूरा इतिहास हेर्न सक्नुहुन्छ।
+    </div>
+  `;
 
   UI.showModal(
     '📜 एप अपडेट लग',
-    memberBox + complianceHtml + timelineHtml,
-    backBtn,
-    opts.gate ? { replace: true, noClose: true } : { replace: !!opts.replace }
+    infoBanner + timelineHtml,
+    '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>',
+    opts.gate ? { replace: true, noClose: false } : { replace: !!opts.replace }
   );
 }
 
@@ -4998,9 +4912,7 @@ function renderSettingsTab() {
     const termsBadge = termsStatus.accepted
       ? `<span class="terms-pill-ok" style="margin-left:6px">✅ v${termsStatus.curVer}</span>`
       : `<span class="terms-pill-wait" style="margin-left:6px">⚠️ मञ्जुरी बाँकी</span>`;
-    const updBadge = updStatus.answered
-      ? `<span class="terms-pill-ok" style="margin-left:6px">v${APP_VERSION}</span>`
-      : `<span class="terms-pill-wait" style="margin-left:6px">🆕 v${APP_VERSION}</span>`;
+    const updBadge = `<span class="terms-pill-ok" style="margin-left:6px">v${APP_VERSION}</span>`;
     container.innerHTML = `
       <div class="section-card">
         <div class="section-title">⚙️ सेटिङ</div>
@@ -5008,7 +4920,7 @@ function renderSettingsTab() {
         <button class="btn btn-warning btn-block mb-1" onclick="openMemberFeedbackHub()">📢 सुझाव तथा गुनासो${fbBadge}</button>
         <button class="btn btn-success btn-block mb-1" onclick="enablePushFromSettings()">🔔 पुश सूचना (Notification)</button>
         <button class="btn btn-outline btn-block mb-1" onclick="openTermsModal()">📜 नियम, सर्त र गोपनीयता ${termsBadge}</button>
-        <button class="btn btn-outline btn-block mb-1" onclick="openAppUpdateLogModal()">🆕 एप अपडेट लग ${updBadge}</button>
+        <button class="btn btn-outline btn-block mb-1" onclick="openAppUpdateLogModal()">📜 एप अपडेट लग ${updBadge}</button>
         <button class="btn btn-outline btn-block mb-1" onclick="showMemberGuideTour(0, true)">❓ एप चलाउने गाइड</button>
         <button class="btn btn-danger btn-block mb-2" onclick="doLogout()">🚪 लगआउट</button>
       </div>
@@ -5096,8 +5008,8 @@ function renderSettingsTab() {
           <div class="settings-arrow">›</div>
         </li>
         <li class="settings-item" onclick="openAppUpdateLogModal()">
-          <div class="settings-icon" style="background:#e7f1ff">🆕</div>
-          <div class="settings-text"><div class="title">एप अपडेट लग र सदस्य मञ्जुरी (v${APP_VERSION})</div><div class="desc">सहमत: ${updComp.agreed} · असहमत/सुझाव: ${updComp.disagreed} · बाँकी: ${updComp.pending}</div></div>
+          <div class="settings-icon" style="background:#e7f1ff">📜</div>
+          <div class="settings-text"><div class="title">एप अपडेट लग (v${APP_VERSION})</div><div class="desc">एपमा गरिएका सुधार तथा सुविधा परिवर्तन इतिहास</div></div>
           <div class="settings-arrow">›</div>
         </li>
         <li class="settings-item" onclick="openTermsModal()">
@@ -5189,8 +5101,8 @@ function openTreasurerMoreSettings() {
         <div class="settings-arrow">›</div>
       </li>
       <li class="settings-item" onclick="openAppUpdateLogModal()">
-        <div class="settings-icon" style="background:#e7f1ff">🆕</div>
-        <div class="settings-text"><div class="title">एप अपडेट लग (v${APP_VERSION})</div><div class="desc">सहमत: ${updComp.agreed} · असहमत/सुझाव: ${updComp.disagreed} · बाँकी: ${updComp.pending}</div></div>
+        <div class="settings-icon" style="background:#e7f1ff">📜</div>
+        <div class="settings-text"><div class="title">एप अपडेट लग (v${APP_VERSION})</div><div class="desc">एपमा गरिएका सुधार तथा सुविधा परिवर्तन इतिहास</div></div>
         <div class="settings-arrow">›</div>
       </li>
       <li class="settings-item" onclick="openTermsModal()">
@@ -7118,16 +7030,16 @@ function onCloudDataRemote(remote) {
           showComplaints();
         }
       } else if (!(Auth.isLocked && Auth.isLocked())) {
-        // Admin ले नियम-सर्त परिमार्जन गर्दा वा नयाॅ एप अपडेट हुँदा चलिरहेको सत्रमा तुरुन्त देखाउने
+        // Admin ले नियम-सर्त परिमार्जन गर्दा वा हिसाब-सम्बन्धी अपडेट हुँदा चलिरहेको सत्रमा देखाउने
         const ts = hasAcceptedCurrentTerms(remote);
-        const upd = hasAnsweredCurrentAppUpdate();
+        const updNotice = hasUnseenAccountingUpdateNotice();
         if (!ts.accepted && !window._pendingTermsGateOpen) {
           if (Auth.isMember && Auth.isMember()) {
             runMemberOnboardingGate();
           } else if (Auth.isTreasurer && Auth.isTreasurer()) {
             checkTreasurerTermsGate();
           }
-        } else if (Auth.isMember && Auth.isMember() && !upd.answered && !window._pendingAppUpdateGateOpen) {
+        } else if (Auth.isMember && Auth.isMember() && updNotice.needsNotice && !window._pendingAppUpdateGateOpen) {
           runMemberOnboardingGate();
         }
       }
@@ -7766,10 +7678,19 @@ window.runClearAccountingOnly = runClearAccountingOnly;
 
 window.fixDuplicateMembersNow = fixDuplicateMembersNow;
 
-// ========== SHAREABLE PUBLIC MEMBER USER ID REGISTRATION FORM & ADMIN APPROVAL ==========
-window._regMembersCache = [];
-window._regGroupName = 'समूह बचत';
-window._regSelectedId = '';
+// ========== PRIVACY-FIRST MEMBER USER ID SELF-REGISTRATION & ADMIN APPROVAL/CANCEL ==========
+window._regState = {
+  groupName: 'समूह बचत',
+  terms: null,
+  vapidPublicKey: '',
+  regToken: '',
+  tempPin: '',
+  mobile: '',
+  fullName: '',
+  pushEnabled: false,
+  termsAccepted: false,
+  termsVersion: 1
+};
 
 function getRegistrationFormShareUrl() {
   try {
@@ -7781,6 +7702,63 @@ function getRegistrationFormShareUrl() {
   return 'https://bachat.gopalkoirala.com.np/?register=1';
 }
 
+function _hideAllRegPanels() {
+  [
+    'reg-step-1', 'reg-step-2', 'reg-step-3', 'reg-step-4', 'reg-step-5',
+    'reg-status-already', 'reg-status-temp', 'reg-status-temp-done',
+    'reg-status-pending', 'reg-status-rejected'
+  ].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  });
+}
+
+function _updateRegStepBar(stepNum, showBar = true) {
+  const bar = document.getElementById('reg-steps-bar');
+  if (!bar) return;
+  if (!showBar) {
+    bar.classList.add('hidden');
+    return;
+  }
+  bar.classList.remove('hidden');
+  bar.querySelectorAll('.reg-step-pill').forEach((p) => {
+    const n = Number(p.getAttribute('data-step') || 0);
+    p.classList.remove('active', 'done');
+    if (n < stepNum) p.classList.add('done');
+    else if (n === stepNum) p.classList.add('active');
+  });
+}
+
+function goToRegStep(stepNum) {
+  _hideAllRegPanels();
+  if (stepNum >= 1 && stepNum <= 4) {
+    _updateRegStepBar(stepNum, true);
+  } else {
+    _updateRegStepBar(4, false);
+  }
+  const panel = document.getElementById('reg-step-' + stepNum);
+  if (panel) panel.classList.remove('hidden');
+
+  if (stepNum === 3) {
+    _prepareRegPushStepUI();
+  } else if (stepNum === 4) {
+    const tpEl = document.getElementById('reg-issued-temp-pin');
+    if (tpEl) tpEl.textContent = window._regState.tempPin || '----';
+    const inp = document.getElementById('reg-temp-pin-input');
+    if (inp) {
+      inp.value = '';
+      setTimeout(() => { try { inp.focus(); } catch (e) {} }, 60);
+    }
+  }
+}
+
+function showRegStatusPanel(panelId) {
+  _hideAllRegPanels();
+  _updateRegStepBar(1, false);
+  const el = document.getElementById(panelId);
+  if (el) el.classList.remove('hidden');
+}
+
 async function openMemberRegistrationScreen() {
   try { hideLockScreen(); } catch (e) {}
   document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
@@ -7788,232 +7766,428 @@ async function openMemberRegistrationScreen() {
   if (scr) scr.classList.add('active');
 
   const loadBox = document.getElementById('reg-loading-box');
-  const fieldsBox = document.getElementById('reg-fields-box');
-  const succBox = document.getElementById('reg-success-box');
+  const wizWrap = document.getElementById('reg-wizard-wrap');
   if (loadBox) loadBox.classList.remove('hidden');
-  if (fieldsBox) fieldsBox.classList.add('hidden');
-  if (succBox) succBox.classList.add('hidden');
+  if (wizWrap) wizWrap.classList.add('hidden');
 
-  const res = await DB.fetchRegistrationMembers();
+  const res = await DB.fetchRegistrationInfo();
   if (loadBox) loadBox.classList.add('hidden');
-  if (!res || !res.ok) {
-    if (fieldsBox) fieldsBox.classList.remove('hidden');
-    const listEl = document.getElementById('reg-member-list');
-    if (listEl) {
-      listEl.innerHTML = `<div style="padding:10px;color:#842029;background:#f8d7da;border-radius:8px;font-size:0.82rem">⚠️ ${escapeHtmlChat((res && res.error) || 'सदस्य सूची लोड हुन सकेन')}</div>`;
-    }
-    return;
-  }
+  if (wizWrap) wizWrap.classList.remove('hidden');
 
-  window._regGroupName = res.groupName || 'समूह बचत';
-  window._regMembersCache = Array.isArray(res.members) ? res.members : [];
-  window._regSelectedId = '';
+  if (res && res.ok) {
+    window._regState.groupName = res.groupName || 'समूह बचत';
+    window._regState.terms = res.terms || null;
+    window._regState.vapidPublicKey = res.vapidPublicKey || '';
+  }
 
   const titleEl = document.getElementById('reg-group-title');
-  if (titleEl) titleEl.textContent = window._regGroupName;
+  if (titleEl) titleEl.textContent = window._regState.groupName || 'समूह बचत';
 
-  if (fieldsBox) fieldsBox.classList.remove('hidden');
-  resetMemberRegistrationForm(false);
+  resetMemberRegistrationForm();
 }
 
-function renderRegMembersList(filterQuery) {
-  const selEl = document.getElementById('reg-member-select');
-  const listEl = document.getElementById('reg-member-list');
-  const q = String(filterQuery || '').trim().toLowerCase();
-  const all = Array.isArray(window._regMembersCache) ? window._regMembersCache : [];
-  const filtered = q
-    ? all.filter((m) => (m.name || '').toLowerCase().includes(q) || (m.id || '').toLowerCase().includes(q))
-    : all;
+function resetMemberRegistrationForm() {
+  window._regState.regToken = '';
+  window._regState.tempPin = '';
+  window._regState.mobile = '';
+  window._regState.fullName = '';
+  window._regState.pushEnabled = false;
+  window._regState.termsAccepted = false;
 
-  if (selEl) {
-    const opts = ['<option value="">-- यहाँबाट वा तलको सूचीबाट नाम छान्नुहोस् (' + filtered.length + ' जना) --</option>'];
-    filtered.forEach((m, i) => {
-      const stTxt = m.regStatus === 'pending' ? ' [पठाइसकेको]' : (m.hasPin ? ' [ID बनेको]' : '');
-      const selectedAttr = window._regSelectedId === m.id ? ' selected' : '';
-      opts.push(`<option value="${escapeHtmlChat(m.id)}"${selectedAttr}>${escapeHtmlChat(m.id)} · ${escapeHtmlChat(m.name)}${stTxt}</option>`);
+  ['reg-full-name', 'reg-mobile-input', 'reg-caseb-cur-pin', 'reg-caseb-new-pin', 'reg-caseb-new-pin2',
+    'reg-temp-pin-input', 'reg-new-pin', 'reg-confirm-pin', 'reg-note'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const chk = document.getElementById('reg-terms-chk');
+  if (chk) chk.checked = false;
+  const alertBox = document.getElementById('reg-verify-alert');
+  if (alertBox) { alertBox.classList.add('hidden'); alertBox.innerHTML = ''; }
+  goToRegStep(1);
+}
+
+function _setRegVerifyAlert(msg, suggestion) {
+  const box = document.getElementById('reg-verify-alert');
+  if (!box) return;
+  if (!msg) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.className = 'reg-alert-card error';
+  box.innerHTML =
+    `<div style="font-weight:700;margin-bottom:4px">⚠️ ${escapeHtmlChat(msg)}</div>` +
+    (suggestion ? `<div style="font-size:0.79rem;color:#58151c">💡 <strong>सुझाव:</strong> ${escapeHtmlChat(suggestion)}</div>` : '');
+  box.classList.remove('hidden');
+}
+
+function _renderRegTermsStep() {
+  const cfg = getEffectiveTermsConfig(
+    { group: { name: window._regState.groupName }, settings: { terms: window._regState.terms } },
+    window._regState.groupName
+  );
+  window._regState.termsVersion = cfg.version || 1;
+  const box = document.getElementById('reg-terms-clauses');
+  if (box) {
+    box.innerHTML = (cfg.clauses || []).map((c) => `
+      <div class="terms-clause ${c.highlight ? 'highlight' : ''}">
+        <div class="tc-title">${escapeHtmlChat(c.title)}</div>
+        <div class="tc-body">${escapeHtmlChat(c.detail)}</div>
+      </div>
+    `).join('');
+  }
+  const chk = document.getElementById('reg-terms-chk');
+  if (chk) chk.checked = false;
+}
+
+async function verifyRegMemberInput() {
+  const fullName = String((document.getElementById('reg-full-name') && document.getElementById('reg-full-name').value) || '').trim();
+  const mobile = String((document.getElementById('reg-mobile-input') && document.getElementById('reg-mobile-input').value) || '').trim();
+  _setRegVerifyAlert('');
+
+  if (!fullName || fullName.length < 2) {
+    _setRegVerifyAlert('कृपया समूहमा दर्ता भएको आफ्नो पूरा नाम लेख्नुहोस्', 'नाम नछुटाई पूरा नाम, बीचको नाम र थर लेख्नुहोस्।');
+    return;
+  }
+  const digits = mobile.replace(/\D/g, '');
+  if (!digits || digits.length < 7) {
+    _setRegVerifyAlert('मान्य मोबाइल नम्बर लेख्नुहोस्', 'कम्तिमा ७–१० अंकको सही मोबाइल नम्बर राख्नुहोस्।');
+    return;
+  }
+
+  const btn = document.getElementById('reg-verify-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ जाँच हुँदैछ...'; }
+  const res = await DB.verifyRegistrationMember({ fullName, mobile });
+  if (btn) { btn.disabled = false; btn.textContent = '🔍 नाम जाँच गरी अगाडि बढ्नुहोस्'; }
+
+  if (!res || !res.ok) {
+    _setRegVerifyAlert((res && res.error) || 'जाँच गर्न सकिएन', (res && res.suggestion) || '');
+    return;
+  }
+
+  window._regState.fullName = fullName;
+  window._regState.mobile = digits;
+
+  if (res.statusCode === 'ALREADY_REGISTERED') {
+    const msgEl = document.getElementById('reg-already-msg');
+    if (msgEl) msgEl.textContent = res.message || 'तपाईंको User ID पहिले नै बनिसकेको छ। कृपया मोबाइल नम्बर र PIN राखी लगइन गर्नुहोस्।';
+    showRegStatusPanel('reg-status-already');
+    return;
+  }
+
+  if (res.statusCode === 'TEMP_PIN_CHANGE') {
+    window._regState.regToken = res.regToken || '';
+    const knownBox = document.getElementById('reg-caseb-known-box');
+    const disp = document.getElementById('reg-caseb-temp-display');
+    const curInp = document.getElementById('reg-caseb-cur-pin');
+    if (res.hasKnownTempPin && res.tempPin) {
+      if (knownBox) knownBox.classList.remove('hidden');
+      if (disp) disp.textContent = res.tempPin;
+      if (curInp) curInp.value = res.tempPin;
+    } else {
+      if (knownBox) knownBox.classList.add('hidden');
+      if (curInp) curInp.value = '';
+    }
+    showRegStatusPanel('reg-status-temp');
+    return;
+  }
+
+  if (res.statusCode === 'PENDING_ADMIN') {
+    window._regState.regToken = res.regToken || '';
+    if (res.vapidPublicKey) window._regState.vapidPublicKey = res.vapidPublicKey;
+    const msgEl = document.getElementById('reg-pending-msg');
+    if (msgEl) msgEl.textContent = res.message || 'तपाईंको रजिस्ट्रेसन प्रक्रिया Admin को स्वीकृतिको पर्खाइमा छ।';
+    const pushWrap = document.getElementById('reg-pending-push-wrap');
+    const pushMsg = document.getElementById('reg-pending-push-msg');
+    if (pushWrap) {
+      const canShowPush = !!(res.canEnablePush && res.regToken && 'PushManager' in window && typeof Notification !== 'undefined');
+      pushWrap.classList.toggle('hidden', !canShowPush);
+      if (canShowPush && Notification.permission === 'granted') {
+        _subscribeRegPushWithToken(res.regToken, window._regState.vapidPublicKey).then((ok) => {
+          if (ok && pushMsg) pushMsg.textContent = '✅ यो डिभाइसमा नोटिफिकेसन सक्रिय छ।';
+        });
+      }
+    }
+    showRegStatusPanel('reg-status-pending');
+    return;
+  }
+
+  if (res.statusCode === 'REJECTED_ADMIN') {
+    const msgEl = document.getElementById('reg-rejected-msg');
+    if (msgEl) msgEl.textContent = res.message || 'तपाईंको रजिस्ट्रेसन आवेदन रद्द गरिएको छ — कृपया Admin लाई सम्पर्क गर्नुहोस्।';
+    showRegStatusPanel('reg-status-rejected');
+    return;
+  }
+
+  if (res.statusCode === 'READY_FOR_ONBOARDING') {
+    window._regState.regToken = res.regToken || '';
+    window._regState.tempPin = res.tempPin || '';
+    if (res.groupName) window._regState.groupName = res.groupName;
+    if (res.terms !== undefined) window._regState.terms = res.terms;
+    if (res.vapidPublicKey) window._regState.vapidPublicKey = res.vapidPublicKey;
+    _renderRegTermsStep();
+    goToRegStep(2);
+    return;
+  }
+
+  _setRegVerifyAlert('अप्रत्याशित प्रतिक्रिया — कृपया पुनः प्रयास गर्नुहोस्', '');
+}
+
+function confirmRegTermsStep() {
+  const chk = document.getElementById('reg-terms-chk');
+  if (!chk || !chk.checked) {
+    return UI.toast('कृपया पहिले नियम तथा सर्तहरूमा सहमत छु भनी टिक लगाउनुहोस्', 'error');
+  }
+  window._regState.termsAccepted = true;
+  goToRegStep(3);
+}
+
+async function _subscribeRegPushWithToken(regToken, vapidPublicKey) {
+  try {
+    if (!regToken || !navigator.serviceWorker || !('PushManager' in window)) return false;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
+    let swReg = await navigator.serviceWorker.getRegistration('./');
+    if (!swReg) {
+      swReg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    }
+    const readyReg = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((r) => setTimeout(() => r(swReg), 4000))
+    ]);
+    if (!readyReg || !readyReg.pushManager) return false;
+    let pubKey = vapidPublicKey;
+    if (!pubKey) {
+      const info = await DB.fetchRegistrationInfo();
+      if (info && info.vapidPublicKey) pubKey = info.vapidPublicKey;
+    }
+    if (!pubKey) return false;
+    let sub = await readyReg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await readyReg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(pubKey)
+      });
+    }
+    const saveRes = await DB.subscribeRegistrationPush({
+      regToken,
+      subscription: sub.toJSON()
     });
-    selEl.innerHTML = opts.join('');
-    if (window._regSelectedId) selEl.value = window._regSelectedId;
+    return !!(saveRes && saveRes.ok);
+  } catch (e) {
+    console.warn('reg push sub error', e);
+    return false;
   }
+}
 
-  if (listEl) {
-    if (!filtered.length) {
-      listEl.innerHTML = '<div class="text-muted text-center" style="padding:10px;font-size:0.82rem">मिल्दो नाम भेटिएन</div>';
-      return;
+function _prepareRegPushStepUI() {
+  const msgEl = document.getElementById('reg-push-msg');
+  const allowBtn = document.getElementById('reg-push-allow-btn');
+  const nextBtn = document.getElementById('reg-push-next-btn');
+  const skipBtn = document.getElementById('reg-push-skip-btn');
+  const perm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+  const supported = !!(navigator.serviceWorker && 'PushManager' in window && typeof Notification !== 'undefined');
+
+  if (msgEl) { msgEl.classList.add('hidden'); msgEl.innerHTML = ''; }
+  if (nextBtn) nextBtn.classList.add('hidden');
+  if (skipBtn) skipBtn.classList.add('hidden');
+  if (allowBtn) allowBtn.classList.remove('hidden');
+
+  if (!supported || perm === 'denied') {
+    if (msgEl) {
+      msgEl.className = 'reg-alert-card';
+      msgEl.innerHTML = '⚠️ ' + diagnosePushUnavailableReason();
+      msgEl.classList.remove('hidden');
     }
-    listEl.innerHTML = filtered.map((m) => {
-      const isSel = window._regSelectedId === m.id;
-      const isLocked = !!(m.submitted || m.hasPin);
-      let pill = '<span class="reg-status-pill wait">भर्न बाँकी</span>';
-      if (m.regStatus === 'approved' || m.hasPin) pill = '<span class="reg-status-pill approved">🔒 ID बनिसक्यो</span>';
-      else if (isLocked) pill = '<span class="reg-status-pill pending">🔒 रजिस्टर भइसक्यो</span>';
-      return `
-        <button type="button" class="reg-member-item${isSel ? ' selected' : ''}" onclick="onRegMemberSelect('${escapeHtmlChat(m.id)}')">
-          <div><span class="reg-id-tag">${escapeHtmlChat(m.id)}</span><strong>${escapeHtmlChat(m.name)}</strong></div>
-          ${pill}
-        </button>
-      `;
-    }).join('');
+    if (skipBtn) skipBtn.classList.remove('hidden');
+    if (perm === 'denied' && allowBtn) allowBtn.textContent = '🔔 पुनः जाँच गर्नुहोस्';
+  } else if (perm === 'granted') {
+    if (allowBtn) allowBtn.textContent = '🔔 सूचना सक्रिय गरी अगाडि बढ्नुहोस्';
+    if (msgEl) {
+      msgEl.className = 'reg-alert-card success';
+      msgEl.innerHTML = '✅ ब्राउजरमा सूचना अनुमति पहिले नै दिइएको छ — तलको बटन थिची अगाडि बढ्नुहोस्।';
+      msgEl.classList.remove('hidden');
+    }
+  } else {
+    if (allowBtn) allowBtn.textContent = '🔔 सूचना अनुमति दिनुहोस् (Allow)';
   }
 }
 
-function filterRegMembers() {
-  const inp = document.getElementById('reg-search-input');
-  const q = inp ? inp.value : '';
-  renderRegMembersList(q);
-}
+async function requestRegPushStep() {
+  const btn = document.getElementById('reg-push-allow-btn');
+  const msgEl = document.getElementById('reg-push-msg');
+  const skipBtn = document.getElementById('reg-push-skip-btn');
+  const nextBtn = document.getElementById('reg-push-next-btn');
 
-function onRegMemberSelect(memberId) {
-  const id = String(memberId || '').trim();
-  window._regSelectedId = id;
-  const selEl = document.getElementById('reg-member-select');
-  if (selEl && selEl.value !== id) selEl.value = id;
-
-  const banner = document.getElementById('reg-selected-banner');
-  const idInp = document.getElementById('reg-member-id');
-  const origInp = document.getElementById('reg-original-name');
-  const corrInp = document.getElementById('reg-corrected-name');
-  const hintEl = document.getElementById('reg-existing-hint');
-  const mobInp = document.getElementById('reg-whatsapp-mobile');
-  const inputWrap = document.getElementById('reg-input-wrap');
-  const lockedBox = document.getElementById('reg-locked-box');
-  const lockedMsg = document.getElementById('reg-locked-msg');
-
-  const m = (window._regMembersCache || []).find((x) => x.id === id);
-  if (!m) {
-    if (banner) banner.classList.add('hidden');
-    if (lockedBox) lockedBox.classList.add('hidden');
-    if (inputWrap) inputWrap.classList.remove('hidden');
-    if (idInp) idInp.value = '';
-    if (origInp) origInp.value = '';
-    if (corrInp) corrInp.value = '';
-    renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
+  if (typeof Notification === 'undefined' || !('PushManager' in window)) {
+    if (msgEl) {
+      msgEl.className = 'reg-alert-card';
+      msgEl.innerHTML = '⚠️ ' + diagnosePushUnavailableReason();
+      msgEl.classList.remove('hidden');
+    }
+    if (skipBtn) skipBtn.classList.remove('hidden');
     return;
   }
 
-  if (banner) banner.classList.remove('hidden');
-  if (idInp) idInp.value = m.id;
-  if (origInp) origInp.value = m.name || '';
-  if (corrInp) corrInp.value = m.name || '';
-
-  const isLocked = !!(m.submitted || m.hasPin);
-  if (isLocked) {
-    if (inputWrap) inputWrap.classList.add('hidden');
-    if (lockedBox) lockedBox.classList.remove('hidden');
-    const mobHint = m.maskedMobile ? ` (नम्बर: <strong>${escapeHtmlChat(m.maskedMobile)}</strong>)` : '';
-    if (hintEl) {
-      hintEl.innerHTML = `🔒 <strong>रजिस्टर भइसकेको छ</strong>${mobHint} — दोस्रो पटक भर्न मिल्दैन।`;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ अनुमति लिँदैछ...'; }
+  try {
+    let perm = Notification.permission;
+    if (perm === 'default') {
+      perm = await Notification.requestPermission();
     }
-    if (lockedMsg) {
-      lockedMsg.innerHTML =
-        `तपाईंको विवरण पहिले नै रजिस्ट्रेसन भइसकेको छ${mobHint}।<br>` +
-        `<strong>कृपया आफ्नो WhatsApp म्यासेज जाँच गर्नुहोस्।</strong>` +
-        `<div style="margin-top:6px;font-size:0.75rem;color:#475569">(नम्बर वा नाम गलत भएमा Admin सँग सम्पर्क गरी रिसेट गर्न अनुरोध गर्नुहोस्)</div>`;
+    if (perm === 'granted') {
+      const ok = await _subscribeRegPushWithToken(window._regState.regToken, window._regState.vapidPublicKey);
+      window._regState.pushEnabled = ok;
+      if (msgEl) {
+        msgEl.className = ok ? 'reg-alert-card success' : 'reg-alert-card';
+        msgEl.innerHTML = ok
+          ? '✅ नोटिफिकेसन अनुमति सुरक्षित सक्रिय भयो! अब अर्को चरणमा PIN सेट गर्नुहोस्।'
+          : 'ℹ️ सूचना अनुमति दिइयो — अब अर्को चरणमा PIN सेट गर्नुहोस्।';
+        msgEl.classList.remove('hidden');
+      }
+      if (btn) btn.classList.add('hidden');
+      if (skipBtn) skipBtn.classList.add('hidden');
+      if (nextBtn) nextBtn.classList.remove('hidden');
+      setTimeout(() => goToRegStep(4), 650);
+    } else {
+      if (msgEl) {
+        msgEl.className = 'reg-alert-card error';
+        msgEl.innerHTML = '❌ ' + diagnosePushUnavailableReason();
+        msgEl.classList.remove('hidden');
+      }
+      if (skipBtn) skipBtn.classList.remove('hidden');
     }
-    renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
-    return;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔔 सूचना अनुमति दिनुहोस् (Allow)'; }
   }
-
-  if (lockedBox) lockedBox.classList.add('hidden');
-  if (inputWrap) inputWrap.classList.remove('hidden');
-  if (hintEl) {
-    hintEl.innerHTML = 'नाम ठीक छ भने नबदल्नुहोस्; हिज्जे वा पूरा नाम सच्याउनुपरे तल टाइप गरी WhatsApp नम्बर राख्नुहोस् (सेभ गरेपछि लक हुनेछ)।';
-  }
-  renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
-  if (mobInp) setTimeout(() => { try { mobInp.focus(); } catch (e) {} }, 60);
 }
 
-async function submitMemberRegistration() {
-  const memberId = String(window._regSelectedId || (document.getElementById('reg-member-id') && document.getElementById('reg-member-id').value) || '').trim();
-  const correctedName = String((document.getElementById('reg-corrected-name') && document.getElementById('reg-corrected-name').value) || '').trim();
-  const whatsappMobile = String((document.getElementById('reg-whatsapp-mobile') && document.getElementById('reg-whatsapp-mobile').value) || '').trim();
+function skipRegPushIfUnsupported() {
+  window._regState.pushEnabled = false;
+  goToRegStep(4);
+}
+
+async function enablePushInPendingReg() {
+  const btn = document.getElementById('reg-pending-push-btn');
+  const msgEl = document.getElementById('reg-pending-push-msg');
+  if (typeof Notification === 'undefined' || !('PushManager' in window)) {
+    if (msgEl) msgEl.innerHTML = diagnosePushUnavailableReason();
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ सक्रिय हुँदैछ...'; }
+  try {
+    let perm = Notification.permission;
+    if (perm === 'default') perm = await Notification.requestPermission();
+    if (perm === 'granted') {
+      const ok = await _subscribeRegPushWithToken(window._regState.regToken, window._regState.vapidPublicKey);
+      if (msgEl) msgEl.textContent = ok ? '✅ नोटिफिकेसन सक्रिय भयो — स्वीकृति हुनासाथ सूचना आउनेछ!' : '⚠️ दर्ता गर्न सकिएन — कृपया Chrome ब्राउजरबाट खोल्नुहोस्।';
+    } else if (msgEl) {
+      msgEl.innerHTML = diagnosePushUnavailableReason();
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔔 नोटिफिकेसन अनुमति अन गर्नुहोस्'; }
+  }
+}
+
+async function submitSelfRegistration() {
+  const tempPin = String((document.getElementById('reg-temp-pin-input') && document.getElementById('reg-temp-pin-input').value) || '').trim();
+  const newPin = String((document.getElementById('reg-new-pin') && document.getElementById('reg-new-pin').value) || '').trim();
+  const confirmPin = String((document.getElementById('reg-confirm-pin') && document.getElementById('reg-confirm-pin').value) || '').trim();
   const note = String((document.getElementById('reg-note') && document.getElementById('reg-note').value) || '').trim();
 
-  if (!memberId) {
-    return UI.toast('पहिले सूचीबाट आफ्नो नाम र Member ID छान्नुहोस्', 'error');
+  if (!window._regState.regToken || !window._regState.termsAccepted) {
+    UI.toast('सत्र म्याद सकियो — कृपया सुरुबाट नाम जाँच गर्नुहोस्', 'error');
+    return resetMemberRegistrationForm();
   }
-  const existingMem = (window._regMembersCache || []).find((x) => x.id === memberId);
-  if (existingMem && (existingMem.submitted || existingMem.hasPin)) {
-    onRegMemberSelect(memberId);
-    return UI.toast('रजिस्टर भइसकेको छ — कृपया WhatsApp म्यासेज जाँच गर्नुहोस्', 'error');
+  if (!/^\d{4}$/.test(tempPin) || tempPin !== window._regState.tempPin) {
+    return UI.toast('माथि देखिएको अस्थायी (Temp) ४ अंकको PIN ठीकसँग लेख्नुहोस्', 'error');
   }
-  const digits = whatsappMobile.replace(/\D/g, '');
-  if (!digits || digits.length < 7) {
-    return UI.toast('मान्य WhatsApp / मोबाइल नम्बर लेख्नुहोस्', 'error');
+  if (!/^\d{4}$/.test(newPin)) {
+    return UI.toast('नयाँ PIN ठीक ४ अंक (0-9) को हुनुपर्छ', 'error');
+  }
+  if (newPin !== confirmPin) {
+    return UI.toast('नयाँ PIN र Confirm PIN दुवैमा एउटै ४ अंक लेख्नुहोस्', 'error');
+  }
+  if (newPin === tempPin) {
+    return UI.toast('अस्थायी PIN भन्दा फरक आफ्नो गोप्य ४ अंकको नयाँ PIN राख्नुहोस्', 'error');
   }
 
   const btn = document.getElementById('reg-submit-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ सेभ हुँदैछ...'; }
-  const res = await DB.submitMemberRegistration({ memberId, correctedName, whatsappMobile, note });
-  if (btn) { btn.disabled = false; btn.textContent = '💾 विवरण सेभ गर्नुहोस्'; }
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ सुरक्षित पठाउँदैछ...'; }
+  const res = await DB.submitSelfRegistration({
+    regToken: window._regState.regToken,
+    tempPin,
+    newPin,
+    confirmPin,
+    termsAccepted: true,
+    termsVersion: window._regState.termsVersion || 1,
+    pushEnabled: !!window._regState.pushEnabled,
+    note
+  });
+  if (btn) { btn.disabled = false; btn.textContent = '💾 सुरक्षित गरी रजिस्ट्रेसन पठाउनुहोस्'; }
 
   if (!res || !res.ok) {
-    if (res && res.locked && existingMem) {
-      existingMem.submitted = true;
-      existingMem.regStatus = res.regStatus || 'pending';
-      if (res.maskedMobile) existingMem.maskedMobile = res.maskedMobile;
-      onRegMemberSelect(memberId);
-    }
-    return UI.toast((res && res.error) || 'विवरण सेभ गर्न सकिएन', 'error');
+    return UI.toast((res && res.error) || 'रजिस्ट्रेसन पठाउन सकिएन', 'error');
   }
 
-  const cached = (window._regMembersCache || []).find((x) => x.id === memberId);
-  if (cached) {
-    cached.submitted = true;
-    cached.regStatus = 'pending';
-    cached.maskedMobile = res.maskedMobile || '';
-  }
-  renderRegMembersList(document.getElementById('reg-search-input') ? document.getElementById('reg-search-input').value : '');
+  // Clear secret PIN fields immediately
+  window._regState.regToken = '';
+  window._regState.tempPin = '';
+  ['reg-temp-pin-input', 'reg-new-pin', 'reg-confirm-pin'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
 
-  const fieldsBox = document.getElementById('reg-fields-box');
-  const succBox = document.getElementById('reg-success-box');
   const sumEl = document.getElementById('reg-success-summary');
-  if (fieldsBox) fieldsBox.classList.add('hidden');
-  if (succBox) succBox.classList.remove('hidden');
   if (sumEl) {
-    const nameChanged = !!(res.correctedName && res.correctedName !== res.originalName);
     sumEl.innerHTML =
-      `<div><strong>Member ID:</strong> ${escapeHtmlChat(res.memberId)}</div>` +
-      `<div><strong>समूहमा नाम:</strong> ${escapeHtmlChat(res.originalName)}</div>` +
-      (nameChanged ? `<div><strong>सच्याइएको नाम:</strong> ${escapeHtmlChat(res.correctedName)}</div>` : '') +
-      `<div><strong>WhatsApp / मोबाइल:</strong> ${escapeHtmlChat(res.whatsappMobile)}</div>` +
-      `<div style="margin-top:6px;font-weight:700;color:#0f5132">🔒 तपाईंको नाम र नम्बर रजिस्टर भई लक गरिएको छ — कृपया WhatsApp म्यासेज जाँच गर्नुहोस्।</div>`;
+      `<div><strong>नाम:</strong> ${escapeHtmlChat(window._regState.fullName)}</div>` +
+      `<div><strong>मोबाइल नम्बर:</strong> ${escapeHtmlChat(res.maskedMobile || window._regState.mobile)}</div>` +
+      `<div style="margin-top:8px">तपाईंको रजिस्ट्रेसन प्रक्रिया पूरा भई पठाइएको छ। केही समयमा एपले नोटिफिकेसनबाट जानकारी गराएपछि <strong>सही मोबाइल नम्बर र तपाईंले राखेको PIN</strong> प्रयोग गरी लगइन गर्नुहोला।</div>`;
   }
-  UI.toast('✅ विवरण सुरक्षित सेभ र लक भयो!', 'success');
+  goToRegStep(5);
+  UI.toast('✅ रजिस्ट्रेसन प्रक्रिया पूरा भई Admin मा पठाइयो!', 'success');
 }
 
-function resetMemberRegistrationForm(clearSuccess = true) {
-  window._regSelectedId = '';
-  const searchInp = document.getElementById('reg-search-input');
-  const selEl = document.getElementById('reg-member-select');
-  const banner = document.getElementById('reg-selected-banner');
-  const idInp = document.getElementById('reg-member-id');
-  const origInp = document.getElementById('reg-original-name');
-  const corrInp = document.getElementById('reg-corrected-name');
-  const mobInp = document.getElementById('reg-whatsapp-mobile');
-  const noteInp = document.getElementById('reg-note');
-  const inputWrap = document.getElementById('reg-input-wrap');
-  const lockedBox = document.getElementById('reg-locked-box');
-  if (searchInp) searchInp.value = '';
-  if (selEl) selEl.value = '';
-  if (banner) banner.classList.add('hidden');
-  if (lockedBox) lockedBox.classList.add('hidden');
-  if (inputWrap) inputWrap.classList.remove('hidden');
-  if (idInp) idInp.value = '';
-  if (origInp) origInp.value = '';
-  if (corrInp) corrInp.value = '';
-  if (mobInp) mobInp.value = '';
-  if (noteInp) noteInp.value = '';
-  if (clearSuccess) {
-    const fieldsBox = document.getElementById('reg-fields-box');
-    const succBox = document.getElementById('reg-success-box');
-    if (succBox) succBox.classList.add('hidden');
-    if (fieldsBox) fieldsBox.classList.remove('hidden');
+async function submitCaseBTempPinUpgrade() {
+  const curPin = String((document.getElementById('reg-caseb-cur-pin') && document.getElementById('reg-caseb-cur-pin').value) || '').trim();
+  const newPin = String((document.getElementById('reg-caseb-new-pin') && document.getElementById('reg-caseb-new-pin').value) || '').trim();
+  const confirmPin = String((document.getElementById('reg-caseb-new-pin2') && document.getElementById('reg-caseb-new-pin2').value) || '').trim();
+
+  if (!/^\d{4}$/.test(curPin) || !/^\d{4}$/.test(newPin)) {
+    return UI.toast('Temp PIN र नयाँ PIN दुवै ठीक ४ अंकको हुनुपर्छ', 'error');
   }
-  renderRegMembersList('');
+  if (newPin !== confirmPin) {
+    return UI.toast('नयाँ PIN दुवै ठाउँमा मिलेन', 'error');
+  }
+  if (newPin === curPin) {
+    return UI.toast('अस्थायी PIN भन्दा फरक नयाँ PIN राख्नुहोस्', 'error');
+  }
+
+  const btn = document.getElementById('reg-caseb-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ सेभ हुँदैछ...'; }
+  const res = await DB.completeTempPinRegistration({
+    regToken: window._regState.regToken,
+    tempPin: curPin,
+    newPin,
+    confirmPin
+  });
+  if (btn) { btn.disabled = false; btn.textContent = '✅ नयाँ PIN सेट गर्नुहोस्'; }
+
+  if (!res || !res.ok) {
+    return UI.toast((res && res.error) || 'PIN परिवर्तन गर्न सकिएन', 'error');
+  }
+
+  if (res.mobile) window._regState.mobile = res.mobile;
+  window._regState.regToken = '';
+  ['reg-caseb-cur-pin', 'reg-caseb-new-pin', 'reg-caseb-new-pin2'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  showRegStatusPanel('reg-status-temp-done');
+  UI.toast('✅ नयाँ व्यक्तिगत PIN सेट भयो — अब लगइन गर्नुहोस्!', 'success');
 }
 
-function exitRegistrationToApp() {
+function exitRegistrationToApp(prefillMobile = false) {
   try {
     const u = new URL(window.location.href);
     u.searchParams.delete('register');
@@ -8027,6 +8201,15 @@ function exitRegistrationToApp() {
     showMainApp();
   } else {
     showLoginScreen();
+    if (prefillMobile && window._regState && window._regState.mobile) {
+      const idEl = document.getElementById('login-id');
+      const secEl = document.getElementById('login-secret');
+      if (idEl) idEl.value = window._regState.mobile;
+      if (secEl) {
+        secEl.value = '';
+        setTimeout(() => { try { secEl.focus(); } catch (e) {} }, 80);
+      }
+    }
   }
 }
 
@@ -8043,7 +8226,7 @@ async function refreshAdminRegistrationBadge() {
   try {
     const el = document.getElementById('admin-reg-settings-desc');
     if (el) {
-      el.textContent = `लिङ्क पठाउनुहोस् · बाँकी: ${res.summary.pendingCount} · बनेको: ${res.summary.approvedCount} · भर्न बाँकी: ${res.summary.notSubmittedCount}`;
+      el.textContent = `लिङ्क पठाउनुहोस् · स्वीकृति बाँकी: ${res.summary.pendingCount} · स्वीकृत: ${res.summary.approvedCount} · भर्न बाँकी: ${res.summary.notSubmittedCount}`;
     }
   } catch (e) {}
 }
@@ -8052,7 +8235,7 @@ function buildRegistrationInviteText() {
   const data = DB.load();
   const gName = (data.group && data.group.name) || 'समूह बचत';
   const url = getRegistrationFormShareUrl();
-  return `🙏 नमस्कार!\n'${gName}' को डिजिटल बचत एपमा तपाईंको User ID र लगइन PIN बनाउन कृपया तलको लिङ्क खोली आफ्नो नाम र WhatsApp नम्बर भरेर सेभ गर्नुहोस्:\n👉 ${url}\n\n(लिङ्क खोलेपछि सूचीबाट आफ्नो नाम छान्नुहोस्, नाम सच्याउनुपरे सच्याउनुहोस् र WhatsApp मोबाइल नम्बर हालेर सेभ थिच्नुहोस्।)`;
+  return `🙏 नमस्कार!\n'${gName}' को डिजिटल बचत एपमा तपाईंको User ID बनाउन कृपया तलको लिङ्क खोली समूहमा दर्ता भएको आफ्नो पूरा नाम र मोबाइल नम्बर राखेर नियम मञ्जुर गरी PIN सेट गर्नुहोस्:\n👉 ${url}`;
 }
 
 function copyRegistrationShareMessage() {
@@ -8104,7 +8287,7 @@ async function openAdminRegistrationsModal() {
   }
 
   const shareUrl = getRegistrationFormShareUrl();
-  const sum = res.summary || { totalMembers: 0, pendingCount: 0, approvedCount: 0, notSubmittedCount: 0 };
+  const sum = res.summary || { totalMembers: 0, pendingCount: 0, approvedCount: 0, rejectedCount: 0, notSubmittedCount: 0 };
   window._pendingRegCount = Number(sum.pendingCount || 0);
   try { renderSettingsTab(); } catch (e) {}
 
@@ -8114,6 +8297,7 @@ async function openAdminRegistrationsModal() {
     if (r && r.memberId) window._adminRegMap[r.memberId] = r;
   });
   const pending = regs.filter((r) => r.status === 'pending');
+  const rejected = regs.filter((r) => r.status === 'rejected');
   const approved = regs.filter((r) => r.status === 'approved');
   const missing = Array.isArray(res.notSubmittedMembers) ? res.notSubmittedMembers : [];
 
@@ -8132,55 +8316,81 @@ async function openAdminRegistrationsModal() {
 
   const statsHtml = `
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;font-size:0.76rem">
-      <span class="terms-pill-wait">⏳ ID बनाउन बाँकी: ${sum.pendingCount}</span>
-      <span class="terms-pill-ok">✅ ID बनिसकेको: ${sum.approvedCount}</span>
+      <span class="terms-pill-wait">⏳ स्वीकृति बाँकी: ${sum.pendingCount}</span>
+      <span class="terms-pill-ok">✅ स्वीकृत: ${sum.approvedCount}</span>
+      ${sum.rejectedCount ? `<span class="reg-status-pill rejected">❌ रद्द: ${sum.rejectedCount}</span>` : ''}
       <span style="background:#e2e8f0;color:#334155;padding:3px 9px;border-radius:999px;font-weight:700">📋 भर्न बाँकी: ${sum.notSubmittedCount} / ${sum.totalMembers}</span>
     </div>
   `;
 
   let pendingHtml = '';
   if (pending.length === 0) {
-    pendingHtml = '<div style="background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;padding:12px;text-align:center;color:#64748b;font-size:0.84rem;margin-bottom:12px">अहिले ID बनाउन बाँकी नयाँ फारम विवरण छैन।</div>';
+    pendingHtml = '<div style="background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;padding:12px;text-align:center;color:#64748b;font-size:0.84rem;margin-bottom:12px">अहिले स्वीकृत गर्न बाँकी नयाँ रजिस्ट्रेसन आवेदन छैन।</div>';
   } else {
     pendingHtml = pending.map((r) => {
       const mid = r.memberId;
       const rnd = generateRandomPin();
-      const hasNameFix = !!(r.correctedName && r.correctedName !== r.originalName);
       const dtTxt = r.updatedAt ? new Date(r.updatedAt).toLocaleString('ne-NP') : '';
+      const metaPills = `
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin:5px 0;font-size:0.72rem">
+          ${r.termsVersion ? `<span class="terms-pill-ok">📜 सर्त v${r.termsVersion} मञ्जुर</span>` : ''}
+          <span style="padding:2px 7px;border-radius:999px;font-weight:700;background:${r.pushEnabled ? '#d1e7dd' : '#e2e8f0'};color:${r.pushEnabled ? '#0f5132' : '#475569'}">
+            ${r.pushEnabled ? '🔔 सूचना सक्रिय' : '🔕 सूचना अनुमति बाँकी'}
+          </span>
+        </div>
+      `;
+      const pinAreaHtml = r.hasDesiredPin
+        ? `<div style="background:#d1e7dd;border:1px solid #badbcc;color:#0f5132;border-radius:8px;padding:7px 9px;font-size:0.79rem;margin-bottom:7px">
+             🔐 <strong>सदस्यले आफ्नै गोप्य ४ अंकको PIN सेट गरिसक्नुभएको छ।</strong> स्वीकृत गर्नासाथ यही मोबाइल र PIN बाट लगइन खुल्छ र सूचना पठाइन्छ।
+           </div>`
+        : `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+             <input type="text" id="reg-pin-${escapeHtmlChat(mid)}" maxlength="4" inputmode="numeric" value="${rnd}" style="width:95px;padding:7px;border:1.5px solid #cbd5e1;border-radius:8px;text-align:center;font-weight:700;letter-spacing:2px;font-size:0.95rem">
+             <button type="button" class="btn btn-light btn-sm" onclick="document.getElementById('reg-pin-${escapeHtmlChat(mid)}').value=generateRandomPin()">🎲</button>
+             <label style="display:flex;align-items:center;gap:5px;font-size:0.77rem;cursor:pointer;flex:1">
+               <input type="checkbox" id="reg-temp-${escapeHtmlChat(mid)}" checked style="width:16px;height:16px">
+               Temp PIN (फेरि फेर्नुपर्ने)
+             </label>
+           </div>`;
+
       return `
         <div class="reg-admin-card pending">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px">
             <div><span class="reg-id-tag">${escapeHtmlChat(mid)}</span><strong>${escapeHtmlChat(r.originalName)}</strong></div>
-            <span class="reg-status-pill pending">⏳ नयाँ प्राप्त</span>
+            <span class="reg-status-pill pending">⏳ स्वीकृति बाँकी</span>
           </div>
-          ${hasNameFix ? `
-            <div style="background:#fff3cd;border:1px solid #ffe69c;border-radius:8px;padding:6px 8px;font-size:0.8rem;color:#664d03;margin:5px 0">
-              ✏️ <strong>सदस्यले नाम सच्याउन पठाएको:</strong> ${escapeHtmlChat(r.correctedName)}
-              <label style="display:flex;align-items:center;gap:6px;margin-top:4px;cursor:pointer;font-weight:600">
-                <input type="checkbox" id="reg-apply-name-${escapeHtmlChat(mid)}" checked style="width:16px;height:16px">
-                यही सच्याइएको नाम सदस्य प्रोफाइलमा लागू गर्नुहोस्
-              </label>
-            </div>
-          ` : ''}
-          <div style="font-size:0.85rem;margin:4px 0">📱 <strong>WhatsApp / मोबाइल:</strong> <span style="color:#0d6efd;font-weight:700">${escapeHtmlChat(r.whatsappMobile)}</span></div>
+          <div style="font-size:0.85rem;margin:4px 0">📱 <strong>मोबाइल नम्बर:</strong> <span style="color:#0d6efd;font-weight:700">${escapeHtmlChat(r.whatsappMobile)}</span></div>
+          ${metaPills}
           ${r.note ? `<div style="font-size:0.78rem;color:#475569;margin-bottom:4px">📝 टिप्पणी: ${escapeHtmlChat(r.note)}</div>` : ''}
           ${r.conflictReason ? `<div style="font-size:0.78rem;color:#842029;background:#f8d7da;padding:5px 8px;border-radius:8px;margin-bottom:6px">⚠️ ${escapeHtmlChat(r.conflictReason)}</div>` : ''}
           ${dtTxt ? `<div class="text-muted" style="font-size:0.72rem;margin-bottom:6px">पठाएको: ${escapeHtmlChat(dtTxt)}</div>` : ''}
-          <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
-            <input type="text" id="reg-pin-${escapeHtmlChat(mid)}" maxlength="4" inputmode="numeric" value="${rnd}" style="width:95px;padding:7px;border:1.5px solid #cbd5e1;border-radius:8px;text-align:center;font-weight:700;letter-spacing:2px;font-size:0.95rem">
-            <button type="button" class="btn btn-light btn-sm" onclick="document.getElementById('reg-pin-${escapeHtmlChat(mid)}').value=generateRandomPin()">🎲</button>
-            <label style="display:flex;align-items:center;gap:5px;font-size:0.77rem;cursor:pointer;flex:1">
-              <input type="checkbox" id="reg-temp-${escapeHtmlChat(mid)}" checked style="width:16px;height:16px">
-              Temp PIN (फेरि फेर्नुपर्ने)
-            </label>
-          </div>
+          ${pinAreaHtml}
           <div style="display:flex;gap:6px">
-            <button type="button" class="btn btn-success btn-sm" style="flex:1" onclick="approveAdminRegItem('${escapeHtmlChat(mid)}')">✅ User ID र PIN बनाउनुहोस्</button>
-            <button type="button" class="btn btn-light btn-sm" onclick="deleteAdminRegItem('${escapeHtmlChat(mid)}')" title="विवरण हटाउनुहोस्">🗑️</button>
+            <button type="button" class="btn btn-success btn-sm" style="flex:1" onclick="approveAdminRegItem('${escapeHtmlChat(mid)}')">✅ स्वीकृत गर्नुहोस्</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="rejectAdminRegItem('${escapeHtmlChat(mid)}')">❌ रद्द</button>
+            <button type="button" class="btn btn-light btn-sm" onclick="deleteAdminRegItem('${escapeHtmlChat(mid)}')" title="विवरण मेटाउनुहोस्">🗑️</button>
           </div>
         </div>
       `;
     }).join('');
+  }
+
+  let rejectedHtml = '';
+  if (rejected.length > 0) {
+    rejectedHtml = `
+      <div class="section-title mt-2" style="font-size:0.9rem;color:#842029">❌ रद्द गरिएका आवेदन (${rejected.length})</div>
+      ${rejected.map((r) => `
+        <div class="reg-admin-card rejected">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <div><span class="reg-id-tag">${escapeHtmlChat(r.memberId)}</span><strong>${escapeHtmlChat(r.currentMemberName || r.originalName)}</strong></div>
+            <span class="reg-status-pill rejected">❌ रद्द</span>
+          </div>
+          <div style="font-size:0.8rem;color:#475569;margin-top:3px">📱 ${escapeHtmlChat(r.whatsappMobile)} ${r.note ? '· ' + escapeHtmlChat(r.note) : ''}</div>
+          <div style="margin-top:6px">
+            <button type="button" class="btn btn-outline btn-sm btn-block" onclick="deleteAdminRegItem('${escapeHtmlChat(r.memberId)}')">🔄 रिसेट गरी पुनः फारम भर्न मिल्ने बनाउनुहोस्</button>
+          </div>
+        </div>
+      `).join('')}
+    `;
   }
 
   let approvedHtml = '';
@@ -8191,11 +8401,11 @@ async function openAdminRegistrationsModal() {
         <div class="reg-admin-card approved">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
             <div><span class="reg-id-tag">${escapeHtmlChat(r.memberId)}</span><strong>${escapeHtmlChat(r.currentMemberName || r.originalName)}</strong></div>
-            <span class="reg-status-pill approved">✅ ID बन्यो</span>
+            <span class="reg-status-pill approved">✅ स्वीकृत</span>
           </div>
           <div style="font-size:0.8rem;color:#475569;margin-top:3px">📱 ${escapeHtmlChat(r.whatsappMobile)}</div>
           <div style="display:flex;gap:6px;margin-top:6px">
-            <button type="button" class="btn btn-info btn-sm" style="flex:1" onclick="showSetPin('${escapeHtmlChat(r.memberId)}')">🎲 नयाँ PIN / WhatsApp पठाउनुहोस्</button>
+            <button type="button" class="btn btn-info btn-sm" style="flex:1" onclick="showSetPin('${escapeHtmlChat(r.memberId)}')">🎲 नयाँ PIN / WhatsApp</button>
             <button type="button" class="btn btn-outline btn-sm" onclick="openMemberDetail('${escapeHtmlChat(r.memberId)}')">प्रोफाइल</button>
           </div>
         </div>
@@ -8221,8 +8431,9 @@ async function openAdminRegistrationsModal() {
   const bodyHtml = `
     ${shareCardHtml}
     ${statsHtml}
-    <div class="section-title" style="font-size:0.92rem">⏳ प्राप्त विवरण — हेरेर User ID बनाउनुहोस् (${pending.length})</div>
+    <div class="section-title" style="font-size:0.92rem">⏳ प्राप्त विवरण — जाँच गरी स्वीकृत / रद्द गर्नुहोस् (${pending.length})</div>
     ${pendingHtml}
+    ${rejectedHtml}
     ${approvedHtml}
     ${missingHtml}
   `;
@@ -8243,35 +8454,76 @@ async function approveAdminRegItem(memberId) {
   if (!rec) {
     return UI.toast('विवरण भेटिएन — कृपया रिफ्रेस गर्नुहोस्', 'error');
   }
-  const pinEl = document.getElementById('reg-pin-' + memberId);
-  const tempEl = document.getElementById('reg-temp-' + memberId);
-  const nameChkEl = document.getElementById('reg-apply-name-' + memberId);
-  const pin = String((pinEl && pinEl.value) || '').trim();
-  const isTemp = tempEl ? !!tempEl.checked : true;
-  const applyName = nameChkEl ? !!nameChkEl.checked : true;
 
-  if (!/^\d{4}$/.test(pin)) {
-    return UI.toast('PIN ठीक ४ अंकको हुनुपर्छ', 'error');
+  const payload = {
+    memberId,
+    applyName: false,
+    whatsappMobile: rec.whatsappMobile
+  };
+
+  if (!rec.hasDesiredPin) {
+    const pinEl = document.getElementById('reg-pin-' + memberId);
+    const tempEl = document.getElementById('reg-temp-' + memberId);
+    const pin = String((pinEl && pinEl.value) || '').trim();
+    if (!/^\d{4}$/.test(pin)) {
+      return UI.toast('PIN ठीक ४ अंकको हुनुपर्छ', 'error');
+    }
+    payload.pin = pin;
+    payload.isTemp = tempEl ? !!tempEl.checked : true;
   }
 
-  const res = await DB.approveMemberRegistration({
-    memberId,
-    pin,
-    isTemp,
-    applyName,
-    name: rec.correctedName || rec.originalName,
-    whatsappMobile: rec.whatsappMobile
-  });
+  const res = await DB.approveMemberRegistration(payload);
   if (!res || !res.ok) {
-    return UI.toast((res && res.error) || 'User ID बनाउन सकिएन', 'error');
+    return UI.toast((res && res.error) || 'User ID स्वीकृत गर्न सकिएन', 'error');
   }
 
   APP_DATA = DB.load();
   window._pendingRegCount = Math.max(0, Number(window._pendingRegCount || 1) - 1);
   try { renderProfileTab(); } catch (e) {}
   try { renderSettingsTab(); } catch (e) {}
-  UI.toast('✅ User ID र PIN सुरक्षित बन्यो! अब WhatsApp पठाउनुहोस्।', 'success');
-  showMemberInviteModal(memberId, pin, isTemp);
+
+  if (res.usedDesiredPin) {
+    UI.toast('✅ स्वीकृत भयो! सदस्यलाई सफल भएको नोटिफिकेसन पठाइयो।', 'success');
+    openAdminRegistrationsModal();
+  } else {
+    UI.toast('✅ User ID र PIN सुरक्षित बन्यो!', 'success');
+    showMemberInviteModal(memberId, payload.pin, !!payload.isTemp);
+  }
+}
+
+async function rejectAdminRegItem(memberId) {
+  if (!(Auth.isPrimaryAdmin && Auth.isPrimaryAdmin())) {
+    return UI.toast('Admin लाई मात्र अनुमति छ', 'error');
+  }
+  const rec = (window._adminRegMap && window._adminRegMap[memberId]) || null;
+  const label = rec ? (rec.originalName || memberId) : memberId;
+  const html = `
+    <div style="background:#f8d7da;border:1px solid #f5c2c7;color:#842029;border-radius:10px;padding:10px 12px;font-size:0.84rem;margin-bottom:10px">
+      ⚠️ के तपाईं <strong>${escapeHtmlChat(label)}</strong> को रजिस्ट्रेसन आवेदन रद्द (असफल) गर्न चाहनुहुन्छ? सदस्यलाई Admin लाई सम्पर्क गर्न नोटिफिकेसन जानेछ।
+    </div>
+    <div class="form-group">
+      <label>रद्द गर्नुको कारण (वैकल्पिक — सदस्यको सूचनामा जान्छ)</label>
+      <input type="text" id="reg-reject-reason" placeholder="उदा: गलत मोबाइल नम्बर / नाम पुनः जाँच" maxlength="120">
+    </div>
+    <div style="display:flex;gap:8px">
+      <button type="button" class="btn btn-danger" style="flex:1" onclick="_confirmRejectAdminRegItem('${escapeHtmlChat(memberId)}')">❌ हो, रद्द गर्नुहोस्</button>
+      <button type="button" class="btn btn-outline" onclick="openAdminRegistrationsModal()">← फर्कनुहोस्</button>
+    </div>
+  `;
+  UI.showModal('❌ रजिस्ट्रेसन रद्द पुष्टि', html, '', { replace: true });
+}
+
+async function _confirmRejectAdminRegItem(memberId) {
+  const reasonEl = document.getElementById('reg-reject-reason');
+  const reason = String((reasonEl && reasonEl.value) || '').trim();
+  const res = await DB.rejectMemberRegistration({ memberId, reason });
+  if (!res || !res.ok) {
+    return UI.toast((res && res.error) || 'रद्द गर्न सकिएन', 'error');
+  }
+  window._pendingRegCount = Math.max(0, Number(window._pendingRegCount || 1) - 1);
+  try { renderSettingsTab(); } catch (e) {}
+  UI.toast('❌ आवेदन रद्द गरियो र सदस्यलाई सूचना पठाइयो।', 'success');
+  openAdminRegistrationsModal();
 }
 
 async function deleteAdminRegItem(memberId) {
@@ -8280,7 +8532,8 @@ async function deleteAdminRegItem(memberId) {
   if (!res || !res.ok) {
     return UI.toast((res && res.error) || 'हटाउन सकिएन', 'error');
   }
-  UI.toast('विवरण हटाइयो', 'success');
+  UI.toast('विवरण हटाइयो — अब सदस्यले पुनः फारम भर्न सक्नुहुनेछ', 'success');
   openAdminRegistrationsModal();
 }
+
 

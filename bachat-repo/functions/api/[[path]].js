@@ -126,6 +126,16 @@ function maskPhone(m) {
   return d.slice(0, 2) + '••••' + d.slice(-3);
 }
 
+function normRegName(s) {
+  return String(s || '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function generate4DigitTempPin() {
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  return String(1000 + (arr[0] % 9000));
+}
+
 function stripSecretsFromState(data) {
   const clean = JSON.parse(JSON.stringify(data || defaultState()));
   if (clean.admin) {
@@ -310,6 +320,29 @@ async function getPinResetFlags(db) {
   }
 }
 
+async function getTempPinPlainMap(db) {
+  try {
+    const row = await db.prepare("SELECT value FROM system_secrets WHERE key = 'pin_reset_temp_map'").first();
+    return row && row.value ? JSON.parse(row.value) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function setTempPinPlain(db, memberId, pinOrNull) {
+  if (!memberId) return;
+  const map = await getTempPinPlainMap(db);
+  if (pinOrNull) map[String(memberId)] = String(pinOrNull);
+  else delete map[String(memberId)];
+  await db
+    .prepare(
+      `INSERT INTO system_secrets (key, value, created_at) VALUES ('pin_reset_temp_map', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, created_at=excluded.created_at`
+    )
+    .bind(JSON.stringify(map), new Date().toISOString())
+    .run();
+}
+
 async function setPinResetFlag(db, memberId, mustChange) {
   if (!memberId) return;
   const flags = await getPinResetFlags(db);
@@ -322,6 +355,9 @@ async function setPinResetFlag(db, memberId, mustChange) {
     )
     .bind(JSON.stringify(flags), new Date().toISOString())
     .run();
+  if (!mustChange) {
+    await setTempPinPlain(db, memberId, null).catch(() => {});
+  }
 }
 
 async function getTermsAcceptances(db) {
@@ -1041,7 +1077,9 @@ async function authenticateRequest(request, env) {
   if (!authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.slice(7).trim();
   const secret = await getJwtSecret(env);
-  return verifyJwt(token, secret);
+  const payload = await verifyJwt(token, secret);
+  if (!payload || payload.purpose || !payload.role) return null;
+  return payload;
 }
 
 /** Protect closed months against accidental overwrite by an offline stale client */
@@ -1102,6 +1140,9 @@ const SCHEMA_STATEMENTS = [
     corrected_name TEXT NOT NULL DEFAULT '',
     whatsapp_mobile TEXT NOT NULL,
     note TEXT NOT NULL DEFAULT '',
+    desired_pin_hash TEXT NOT NULL DEFAULT '',
+    terms_version INTEGER NOT NULL DEFAULT 0,
+    push_enabled INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'pending',
     created_pin_at TEXT,
     submitted_at TEXT NOT NULL,
@@ -1160,6 +1201,14 @@ let _schemaEnsured = false;
 async function ensureSchema(db) {
   if (_schemaEnsured) return;
   await db.batch(SCHEMA_STATEMENTS.map((sql) => db.prepare(sql)));
+  const alterMigrations = [
+    "ALTER TABLE member_registrations ADD COLUMN desired_pin_hash TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE member_registrations ADD COLUMN terms_version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE member_registrations ADD COLUMN push_enabled INTEGER NOT NULL DEFAULT 0"
+  ];
+  for (const sql of alterMigrations) {
+    await db.prepare(sql).run().catch(() => {});
+  }
   _schemaEnsured = true;
 }
 
@@ -1230,148 +1279,415 @@ export async function onRequest(context) {
       return json({ ok: true, groupName, terms });
     }
 
-    // 3c. Public Member User ID Registration Form — list active members (ID + Name + submission status ONLY; zero private financial/phone exposure)
-    if (path === '/registration-members' && method === 'GET') {
+    // 3c. Public Registration Info (NO member names/IDs/phones leaked — only group title, terms, VAPID key)
+    if (path === '/registration-info' && method === 'GET') {
       const state = await loadStateRow(env.DB);
       const st = state.data || defaultState();
       const grp = st.group || {};
-      const regRows = await env.DB
-        .prepare('SELECT member_id, status, whatsapp_mobile, corrected_name, submitted_at, updated_at FROM member_registrations')
-        .all()
-        .catch(() => ({ results: [] }));
-      const regMap = {};
-      for (const r of regRows.results || []) {
-        if (r && r.member_id) regMap[String(r.member_id)] = r;
-      }
-      const members = (st.members || [])
-        .filter((m) => m && m.active !== false)
-        .map((m, idx) => {
-          const r = regMap[String(m.id)] || null;
-          return {
-            id: m.id,
-            serialNo: idx + 1,
-            name: m.name || '',
-            hasPin: !!(m.hasPin || m.pin),
-            submitted: !!r,
-            regStatus: r ? r.status : null,
-            submittedAt: r ? (r.updated_at || r.submitted_at) : null,
-            maskedMobile: r ? maskPhone(r.whatsapp_mobile) : (m.mobile ? maskPhone(m.mobile) : '')
-          };
-        });
+      const vapid = await getVapidKeys(env).catch(() => ({ publicKey: '' }));
       return json({
         ok: true,
         groupName: grp.name || 'समूह बचत',
         groupAddress: grp.address || '',
         groupLogo: grp.logo || '💰',
-        members
+        terms: (st.settings && st.settings.terms) || null,
+        vapidPublicKey: vapid.publicKey || ''
       });
     }
 
-    // 3d. Public Member User ID Registration Form — submit name correction + WhatsApp mobile number
-    if (path === '/member-registration' && method === 'POST') {
+    // Legacy /registration-members kept privacy-safe (returns empty member list)
+    if (path === '/registration-members' && method === 'GET') {
+      const state = await loadStateRow(env.DB);
+      const st = state.data || defaultState();
+      const grp = st.group || {};
+      return json({
+        ok: true,
+        groupName: grp.name || 'समूह बचत',
+        groupAddress: grp.address || '',
+        groupLogo: grp.logo || '💰',
+        members: []
+      });
+    }
+
+    // 3d. Step 1: Verify exact registered name (100% match) + mobile number without exposing member directory
+    if (path === '/registration/verify' && method === 'POST') {
       const ip = request.headers.get('CF-Connecting-IP') || 'local';
-      const attemptKey = 'reg:' + ip;
+      const attemptKey = 'regv:' + ip;
       const nowMs = Date.now();
       const att = await env.DB.prepare('SELECT attempts, locked_until FROM login_attempts WHERE ip_key = ?').bind(attemptKey).first();
       if (att && att.locked_until > nowMs) {
-        return json({ ok: false, error: 'धेरै अनुरोध पठाइएकोले केही मिनेट पछि पुनः प्रयास गर्नुहोस्' }, 429);
+        return json({ ok: false, code: 'RATE_LIMITED', error: 'धेरै गलत प्रयास भएकोले कृपया ५ मिनेट पछि पुनः प्रयास गर्नुहोस्' }, 429);
       }
 
       const body = await request.json().catch(() => ({}));
-      const memberId = String((body && body.memberId) || '').trim();
-      const rawMobile = String((body && body.whatsappMobile) || '').trim();
-      const rawCorrected = String((body && body.correctedName) || '').trim().slice(0, 80);
-      const rawNote = String((body && body.note) || '').trim().slice(0, 160);
+      const fullName = String((body && body.fullName) || '').trim();
+      const rawMobile = String((body && body.mobile) || '').trim();
 
-      if (!memberId) {
-        return json({ ok: false, error: 'सूचीबाट आफ्नो नाम / Member ID छान्नुहोस्' }, 400);
+      if (!fullName || fullName.length < 2) {
+        return json({ ok: false, code: 'INVALID_INPUT', error: 'कृपया समूहमा दर्ता भएको आफ्नो पूरा नाम लेख्नुहोस्' }, 400);
       }
       const normMob = normalizeWhatsappInput(rawMobile);
       if (!normMob || normMob.length < 7 || normMob.length > 15) {
-        return json({ ok: false, error: 'मान्य WhatsApp / मोबाइल नम्बर लेख्नुहोस् (कम्तिमा ७–१० अंक)' }, 400);
+        return json({ ok: false, code: 'INVALID_MOBILE', error: 'मान्य मोबाइल नम्बर लेख्नुहोस् (कम्तिमा ७–१० अंक)' }, 400);
       }
       if (/^9[678]/.test(normMob) && normMob.length !== 10) {
-        return json({ ok: false, error: 'नेपाली मोबाइल नम्बर ठीक १० अंकको हुनुपर्छ (उदा: 98XXXXXXXX)' }, 400);
+        return json({ ok: false, code: 'INVALID_MOBILE', error: 'नेपाली मोबाइल नम्बर ठीक १० अंकको हुनुपर्छ (उदा: 98XXXXXXXX)' }, 400);
       }
 
       const state = await loadStateRow(env.DB);
       const st = state.data || defaultState();
-      const member = (st.members || []).find((m) => m && m.id === memberId && m.active !== false);
-      if (!member) {
-        return json({ ok: false, error: 'समूह सदस्य सूचीमा छानिएको ID भेटिएन' }, 404);
+      const grp = st.group || {};
+      const targetName = normRegName(fullName);
+      const activeMembers = (st.members || []).filter((m) => m && m.active !== false);
+      const matches = activeMembers.filter((m) => normRegName(m.name) === targetName);
+
+      if (matches.length === 0) {
+        const nextAtt = (att && (!att.locked_until || att.locked_until <= nowMs) ? att.attempts : 0) + 1;
+        const lockUntil = nextAtt >= 15 ? nowMs + 5 * 60 * 1000 : 0;
+        await env.DB
+          .prepare('INSERT INTO login_attempts (ip_key, attempts, locked_until) VALUES (?, ?, ?) ON CONFLICT(ip_key) DO UPDATE SET attempts=excluded.attempts, locked_until=excluded.locked_until')
+          .bind(attemptKey, nextAtt, lockUntil)
+          .run();
+        return json({
+          ok: false,
+          code: 'NAME_MISMATCH',
+          error: 'नाम मिलेन — समूहको दर्ता नामावलीसँग तपाईंले लेख्नुभएको नाम १००% मेल खाएन।',
+          suggestion: 'कृपया समूहमा दर्ता भएको पूरा नाम (पहिलो नाम, बीचको नाम र थर) हिज्जे नबिगारी जस्ताको तस्तै लेख्नुहोस्। नेपाली वा अंग्रेजी कुन लिपिमा दर्ता छ पक्का नभएमा Admin लाई सोध्नुहोस्।'
+        }, 404);
       }
 
-      // One-time lock: once a member has submitted or already has an active PIN/ID, block duplicate submissions
+      await env.DB.prepare('DELETE FROM login_attempts WHERE ip_key = ?').bind(attemptKey).run();
+
+      let member = matches[0];
+      if (matches.length > 1) {
+        const byMob = matches.find((m) => normalizeMobile(m.mobile) === normalizeMobile(normMob));
+        if (byMob) member = byMob;
+      }
+
+      const cred = await env.DB
+        .prepare('SELECT id, mobile, pin_hash, active FROM auth_credentials WHERE id = ?')
+        .bind('mem:' + member.id)
+        .first();
+      const pinFlags = await getPinResetFlags(env.DB);
+      const hasPin = !!(member.hasPin || member.pin || (cred && cred.pin_hash && cred.active !== 0));
+      const mustChangePin = !!(pinFlags[String(member.id)] || member.mustChangePin);
+      const regRow = await env.DB
+        .prepare('SELECT id, member_id, status, whatsapp_mobile, terms_version, push_enabled FROM member_registrations WHERE member_id = ?')
+        .bind(member.id)
+        .first();
+      const jwtSecret = await getJwtSecret(env);
+      const vapid = await getVapidKeys(env).catch(() => ({ publicKey: '' }));
+
+      // Case A: Already registered and personal PIN is active
+      if (hasPin && !mustChangePin) {
+        return json({
+          ok: true,
+          statusCode: 'ALREADY_REGISTERED',
+          message: 'तपाईंको User ID रजिस्ट्रेसन पहिले नै सफल भई व्यक्तिगत PIN पनि सेट भइसकेको छ। कृपया लगइन पेजमा गई आफ्नो सही मोबाइल नम्बर र PIN प्रयोग गरी लगइन गर्नुहोस्।'
+        });
+      }
+
+      // Case B: Registered/Approved, but PIN is still Temp -> verify mobile, display Temp PIN & force change to personal PIN
+      if (hasPin && mustChangePin) {
+        const registeredMob = normalizeMobile((cred && cred.mobile) || member.mobile || '');
+        if (registeredMob && registeredMob !== normalizeMobile(normMob)) {
+          return json({
+            ok: false,
+            code: 'MOBILE_MISMATCH',
+            error: 'यो नाममा दर्ता भएको मोबाइल नम्बरसँग तपाईंले लेख्नुभएको नम्बर मिलेन — कृपया आफ्नै सही दर्ता मोबाइल नम्बर राख्नुहोस् वा Admin लाई सम्पर्क गर्नुहोस्।'
+          }, 403);
+        }
+        const tempMap = await getTempPinPlainMap(env.DB);
+        const knownTempPin = tempMap[String(member.id)] || '';
+        const regToken = await signJwt({
+          purpose: 'temp_pin_upgrade',
+          memberId: member.id,
+          mobile: registeredMob || normMob
+        }, jwtSecret, 1200);
+        return json({
+          ok: true,
+          statusCode: 'TEMP_PIN_CHANGE',
+          regToken,
+          tempPin: knownTempPin || null,
+          hasKnownTempPin: !!knownTempPin,
+          message: 'तपाईंको खाता पहिले नै स्वीकृत भइसकेको छ र हाल अस्थायी (Temp) PIN मात्र सक्रिय छ। कृपया तल नयाँ ४ अंकको व्यक्तिगत PIN सेट गरी लगइन गर्नुहोस्।'
+        });
+      }
+
+      // Case C: Pending Admin review
+      if (regRow && regRow.status === 'pending') {
+        const sameMob = normalizeMobile(regRow.whatsapp_mobile) === normalizeMobile(normMob);
+        const regToken = sameMob
+          ? await signJwt({ purpose: 'pending_push', memberId: member.id, mobile: normMob }, jwtSecret, 1200)
+          : null;
+        return json({
+          ok: true,
+          statusCode: 'PENDING_ADMIN',
+          canEnablePush: sameMob,
+          regToken,
+          vapidPublicKey: vapid.publicKey || '',
+          message: 'तपाईंको रजिस्ट्रेसन प्रक्रिया पहिले नै पूरा भई Admin को स्वीकृतिको पर्खाइमा छ। कृपया नोटिफिकेसन अन राख्नुहोस् — Admin बाट स्वीकृति सूचना आएपछि मोबाइल नम्बर र राखेको PIN ले लगइन गर्नुहोला।'
+        });
+      }
+
+      // Case R: Cancelled / Rejected by Admin
+      if (regRow && regRow.status === 'rejected') {
+        return json({
+          ok: true,
+          statusCode: 'REJECTED_ADMIN',
+          message: 'तपाईंको रजिस्ट्रेसन आवेदन Admin बाट रद्द / असफल गरिएको छ। कृपया कारण बुझ्न र पुनः खोल्न Admin लाई सम्पर्क गर्नुहोस्।'
+        });
+      }
+
+      // Case D: Fresh eligible member — validate mobile uniqueness before starting onboarding
+      const adminUser = String((st.admin && st.admin.username) || '').trim();
+      const trUser = String((st.treasurer && st.treasurer.username) || '').trim();
+      if ((adminUser && normMob === adminUser) || (trUser && normMob === trUser)) {
+        return json({ ok: false, code: 'MOBILE_CONFLICT', error: 'यो मोबाइल नम्बर अर्को प्रणाली खातामा प्रयोग भएको छ — कृपया आफ्नै मोबाइल नम्बर राख्नुहोस्।' }, 409);
+      }
+      const dupMember = activeMembers.find(
+        (x) => x.id !== member.id && normalizeMobile(x.mobile) && normalizeMobile(x.mobile) === normalizeMobile(normMob)
+      );
+      if (dupMember) {
+        return json({ ok: false, code: 'MOBILE_CONFLICT', error: 'यो मोबाइल नम्बर पहिले नै अर्को सदस्यको खातामा दर्ता भइसकेको छ — कृपया आफ्नै सही मोबाइल नम्बर राख्नुहोस्।' }, 409);
+      }
+      const dupPending = await env.DB
+        .prepare("SELECT member_id FROM member_registrations WHERE whatsapp_mobile = ? AND member_id != ? AND status = 'pending' LIMIT 1")
+        .bind(normMob, member.id)
+        .first();
+      if (dupPending) {
+        return json({ ok: false, code: 'MOBILE_CONFLICT', error: 'यो मोबाइल नम्बरबाट अर्को आवेदन पहिले नै पठाइएको छ — कृपया आफ्नै सही मोबाइल नम्बर राख्नुहोस्।' }, 409);
+      }
+
+      const tempPin = generate4DigitTempPin();
+      const tempPinHash = await hashSecret(tempPin);
+      const regToken = await signJwt({
+        purpose: 'fresh_reg',
+        memberId: member.id,
+        mobile: normMob,
+        tempPinHash
+      }, jwtSecret, 1500);
+
+      return json({
+        ok: true,
+        statusCode: 'READY_FOR_ONBOARDING',
+        regToken,
+        tempPin,
+        groupName: grp.name || 'समूह बचत',
+        terms: (st.settings && st.settings.terms) || null,
+        vapidPublicKey: vapid.publicKey || ''
+      });
+    }
+
+    // 3e. Step 3: Save Web Push subscription during registration (keyed strictly to verified memberId)
+    if (path === '/registration/push-subscribe' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const regToken = String((body && body.regToken) || '').trim();
+      const sub = body && body.subscription;
+      if (!regToken || !sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+        return json({ ok: false, error: 'अमान्य पुश सदस्यता अनुरोध' }, 400);
+      }
+      const jwtSecret = await getJwtSecret(env);
+      const payload = await verifyJwt(regToken, jwtSecret);
+      if (!payload || !payload.memberId || (payload.purpose !== 'fresh_reg' && payload.purpose !== 'pending_push')) {
+        return json({ ok: false, error: 'रजिस्ट्रेसन सत्र म्याद सकियो — कृपया नाम र नम्बर फेरि जाँच गर्नुहोस्' }, 401);
+      }
+
+      const subKey = 'reg_' + payload.memberId + '_' + btoa(sub.endpoint).slice(0, 20);
+      const now = new Date().toISOString();
+      await env.DB
+        .prepare(
+          `INSERT INTO push_subscriptions (sub_key, user_key, role, endpoint, p256dh, auth, updated_at)
+           VALUES (?, ?, 'member', ?, ?, ?, ?)
+           ON CONFLICT(sub_key) DO UPDATE SET
+             user_key=excluded.user_key, role='member', endpoint=excluded.endpoint, p256dh=excluded.p256dh, auth=excluded.auth, updated_at=excluded.updated_at`
+        )
+        .bind(subKey, String(payload.memberId), sub.endpoint, sub.keys.p256dh, sub.keys.auth, now)
+        .run();
+
+      if (payload.purpose === 'pending_push') {
+        await env.DB
+          .prepare('UPDATE member_registrations SET push_enabled = 1, updated_at = ? WHERE member_id = ?')
+          .bind(now, String(payload.memberId))
+          .run()
+          .catch(() => {});
+      }
+
+      return json({ ok: true });
+    }
+
+    // 3f. Step 4: Submit completed registration (Terms accepted + Push prompted + Temp PIN replaced with Personal PIN)
+    if (path === '/registration/submit' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const regToken = String((body && body.regToken) || '').trim();
+      const tempPin = String((body && body.tempPin) || '').trim();
+      const newPin = String((body && body.newPin) || '').trim();
+      const confirmPin = String((body && body.confirmPin) || '').trim();
+      const termsAccepted = !!(body && body.termsAccepted);
+      const termsVersion = Math.max(1, Number((body && body.termsVersion) || 1));
+      const pushEnabled = !!(body && body.pushEnabled);
+      const rawNote = String((body && body.note) || '').trim().slice(0, 160);
+
+      if (!regToken) {
+        return json({ ok: false, error: 'रजिस्ट्रेसन टोकन आवश्यक छ' }, 400);
+      }
+      const jwtSecret = await getJwtSecret(env);
+      const payload = await verifyJwt(regToken, jwtSecret);
+      if (!payload || payload.purpose !== 'fresh_reg' || !payload.memberId || !payload.mobile || !payload.tempPinHash) {
+        return json({ ok: false, error: 'रजिस्ट्रेसन सत्र म्याद सकियो — कृपया सुरुबाट नाम र नम्बर राखी प्रयास गर्नुहोस्' }, 401);
+      }
+      if (!termsAccepted) {
+        return json({ ok: false, error: 'सबै नियम तथा सर्तहरूमा सहमत (टिक) अनिवार्य छ' }, 400);
+      }
+      const tempOk = await verifySecret(tempPin, payload.tempPinHash);
+      if (!tempOk) {
+        return json({ ok: false, error: 'एपले दिएको अस्थायी (Temp) PIN मिलेन' }, 400);
+      }
+      if (!/^\d{4}$/.test(newPin)) {
+        return json({ ok: false, error: 'नयाँ PIN ठीक ४ अंक (0-9) को हुनुपर्छ' }, 400);
+      }
+      if (newPin !== confirmPin) {
+        return json({ ok: false, error: 'नयाँ PIN र Confirm PIN मिलेन' }, 400);
+      }
+      if (newPin === tempPin) {
+        return json({ ok: false, error: 'अस्थायी PIN बाट फरक आफ्नो गोप्य ४ अंकको नयाँ PIN राख्नुहोस्' }, 400);
+      }
+
+      const state = await loadStateRow(env.DB);
+      const st = state.data || defaultState();
+      const member = (st.members || []).find((m) => m && m.id === payload.memberId && m.active !== false);
+      if (!member) {
+        return json({ ok: false, error: 'सदस्य फेला परेन' }, 404);
+      }
       const existingReg = await env.DB
-        .prepare('SELECT id, status, whatsapp_mobile FROM member_registrations WHERE member_id = ?')
+        .prepare('SELECT id, status FROM member_registrations WHERE member_id = ?')
         .bind(member.id)
         .first();
       if (existingReg || member.hasPin || member.pin) {
-        return json({
-          ok: false,
-          locked: true,
-          regStatus: (existingReg && existingReg.status) || 'approved',
-          maskedMobile: maskPhone((existingReg && existingReg.whatsapp_mobile) || member.mobile || ''),
-          error: 'तपाईंको विवरण पहिले नै रजिस्ट्रेसन भइसकेको छ! कृपया आफ्नो WhatsApp म्यासेज जाँच गर्नुहोस्।'
-        }, 409);
+        return json({ ok: false, error: 'तपाईंको रजिस्ट्रेसन पहिले नै दर्ता भइसकेको छ' }, 409);
       }
 
-      const nextAtt = (att && (!att.locked_until || att.locked_until <= nowMs) ? att.attempts : 0) + 1;
-      const lockUntil = nextAtt >= 30 ? nowMs + 10 * 60 * 1000 : 0;
-      await env.DB
-        .prepare('INSERT INTO login_attempts (ip_key, attempts, locked_until) VALUES (?, ?, ?) ON CONFLICT(ip_key) DO UPDATE SET attempts=excluded.attempts, locked_until=excluded.locked_until')
-        .bind(attemptKey, nextAtt, lockUntil)
-        .run();
+      const dupMember = (st.members || []).find(
+        (x) => x && x.active !== false && x.id !== member.id && normalizeMobile(x.mobile) && normalizeMobile(x.mobile) === normalizeMobile(payload.mobile)
+      );
+      if (dupMember) {
+        return json({ ok: false, error: 'यो मोबाइल नम्बर अर्को सदस्यमा दर्ता भइसकेको छ' }, 409);
+      }
 
+      const desiredPinHash = await hashSecret(newPin);
       const originalName = String(member.name || '').trim();
-      const correctedName = (rawCorrected && rawCorrected !== originalName) ? rawCorrected : '';
-      const displayName = correctedName || originalName;
       const now = new Date().toISOString();
       const rowId = 'reg_' + Date.now() + '_' + randomHex(3);
 
       await env.DB
         .prepare(
-          `INSERT INTO member_registrations (id, member_id, original_name, corrected_name, whatsapp_mobile, note, status, created_pin_at, submitted_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)
-           ON CONFLICT(member_id) DO UPDATE SET
-             original_name=excluded.original_name,
-             corrected_name=excluded.corrected_name,
-             whatsapp_mobile=excluded.whatsapp_mobile,
-             note=excluded.note,
-             status='pending',
-             updated_at=excluded.updated_at`
+          `INSERT INTO member_registrations
+           (id, member_id, original_name, corrected_name, whatsapp_mobile, note, desired_pin_hash, terms_version, push_enabled, status, created_pin_at, submitted_at, updated_at)
+           VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`
         )
-        .bind(rowId, member.id, originalName, correctedName, normMob, rawNote, now, now)
+        .bind(rowId, member.id, originalName, payload.mobile, rawNote, desiredPinHash, termsVersion, pushEnabled ? 1 : 0, now, now)
         .run();
 
       waitUntil(logUserActivity(env.DB, {
         userKey: 'reg:' + member.id,
-        actorName: displayName,
+        actorName: originalName,
         actorRole: 'member',
         memberId: member.id,
         eventType: 'member_registration',
-        title: '📝 User ID रजिस्ट्रेसन फारम भरियो',
-        detail: (correctedName ? (originalName + ' → ' + correctedName + ' · ') : '') + 'WhatsApp: ' + maskPhone(normMob) + ' (ID: ' + member.id + ')'
+        title: '📝 स्व-रजिस्ट्रेसन आवेदन प्राप्त',
+        detail: `${originalName} (${member.id}) · मोबाइल: ${maskPhone(payload.mobile)} · नियम v${termsVersion} · ${pushEnabled ? 'Push सक्रिय' : 'Push बाँकी'}`
       }));
 
       waitUntil(sendPushToUserKey(env, 'admin', {
-        title: '📝 नयाँ User ID रजिस्ट्रेसन प्राप्त',
-        body: `${displayName} (${member.id}) ले WhatsApp नम्बर पठाउनुभयो — सेटिङमा हेरी ID बनाउनुहोस्।`,
+        title: '📝 नयाँ सदस्य रजिस्ट्रेसन स्वीकृति बाँकी',
+        body: `${originalName} (${member.id}) ले सर्त मञ्जुर गरी नयाँ PIN सेट गरेर स्वीकृतिको लागि पठाउनुभएको छ।`,
         tag: 'reg-' + member.id,
         data: { url: './?open=registrations' }
       }));
 
       return json({
         ok: true,
-        memberId: member.id,
-        originalName,
-        correctedName,
-        displayName,
-        whatsappMobile: normMob,
-        maskedMobile: maskPhone(normMob),
         status: 'pending',
+        maskedMobile: maskPhone(payload.mobile),
         updatedAt: now
       });
+    }
+
+    // 3g. Complete Temp PIN upgrade for already-approved members who still have mustChangePin === true
+    if (path === '/registration/complete-temp-pin' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const regToken = String((body && body.regToken) || '').trim();
+      const tempPin = String((body && body.tempPin) || '').trim();
+      const newPin = String((body && body.newPin) || '').trim();
+      const confirmPin = String((body && body.confirmPin) || '').trim();
+
+      const jwtSecret = await getJwtSecret(env);
+      const payload = await verifyJwt(regToken, jwtSecret);
+      if (!payload || payload.purpose !== 'temp_pin_upgrade' || !payload.memberId) {
+        return json({ ok: false, error: 'सत्र म्याद सकियो — कृपया नाम र नम्बर फेरि जाँच गर्नुहोस्' }, 401);
+      }
+      if (!/^\d{4}$/.test(tempPin) || !/^\d{4}$/.test(newPin)) {
+        return json({ ok: false, error: 'Temp PIN र नयाँ PIN दुवै ठीक ४ अंकको हुनुपर्छ' }, 400);
+      }
+      if (newPin !== confirmPin) {
+        return json({ ok: false, error: 'नयाँ PIN र Confirm PIN मिलेन' }, 400);
+      }
+      if (newPin === tempPin) {
+        return json({ ok: false, error: 'अस्थायी PIN भन्दा फरक नयाँ PIN राख्नुहोस्' }, 400);
+      }
+
+      const cred = await env.DB
+        .prepare('SELECT id, mobile, name, pin_hash FROM auth_credentials WHERE id = ?')
+        .bind('mem:' + payload.memberId)
+        .first();
+      if (!cred || !cred.pin_hash) {
+        return json({ ok: false, error: 'खाता भेटिएन — कृपया Admin लाई सम्पर्क गर्नुहोस्' }, 404);
+      }
+      const curOk = await verifySecret(tempPin, cred.pin_hash);
+      if (!curOk) {
+        return json({ ok: false, error: 'अहिलेको अस्थायी (Temp) PIN मिलेन' }, 401);
+      }
+
+      const newHash = await hashSecret(newPin);
+      const now = new Date().toISOString();
+      await env.DB
+        .prepare('UPDATE auth_credentials SET secret_hash=?, pin_hash=?, updated_at=? WHERE id=?')
+        .bind(newHash, newHash, now, 'mem:' + payload.memberId)
+        .run();
+
+      await setPinResetFlag(env.DB, payload.memberId, false);
+
+      const cur = await loadStateRow(env.DB);
+      const stData = cur.data || defaultState();
+      if (Array.isArray(stData.members)) {
+        const mem = stData.members.find((m) => m && m.id === payload.memberId);
+        if (mem) {
+          mem.hasPin = true;
+          mem.mustChangePin = false;
+          const nextVer = (cur.version || 0) + 1;
+          await env.DB
+            .prepare("UPDATE group_state SET version=?, data_json=?, updated_at=? WHERE id='main'")
+            .bind(nextVer, JSON.stringify(stripSecretsFromState(stData)), now)
+            .run();
+        }
+      }
+
+      waitUntil(logUserActivity(env.DB, {
+        userKey: 'mem:' + payload.memberId,
+        actorName: cred.name || payload.memberId,
+        actorRole: 'member',
+        memberId: payload.memberId,
+        eventType: 'pin_change',
+        title: '🔐 रजिस्ट्रेसनबाट Temp PIN परिवर्तन',
+        detail: 'सदस्यले अस्थायी PIN बाट व्यक्तिगत PIN सेट गर्नुभयो'
+      }));
+
+      return json({ ok: true, mobile: cred.mobile || payload.mobile || '' });
+    }
+
+    // Legacy POST /member-registration disabled politely in favor of verified multi-step flow
+    if (path === '/member-registration' && method === 'POST') {
+      return json({ ok: false, error: 'कृपया पेज रिफ्रेस गरी नयाँ रजिस्ट्रेसन फारम प्रयोग गर्नुहोस्' }, 410);
     }
 
     // 4. First-time admin bootstrap (only if NO admin exists)
@@ -2106,6 +2422,9 @@ export async function onRequest(context) {
           .bind('mem:' + memberId, mob, memberId, name || memberId, pinHash, pinHash, now)
           .run();
         await setPinResetFlag(env.DB, memberId, !!isTemp);
+        if (isTemp) {
+          await setTempPinPlain(env.DB, memberId, pin);
+        }
         const curState = await loadStateRow(env.DB);
         let nxtVer = null;
         if (curState && curState.data && Array.isArray(curState.data.members)) {
@@ -3117,7 +3436,7 @@ export async function onRequest(context) {
       });
     }
 
-    // 19. Admin-only Member User ID Registrations (View, Approve/Create PIN, Delete)
+    // 19. Admin-only Member User ID Registrations (View, Approve, Reject/Cancel, Delete)
     if (path === '/admin/registrations' && method === 'GET') {
       if (user.role !== 'admin') {
         return json({ ok: false, error: 'सदस्य रजिस्ट्रेसन विवरण Admin लाई मात्र उपलब्ध छ' }, 403);
@@ -3130,9 +3449,9 @@ export async function onRequest(context) {
 
       const rowsRes = await env.DB
         .prepare(
-          `SELECT id, member_id, original_name, corrected_name, whatsapp_mobile, note, status, created_pin_at, submitted_at, updated_at
+          `SELECT id, member_id, original_name, corrected_name, whatsapp_mobile, note, desired_pin_hash, terms_version, push_enabled, status, created_pin_at, submitted_at, updated_at
            FROM member_registrations
-           ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, updated_at DESC`
+           ORDER BY CASE WHEN status = 'pending' THEN 0 WHEN status = 'rejected' THEN 1 ELSE 2 END, updated_at DESC`
         )
         .all();
 
@@ -3159,6 +3478,9 @@ export async function onRequest(context) {
           hasPin: mem ? !!(mem.hasPin || mem.pin) : false,
           whatsappMobile: mob,
           note: r.note || '',
+          hasDesiredPin: !!(r.desired_pin_hash && String(r.desired_pin_hash).length > 10),
+          termsVersion: Number(r.terms_version || 0),
+          pushEnabled: !!r.push_enabled,
           status: r.status || 'pending',
           createdPinAt: r.created_pin_at || null,
           submittedAt: r.submitted_at,
@@ -3180,6 +3502,7 @@ export async function onRequest(context) {
 
       const pendingCount = registrations.filter((r) => r.status === 'pending').length;
       const approvedCount = registrations.filter((r) => r.status === 'approved').length;
+      const rejectedCount = registrations.filter((r) => r.status === 'rejected').length;
 
       return json({
         ok: true,
@@ -3190,6 +3513,7 @@ export async function onRequest(context) {
           submittedCount: registrations.length,
           pendingCount,
           approvedCount,
+          rejectedCount,
           notSubmittedCount: notSubmittedMembers.length
         }
       });
@@ -3197,23 +3521,34 @@ export async function onRequest(context) {
 
     if (path === '/admin/registrations/approve' && method === 'POST') {
       if (user.role !== 'admin') {
-        return json({ ok: false, error: 'User ID बनाउन Admin लाई मात्र अनुमति छ' }, 403);
+        return json({ ok: false, error: 'User ID स्वीकृत गर्न Admin लाई मात्र अनुमति छ' }, 403);
       }
       const body = await request.json().catch(() => ({}));
       const memberId = String((body && body.memberId) || '').trim();
       const pin = String((body && body.pin) || '').trim();
-      const isTemp = body && body.isTemp !== undefined ? !!body.isTemp : true;
       const applyName = body && body.applyName !== undefined ? !!body.applyName : true;
 
       if (!memberId) return json({ ok: false, error: 'memberId आवश्यक छ' }, 400);
-      if (!/^\d{4}$/.test(pin)) {
-        return json({ ok: false, error: 'PIN ठीक ४ अंकको हुनुपर्छ' }, 400);
-      }
 
       const regRow = await env.DB.prepare('SELECT * FROM member_registrations WHERE member_id = ?').bind(memberId).first();
+      const useDesiredPin = !!(regRow && regRow.desired_pin_hash && String(regRow.desired_pin_hash).length > 10 && !pin);
+
+      let pinHash = '';
+      let isTemp = false;
+      if (useDesiredPin) {
+        pinHash = String(regRow.desired_pin_hash);
+        isTemp = false;
+      } else {
+        if (!/^\d{4}$/.test(pin)) {
+          return json({ ok: false, error: 'PIN ठीक ४ अंकको हुनुपर्छ' }, 400);
+        }
+        pinHash = await hashSecret(pin);
+        isTemp = body && body.isTemp !== undefined ? !!body.isTemp : true;
+      }
+
       const normMob = normalizeWhatsappInput((body && body.whatsappMobile) || (regRow && regRow.whatsapp_mobile) || '');
       if (!normMob || normMob.length < 7 || normMob.length > 15) {
-        return json({ ok: false, error: 'मान्य WhatsApp / मोबाइल नम्बर चाहिन्छ' }, 400);
+        return json({ ok: false, error: 'मान्य मोबाइल नम्बर चाहिन्छ' }, 400);
       }
 
       const curState = await loadStateRow(env.DB);
@@ -3243,13 +3578,24 @@ export async function onRequest(context) {
       member.name = finalName;
       member.hasPin = true;
       member.mustChangePin = isTemp;
+      if (regRow && Number(regRow.terms_version || 0) > 0) {
+        const tVer = Number(regRow.terms_version);
+        member.termsAcceptedVersion = Math.max(Number(member.termsAcceptedVersion || 0), tVer);
+        member.termsAcceptedAt = member.termsAcceptedAt || regRow.submitted_at || now;
+        await recordTermsAcceptances(env.DB, ['mem:' + memberId], {
+          version: tVer,
+          acceptedAt: member.termsAcceptedAt,
+          name: finalName,
+          role: 'member',
+          memberId
+        });
+      }
       if (Array.isArray(stData.pinRequests)) {
         stData.pinRequests.forEach((r) => {
           if (r && r.memberId === memberId && r.status === 'pending') r.status = 'approved';
         });
       }
 
-      const pinHash = await hashSecret(pin);
       await env.DB
         .prepare(
           `INSERT INTO auth_credentials (id, role, username, mobile, member_id, name, secret_hash, pin_hash, accounts_writer, active, updated_at)
@@ -3261,10 +3607,13 @@ export async function onRequest(context) {
         .run();
 
       await setPinResetFlag(env.DB, memberId, isTemp);
+      if (isTemp && pin) {
+        await setTempPinPlain(env.DB, memberId, pin);
+      }
 
       if (regRow) {
         await env.DB
-          .prepare("UPDATE member_registrations SET status='approved', whatsapp_mobile=?, created_pin_at=?, updated_at=? WHERE member_id=?")
+          .prepare("UPDATE member_registrations SET status='approved', desired_pin_hash='', whatsapp_mobile=?, created_pin_at=?, updated_at=? WHERE member_id=?")
           .bind(normMob, now, now, memberId)
           .run();
       }
@@ -3281,8 +3630,16 @@ export async function onRequest(context) {
         actorRole: user.role,
         memberId,
         eventType: 'registration_approved',
-        title: '✅ रजिस्ट्रेसनबाट User ID र PIN बन्यो',
+        title: '✅ सदस्य User ID रजिस्ट्रेसन स्वीकृत',
         detail: `${finalName} (${memberId}) · मोबाइल: ${maskPhone(normMob)}`
+      }));
+
+      // Notify ONLY this specific member via Web Push
+      waitUntil(sendPushToUserKey(env, memberId, {
+        title: '✅ User ID रजिस्ट्रेसन सफल भयो!',
+        body: `${finalName} ज्यू, तपाईंको खाता स्वीकृत भयो। अब मोबाइल नम्बर (${maskPhone(normMob)}) र तपाईंले राखेको PIN प्रयोग गरी लगइन गर्नुहोला।`,
+        tag: 'reg-approved-' + memberId,
+        data: { url: './' }
       }));
 
       const pinFlags = await getPinResetFlags(env.DB);
@@ -3293,9 +3650,52 @@ export async function onRequest(context) {
         name: finalName,
         mobile: normMob,
         isTemp,
+        usedDesiredPin: useDesiredPin,
         version: nextVer,
         data: sanitizeStateForRole(stData, user, pinFlags, termsAcceptances)
       });
+    }
+
+    if (path === '/admin/registrations/reject' && method === 'POST') {
+      if (user.role !== 'admin') {
+        return json({ ok: false, error: 'रजिस्ट्रेसन रद्द गर्न Admin लाई मात्र अनुमति छ' }, 403);
+      }
+      const body = await request.json().catch(() => ({}));
+      const memberId = String((body && body.memberId) || '').trim();
+      const reason = String((body && body.reason) || '').trim().slice(0, 140);
+      if (!memberId) return json({ ok: false, error: 'memberId आवश्यक छ' }, 400);
+
+      const regRow = await env.DB.prepare('SELECT original_name, whatsapp_mobile FROM member_registrations WHERE member_id = ?').bind(memberId).first();
+      if (!regRow) return json({ ok: false, error: 'रजिस्ट्रेसन आवेदन भेटिएन' }, 404);
+
+      const now = new Date().toISOString();
+      const nextNote = reason ? ('[रद्द कारण: ' + reason + ']') : '';
+      await env.DB
+        .prepare("UPDATE member_registrations SET status='rejected', desired_pin_hash='', note=CASE WHEN ? != '' THEN ? ELSE note END, updated_at=? WHERE member_id=?")
+        .bind(nextNote, nextNote, now, memberId)
+        .run();
+
+      waitUntil(logUserActivity(env.DB, {
+        userKey: userReadKey(user),
+        actorName: user.name || 'Admin',
+        actorRole: user.role,
+        memberId,
+        eventType: 'registration_rejected',
+        title: '❌ सदस्य रजिस्ट्रेसन रद्द गरियो',
+        detail: `${regRow.original_name || memberId} (${memberId})${reason ? ' · ' + reason : ''}`,
+        severity: 'warn'
+      }));
+
+      waitUntil(sendPushToUserKey(env, memberId, {
+        title: '❌ User ID रजिस्ट्रेसन असफल भयो',
+        body: reason
+          ? `तपाईंको रजिस्ट्रेसन रद्द गरिएको छ (${reason}) — कृपया Admin लाई सम्पर्क गर्नुहोस्।`
+          : 'तपाईंको User ID रजिस्ट्रेसन असफल / रद्द भयो — कृपया Admin लाई सम्पर्क गर्नुहोस्।',
+        tag: 'reg-rejected-' + memberId,
+        data: { url: './?register=1' }
+      }));
+
+      return json({ ok: true, memberId });
     }
 
     if (path === '/admin/registrations/delete' && method === 'POST') {

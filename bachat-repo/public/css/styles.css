@@ -1807,6 +1807,7 @@ body.app-locked #toast {
 }
 .reg-status-pill.pending { background: #fff3cd; color: #664d03; }
 .reg-status-pill.approved { background: #d1e7dd; color: #0f5132; }
+.reg-status-pill.rejected { background: #f8d7da; color: #842029; }
 .reg-status-pill.wait { background: #e2e8f0; color: #475569; }
 .reg-admin-card {
   background: #fff;
@@ -1823,5 +1824,72 @@ body.app-locked #toast {
   border-color: #badbcc;
   background: #f8fffb;
 }
+.reg-admin-card.rejected {
+  border-color: #f5c2c7;
+  background: #fff8f8;
+}
+.reg-steps-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+  margin-bottom: 14px;
+}
+.reg-step-pill {
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 6px 3px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-align: center;
+}
+.reg-step-pill.active {
+  background: #0d6efd;
+  color: #fff;
+  border-color: #0d6efd;
+}
+.reg-step-pill.done {
+  background: #d1e7dd;
+  color: #0f5132;
+  border-color: #badbcc;
+}
+.reg-temp-pin-box {
+  background: #eff6ff;
+  border: 2px dashed #3b82f6;
+  border-radius: 12px;
+  padding: 11px;
+  text-align: center;
+  margin-bottom: 12px;
+}
+.reg-temp-pin-code {
+  font-size: 1.8rem;
+  font-weight: 800;
+  letter-spacing: 6px;
+  color: #0d6efd;
+  margin: 4px 0;
+}
+.reg-alert-card {
+  background: #fff3cd;
+  border: 1.5px solid #ffc107;
+  color: #664d03;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  line-height: 1.48;
+  margin-bottom: 10px;
+  text-align: left;
+}
+.reg-alert-card.error {
+  background: #f8d7da;
+  border-color: #f5c2c7;
+  color: #842029;
+}
+.reg-alert-card.success {
+  background: #d1e7dd;
+  border-color: #badbcc;
+  color: #0f5132;
+}
+
 
 

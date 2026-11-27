@@ -14,7 +14,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
   <title>समूह बचत एप</title>
-  <link rel="stylesheet" href="./css/styles.css?v=23">
+  <link rel="stylesheet" href="./css/styles.css?v=24">
 </head>
 <body translate="no" class="notranslate">
 <div id="app">
@@ -45,6 +45,7 @@
             <input type="text" id="login-secret" class="masked-secret" placeholder="password वा ४ अंक PIN" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" onkeydown="if(event.key==='Enter')unifiedLogin()">
           </div>
           <button type="button" id="login-submit-btn" class="btn btn-primary btn-lg btn-block" onclick="unifiedLogin()">🔓 लगइन</button>
+          <button type="button" class="btn btn-outline btn-block mt-1" style="color:#0d6efd;border-color:#9ec5fe;background:#f8fbff;font-weight:700" onclick="openMemberRegistrationScreen()">📝 नयाँ सदस्य User ID रजिस्ट्रेसन फारम</button>
 
           <!-- Shown only on brand-new empty D1 database before first setup -->
           <div id="first-setup-box" class="hidden" style="margin-top:14px;padding-top:12px;border-top:1px dashed #dee2e6">
@@ -99,90 +100,177 @@
       </div>
     </div>
 
-    <!-- Shareable Public Member User ID Registration Form Screen -->
+    <!-- Privacy-First Multi-Step Member User ID Self-Registration Screen -->
     <div id="register-screen" class="screen">
       <div class="reg-container">
         <div class="logo-big" style="font-size:2.8rem;margin-bottom:4px">
           <img src="./logo-group.png" alt="logo" width="60" height="60" style="border-radius:14px;object-fit:cover"/>
         </div>
         <h1 id="reg-group-title">समूह बचत एप</h1>
-        <p class="subtitle" style="margin-bottom:12px">📝 सदस्य User ID रजिस्ट्रेसन फारम</p>
+        <p class="subtitle" style="margin-bottom:12px">📝 सदस्य User ID स्व-रजिस्ट्रेसन फारम</p>
 
         <div id="reg-form-card" class="form-card" style="padding:16px">
           <div id="reg-loading-box" style="text-align:center;padding:18px 8px">
             <div class="spinner" style="border-color:rgba(13,110,253,0.2);border-top-color:#0d6efd;margin:0 auto 10px"></div>
-            <div style="font-size:0.86rem;color:#475569">सदस्य सूची लोड हुँदैछ...</div>
+            <div style="font-size:0.86rem;color:#475569">फारम तयार हुँदैछ...</div>
           </div>
 
-          <div id="reg-fields-box" class="hidden">
-            <div style="background:#e7f1ff;border:1px solid #b6d4fe;border-radius:10px;padding:9px 11px;font-size:0.8rem;color:#084298;margin-bottom:12px;line-height:1.45">
-              तलको सूचीबाट आफ्नो <strong>नाम</strong> छान्नुहोस्। तपाईंको <strong>Member ID</strong> र <strong>नाम</strong> स्वतः भरिन्छ — नाम सच्याउनुपरे सच्याएर <strong>WhatsApp भएको मोबाइल नम्बर</strong> लेखी सेभ गर्नुहोस्।
+          <div id="reg-wizard-wrap" class="hidden">
+            <div id="reg-steps-bar" class="reg-steps-bar">
+              <span class="reg-step-pill active" data-step="1">१. नाम जाँच</span>
+              <span class="reg-step-pill" data-step="2">२. नियम/सर्त</span>
+              <span class="reg-step-pill" data-step="3">३. सूचना</span>
+              <span class="reg-step-pill" data-step="4">४. PIN सेट</span>
             </div>
 
-            <div class="form-group">
-              <label>१) समूहमा भएका सबै सदस्यहरू (आफ्नो नाम खोजेर थिच्नुहोस्)</label>
-              <input type="text" id="reg-search-input" placeholder="🔍 आफ्नो नाम वा Member ID टाइप गरी खोज्नुहोस्..." oninput="filterRegMembers()">
-              <select id="reg-member-select" onchange="onRegMemberSelect(this.value)" style="margin-top:6px">
-                <option value="">-- यहाँबाट वा तलको सूचीबाट नाम छान्नुहोस् --</option>
-              </select>
-              <div id="reg-member-list" class="reg-member-chips"></div>
-            </div>
-
-            <div id="reg-selected-banner" class="hidden" style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;padding:10px;margin-bottom:12px">
-              <div class="reg-readonly-row">
-                <div>
-                  <label style="font-size:0.75rem;color:#64748b;font-weight:700;display:block;margin-bottom:3px">Member ID</label>
-                  <input type="text" id="reg-member-id" class="reg-readonly-input" readonly>
-                </div>
-                <div>
-                  <label style="font-size:0.75rem;color:#64748b;font-weight:700;display:block;margin-bottom:3px">समूहमा दर्ता नाम</label>
-                  <input type="text" id="reg-original-name" class="reg-readonly-input" readonly>
-                </div>
+            <!-- STEP 1: Name (100% Exact Match) + Mobile Number -->
+            <div id="reg-step-1">
+              <div style="background:#e7f1ff;border:1px solid #b6d4fe;border-radius:10px;padding:9px 11px;font-size:0.8rem;color:#084298;margin-bottom:12px;line-height:1.45;text-align:left">
+                सुरक्षाका कारण सदस्य सूची यहाँ देखाइँदैन। कृपया <strong>समूहमा दर्ता भएको आफ्नो पूरा नाम जस्ताको तस्तै</strong> र <strong>सही मोबाइल नम्बर</strong> राखी अगाडि बढ्नुहोस्।
               </div>
-              <div id="reg-existing-hint" style="font-size:0.76rem;color:#475569;margin-top:4px"></div>
-            </div>
-
-            <div id="reg-locked-box" class="hidden" style="background:#fff3cd;border:1.5px solid #ffc107;border-radius:12px;padding:12px;margin-bottom:12px;text-align:center;color:#664d03">
-              <div style="font-size:1.6rem;margin-bottom:4px">🔒</div>
-              <div style="font-weight:700;font-size:0.92rem;margin-bottom:4px">तपाईंको विवरण पहिले नै रजिस्टर भइसकेको छ!</div>
-              <div id="reg-locked-msg" style="font-size:0.82rem;line-height:1.45">
-                एक पटक सेभ गरिसकेपछि फेरि परिवर्तन गर्न मिल्दैन (लक गरिएको छ)। कृपया आफ्नो <strong>WhatsApp म्यासेज जाँच गर्नुहोस्</strong>।
-              </div>
-            </div>
-
-            <div id="reg-input-wrap">
               <div class="form-group">
-                <label>२) नाम सच्याउनुपरे यहाँ टाइप गर्नुहोस् (ठीक छ भने नबदल्नुहोस्)</label>
-                <input type="text" id="reg-corrected-name" placeholder="नाम सच्याउनुपरे पूरा नाम लेख्नुहोस्" maxlength="80">
+                <label>१) समूहमा दर्ता पूरा नाम (जस्ताको तस्तै लेख्नुहोस्) <span style="color:#dc3545">*</span></label>
+                <input type="text" id="reg-full-name" placeholder="उदा: राम बहादुर श्रेष्ठ" maxlength="90" autocomplete="off">
               </div>
-
               <div class="form-group">
-                <label>३) WhatsApp भएको मोबाइल नम्बर <span style="color:#dc3545">*</span></label>
-                <input type="tel" id="reg-whatsapp-mobile" inputmode="numeric" placeholder="उदा: 98XXXXXXXX (विदेश भए देश कोड सहित)" autocomplete="off">
-                <div class="text-muted" style="font-size:0.73rem;margin-top:4px">Admin ले यही WhatsApp नम्बरमा तपाईंको एप लगइन र PIN पठाउनुहुनेछ।</div>
+                <label>२) मोबाइल नम्बर (तपाईंले चलाउने नम्बर) <span style="color:#dc3545">*</span></label>
+                <input type="tel" id="reg-mobile-input" inputmode="numeric" placeholder="उदा: 98XXXXXXXX" autocomplete="off" onkeydown="if(event.key==='Enter')verifyRegMemberInput()">
               </div>
-
-              <div class="form-group" style="margin-bottom:10px">
-                <label>४) थप टिप्पणी (आवश्यक परे मात्र, वैकल्पिक)</label>
-                <input type="text" id="reg-note" placeholder="उदा: नामको हिज्जे सच्याएको छ / नयाँ नम्बर" maxlength="140">
-              </div>
-
-              <button type="button" id="reg-submit-btn" class="btn btn-success btn-lg btn-block" onclick="submitMemberRegistration()">💾 विवरण सेभ गर्नुहोस्</button>
+              <div id="reg-verify-alert" class="reg-alert-card hidden"></div>
+              <button type="button" id="reg-verify-btn" class="btn btn-primary btn-lg btn-block" onclick="verifyRegMemberInput()">🔍 नाम जाँच गरी अगाडि बढ्नुहोस्</button>
             </div>
-          </div>
 
-          <div id="reg-success-box" class="hidden" style="text-align:center;padding:8px 4px">
-            <div style="font-size:2.4rem;margin-bottom:6px">✅</div>
-            <h3 style="color:#0f5132;margin-bottom:6px">तपाईंको विवरण सुरक्षित सेभ भयो!</h3>
-            <div id="reg-success-summary" style="background:#d1e7dd;color:#0f5132;border-radius:10px;padding:10px 12px;font-size:0.84rem;text-align:left;line-height:1.55;margin-bottom:12px"></div>
-            <p style="font-size:0.8rem;color:#475569;margin-bottom:12px">
-              तपाईंको विवरण Admin को सेटिङमा पुगेको छ। Admin ले हेरेर तपाईंको User ID र PIN बनाई WhatsApp मा पठाउनुहुनेछ।
-            </p>
-            <button type="button" class="btn btn-primary btn-block" onclick="resetMemberRegistrationForm()">➕ अर्को सदस्यको विवरण भर्नुहोस्</button>
+            <!-- CASE A: Already Registered with Personal PIN -->
+            <div id="reg-status-already" class="hidden" style="text-align:center;padding:8px 2px">
+              <div style="font-size:2.2rem;margin-bottom:6px">🔒</div>
+              <h3 style="color:#0f5132;margin-bottom:6px;font-size:1.05rem">तपाईंको User ID पहिले नै बनिसकेको छ!</h3>
+              <div id="reg-already-msg" style="background:#d1e7dd;color:#0f5132;border-radius:10px;padding:10px 12px;font-size:0.83rem;line-height:1.5;margin-bottom:12px;text-align:left"></div>
+              <button type="button" class="btn btn-primary btn-block" onclick="exitRegistrationToApp(true)">🔐 लगइन पेजमा जानुहोस्</button>
+              <button type="button" class="btn btn-outline btn-sm btn-block mt-1" onclick="resetMemberRegistrationForm()">← अर्को नाम जाँच गर्नुहोस्</button>
+            </div>
+
+            <!-- CASE B: Approved Account, PIN is Still Temp -> Show Temp PIN & Force Change -->
+            <div id="reg-status-temp" class="hidden">
+              <div style="background:#fff3cd;border:1.5px solid #ffc107;border-radius:12px;padding:11px;margin-bottom:12px;color:#664d03;font-size:0.83rem;line-height:1.45;text-align:left">
+                🔐 <strong>अस्थायी (Temp) PIN परिवर्तन बाँकी छ:</strong><br>
+                तपाईंको खाता स्वीकृत भइसकेको छ, तर व्यक्तिगत PIN सेट भएको छैन। कृपया तल नयाॅ ४ अंकको व्यक्तिगत PIN सेट गरी लगइन गर्नुहोस्।
+              </div>
+              <div id="reg-caseb-known-box" class="reg-temp-pin-box hidden">
+                <div style="font-size:0.78rem;color:#475569">तपाईंको अहिलेको अस्थायी (Temp) PIN:</div>
+                <div id="reg-caseb-temp-display" class="reg-temp-pin-code">----</div>
+              </div>
+              <div class="form-group">
+                <label>अहिलेको अस्थायी (Temp) PIN <span style="color:#dc3545">*</span></label>
+                <input type="text" id="reg-caseb-cur-pin" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="४ अंकको Temp PIN" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label>नयाँ ४ अंकको व्यक्तिगत PIN <span style="color:#dc3545">*</span></label>
+                <input type="text" id="reg-caseb-new-pin" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="आफैँ सम्झिने ४ अंक" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label>नयाँ PIN फेरि लेख्नुहोस् <span style="color:#dc3545">*</span></label>
+                <input type="text" id="reg-caseb-new-pin2" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="फेरि त्यही ४ अंक" autocomplete="off">
+              </div>
+              <button type="button" id="reg-caseb-btn" class="btn btn-success btn-lg btn-block" onclick="submitCaseBTempPinUpgrade()">✅ नयाँ PIN सेट गर्नुहोस्</button>
+              <button type="button" class="btn btn-outline btn-sm btn-block mt-1" onclick="resetMemberRegistrationForm()">← फर्कनुहोस्</button>
+            </div>
+
+            <!-- CASE B Done: Temp PIN Upgraded (Still Logged Out -> Must Login Manually) -->
+            <div id="reg-status-temp-done" class="hidden" style="text-align:center;padding:8px 2px">
+              <div style="font-size:2.4rem;margin-bottom:6px">✅</div>
+              <h3 style="color:#0f5132;margin-bottom:6px">नयाँ PIN सुरक्षित सेट भयो!</h3>
+              <div style="background:#d1e7dd;color:#0f5132;border-radius:10px;padding:10px 12px;font-size:0.84rem;line-height:1.5;margin-bottom:12px">
+                तपाईंको व्यक्तिगत PIN सफलतापूर्वक परिवर्तन भएको छ। अब लगइन पेजमा गई आफ्नो <strong>मोबाइल नम्बर</strong> र <strong>भर्खरै राखेको नयाँ PIN</strong> प्रयोग गरी लगइन गर्नुहोस्।
+              </div>
+              <button type="button" class="btn btn-primary btn-lg btn-block" onclick="exitRegistrationToApp(true)">🔐 अब लगइन गर्नुहोस्</button>
+            </div>
+
+            <!-- CASE C: Pending Admin Approval -->
+            <div id="reg-status-pending" class="hidden" style="text-align:center;padding:6px 2px">
+              <div style="font-size:2.2rem;margin-bottom:6px">⏳</div>
+              <h3 style="color:#664d03;margin-bottom:6px;font-size:1.05rem">रजिस्ट्रेसन स्वीकृतिको प्रक्रियामा छ</h3>
+              <div id="reg-pending-msg" style="background:#fff3cd;border:1px solid #ffe69c;color:#664d03;border-radius:10px;padding:10px 12px;font-size:0.83rem;line-height:1.5;margin-bottom:12px;text-align:left"></div>
+              <div id="reg-pending-push-wrap" class="hidden" style="margin-bottom:10px">
+                <button type="button" id="reg-pending-push-btn" class="btn btn-success btn-block" onclick="enablePushInPendingReg()">🔔 नोटिफिकेसन अनुमति अन गर्नुहोस्</button>
+                <div id="reg-pending-push-msg" style="font-size:0.78rem;margin-top:6px;color:#475569"></div>
+              </div>
+              <button type="button" class="btn btn-primary btn-block" onclick="exitRegistrationToApp(false)">🔐 लगइन पेजमा फर्कनुहोस्</button>
+              <button type="button" class="btn btn-outline btn-sm btn-block mt-1" onclick="resetMemberRegistrationForm()">← अर्को नाम जाँच गर्नुहोस्</button>
+            </div>
+
+            <!-- CASE R: Rejected / Cancelled by Admin -->
+            <div id="reg-status-rejected" class="hidden" style="text-align:center;padding:6px 2px">
+              <div style="font-size:2.2rem;margin-bottom:6px">❌</div>
+              <h3 style="color:#842029;margin-bottom:6px;font-size:1.05rem">रजिस्ट्रेसन आवेदन रद्द गरिएको छ</h3>
+              <div id="reg-rejected-msg" style="background:#f8d7da;border:1px solid #f5c2c7;color:#842029;border-radius:10px;padding:10px 12px;font-size:0.83rem;line-height:1.5;margin-bottom:12px;text-align:left"></div>
+              <button type="button" class="btn btn-primary btn-block" onclick="exitRegistrationToApp(false)">🔐 लगइन पेजमा फर्कनुहोस्</button>
+              <button type="button" class="btn btn-outline btn-sm btn-block mt-1" onclick="resetMemberRegistrationForm()">← अर्को नाम जाँच गर्नुहोस्</button>
+            </div>
+
+            <!-- STEP 2: Terms & Conditions Agreements -->
+            <div id="reg-step-2" class="hidden">
+              <div style="font-size:0.86rem;font-weight:700;color:#0f172a;margin-bottom:6px;text-align:left">📜 समूहका नियम, सर्त तथा गोपनीयता नीति</div>
+              <div id="reg-terms-clauses" class="terms-scroll-box" style="max-height:240px;text-align:left"></div>
+              <label class="terms-agree-box" for="reg-terms-chk" style="text-align:left">
+                <input type="checkbox" id="reg-terms-chk">
+                <span>मैले माथि उल्लेखित समूहका सबै नियम, सर्त, हिसाब पारदर्शिता र गोपनीयता नीति ध्यानपूर्वक पढेँ र पूर्ण रूपमा मञ्जुर (सहमत) छु।</span>
+              </label>
+              <button type="button" class="btn btn-primary btn-block" onclick="confirmRegTermsStep()">✅ सहमत छु — अगाडि बढ्नुहोस्</button>
+              <button type="button" class="btn btn-outline btn-sm btn-block mt-1" onclick="resetMemberRegistrationForm()">← पछाडि जानुहोस्</button>
+            </div>
+
+            <!-- STEP 3: Notification Permission -->
+            <div id="reg-step-3" class="hidden">
+              <div style="background:#e7f1ff;border:1px solid #b6d4fe;border-radius:12px;padding:12px;margin-bottom:12px;text-align:left;color:#084298;font-size:0.84rem;line-height:1.5">
+                <div style="font-weight:700;margin-bottom:4px">🔔 नोटिफिकेसन (सूचना) अनुमति आवश्यक छ</div>
+                Admin ले तपाईंको खाता स्वीकृत वा रद्द गर्नासाथ सिधै तपाईंको मोबाइलमा सूचना पठाउन कृपया <strong>Allow Notifications</strong> मा थिच्नुहोस्।
+              </div>
+              <div id="reg-push-msg" class="reg-alert-card hidden" style="text-align:left"></div>
+              <button type="button" id="reg-push-allow-btn" class="btn btn-success btn-lg btn-block" onclick="requestRegPushStep()">🔔 सूचना अनुमति दिनुहोस् (Allow)</button>
+              <button type="button" id="reg-push-next-btn" class="btn btn-primary btn-block mt-1 hidden" onclick="goToRegStep(4)">➡️ अर्को चरण: PIN सेट गर्नुहोस्</button>
+              <button type="button" id="reg-push-skip-btn" class="btn btn-outline btn-sm btn-block mt-1 hidden" onclick="skipRegPushIfUnsupported()">सूचना बिना नै अगाडि बढ्नुहोस् →</button>
+            </div>
+
+            <!-- STEP 4: App-Issued Temp PIN -> Change to Personal 4-digit PIN -->
+            <div id="reg-step-4" class="hidden">
+              <div class="reg-temp-pin-box">
+                <div style="font-size:0.8rem;color:#334155">एपले तपाईंलाई दिएको अस्थायी (Temp) PIN:</div>
+                <div id="reg-issued-temp-pin" class="reg-temp-pin-code">----</div>
+                <div style="font-size:0.74rem;color:#64748b">अब सुरक्षाका लागि तल यही Temp PIN हालेर आफ्नै गोप्य ४ अंकको नयाँ PIN बनाउनुहोस्।</div>
+              </div>
+              <div class="form-group">
+                <label>माथिको अस्थायी (Temp) PIN लेख्नुहोस् <span style="color:#dc3545">*</span></label>
+                <input type="text" id="reg-temp-pin-input" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="माथि देखिएको ४ अंक" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label>तपाईंको नयाँ ४ अंकको गोप्य PIN <span style="color:#dc3545">*</span></label>
+                <input type="text" id="reg-new-pin" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="आफैँ सम्झिने ४ अंक" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label>नयाँ PIN फेरि लेख्नुहोस् <span style="color:#dc3545">*</span></label>
+                <input type="text" id="reg-confirm-pin" class="masked-secret" maxlength="4" inputmode="numeric" placeholder="फेरि त्यही ४ अंक" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label>थप टिप्पणी (वैकल्पिक)</label>
+                <input type="text" id="reg-note" placeholder="आवश्यक परे मात्र छोटो टिप्पणी" maxlength="140">
+              </div>
+              <button type="button" id="reg-submit-btn" class="btn btn-success btn-lg btn-block" onclick="submitSelfRegistration()">💾 सुरक्षित गरी रजिस्ट्रेसन पठाउनुहोस्</button>
+            </div>
+
+            <!-- STEP 5: Submitted Confirmation (Still Logged Out — Zero Access Until Admin Approves) -->
+            <div id="reg-step-5" class="hidden" style="text-align:center;padding:8px 2px">
+              <div style="font-size:2.5rem;margin-bottom:6px">📩</div>
+              <h3 style="color:#0f5132;margin-bottom:8px">तपाईंको रजिस्ट्रेसन प्रक्रिया पूरा भई पठाइएको छ!</h3>
+              <div id="reg-success-summary" style="background:#d1e7dd;color:#0f5132;border-radius:10px;padding:11px 12px;font-size:0.84rem;text-align:left;line-height:1.55;margin-bottom:12px"></div>
+              <p style="font-size:0.81rem;color:#475569;margin-bottom:12px;line-height:1.5">
+                सुरक्षाका कारण Admin बाट स्वीकृत नभएसम्म भित्रको हिसाब हेर्न मिल्दैन। कृपया नोटिफिकेसन आएपछि लगइन गर्नुहोला।
+              </p>
+              <button type="button" class="btn btn-primary btn-lg btn-block" onclick="exitRegistrationToApp(true)">🔐 लगइन पेजमा फर्कनुहोस्</button>
+            </div>
           </div>
 
           <div style="margin-top:12px;padding-top:10px;border-top:1px dashed #dee2e6;text-align:center">
-            <button type="button" class="btn btn-outline btn-sm btn-block" onclick="exitRegistrationToApp()">🔐 एप लगइन पेजमा जानुहोस्</button>
+            <button type="button" class="btn btn-outline btn-sm btn-block" onclick="exitRegistrationToApp(false)">🔐 एप लगइन पेजमा जानुहोस्</button>
           </div>
         </div>
       </div>
@@ -355,11 +443,11 @@
     </div>
   </div>
 
-  <script src="./js/db.js?v=23"></script>
-  <script src="./js/accounting.js?v=23"></script>
-  <script src="./js/auth.js?v=23"></script>
-  <script src="./js/ui.js?v=23"></script>
-  <script src="./js/app.js?v=23"></script>
+  <script src="./js/db.js?v=24"></script>
+  <script src="./js/accounting.js?v=24"></script>
+  <script src="./js/auth.js?v=24"></script>
+  <script src="./js/ui.js?v=24"></script>
+  <script src="./js/app.js?v=24"></script>
   <script>
   if ('serviceWorker' in navigator) {
     window._swReloading = false;
