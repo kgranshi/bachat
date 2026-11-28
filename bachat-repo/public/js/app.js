@@ -5,8 +5,19 @@
 let APP_DATA = null;
 
 // ========== APP VERSION & USER-FACING CHANGELOG (नेपाली भाषा · हिसाब र सुविधा मात्र) ==========
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 const APP_UPDATE_LOG = [
+  {
+    version: '1.0.2',
+    dateBS: '२०८३ हिसाब मिलान अद्यावधिक',
+    accountingImpact: true,
+    title: 'जरिवाना, अघिल्लो बाँकी, सदस्य बहिर्गमन र नगद-प्रवाह अडिट सुधार',
+    highlights: [
+      'मासिक कलेक्सनमा बुझाइएको जरिवाना र अघिल्लो बाँकी असुली स्वतः मासिक आम्दानी तथा कोषको नगद मौज्दातमा जोडिने र मासिक/वार्षिक रिपोर्टमा छुट्टै देखिने सुधार।',
+      'कलेक्सन सारांश तालिकामा अघिल्लो बाँकी तिरेको र नयाँ अग्रिम स्तम्भ थप गरी कुल तिरेको नगदसँग शतप्रतिशत मिलान देखिने व्यवस्था।',
+      'सदस्य बाहिरिँदा बाँकी अग्रिम रकम समेत फिर्ता (र बाँकी दायित्व भए कट्टा) भई कोषको हिसाब सधैँ सफा रहने तथा "हिसाब मिलान अडिट" मा वास्तविक नगद-प्रवाह जाँच थपिएको।'
+    ]
+  },
   {
     version: '1.0.1',
     dateBS: '२०८३ अद्यावधिक संस्करण',
@@ -2410,15 +2421,18 @@ function renderSelectedMonthly() {
   const id = document.getElementById('report-month').value;
   const data = DB.load();
   if (data.migrationDone) Accounting.syncOpenMonthFromMigration(data);
-  const month = data.months.find(m => m.id === id);
-  if (!month) return;
+  const origMonth = data.months.find(m => m.id === id);
+  if (!origMonth) return;
+  const month = Object.assign({}, origMonth);
   Accounting.recalcMonth(month, data);
   const perKitta = Accounting.perKittaValue(data, month);
 
   const advCash = month.advanceFromCash || 0;
   const otherBase = month.otherIncome || 0;
   const otherTotal = otherBase + advCash;
-  const totalIncome = (month.savingsCollected || 0) + (month.interestCollected || 0) + otherTotal;
+  const fineCol = month.fineCollected || 0;
+  const prevDueCol = month.previousDueCollected || 0;
+  const totalIncome = (month.savingsCollected || 0) + (month.interestCollected || 0) + fineCol + prevDueCol + otherTotal;
   const netIncome = totalIncome - (month.expenses || 0);
 
   // detailKey: which rows open detail view
@@ -2426,19 +2440,21 @@ function renderSelectedMonthly() {
     { label: '१. सुरु मौज्दात', val: month.startAssets },
     { label: '२. प्राप्त बचत', val: month.savingsCollected, detail: 'saving' },
     { label: '३. प्राप्त ब्याज', val: month.interestCollected, detail: 'interest' },
-    { label: '४. अन्य आम्दानी', val: otherTotal, detail: 'other' },
-    { label: '५. जम्मा आम्दानी', val: totalIncome },
-    { label: '६. खर्च', val: month.expenses, detail: 'expense' },
-    { label: '७. खुद आम्दानी', val: netIncome, hl: true },
-    { label: '८. अन्तिम मौज्दात', val: month.finalAssets },
-    { label: '९. उठेको सावा', val: month.principalCollected, detail: 'principal' },
-    { label: '१०. गरिएको लगानी', val: month.newLoansGiven, detail: 'loans' },
-    { label: '११. उठ्न बाँकी लगानी', val: month.outstandingLoans, red: true },
-    { label: '१२. कोसमा नगद', val: month.cashInHand },
-    { label: '१३. सदस्य अग्रिम दायित्व (हटाएर)', val: month.totalAdvances || 0 },
-    { label: '१४. सदस्य शेयर कोस (खुद)', val: month.netShareAssets != null ? month.netShareAssets : month.finalAssets },
-    { label: '१५. जम्मा सदस्य', val: month.totalMembers },
-    { label: '१६. जम्मा कित्ता', val: month.totalKitta },
+    { label: '४. प्राप्त जरिवाना', val: fineCol, detail: 'fine' },
+    { label: '५. अघिल्लो बाँकी असुली', val: prevDueCol, detail: 'previousDue' },
+    { label: '६. अन्य आम्दानी (+थप अग्रिम)', val: otherTotal, detail: 'other' },
+    { label: '७. जम्मा आम्दानी', val: totalIncome },
+    { label: '८. खर्च', val: month.expenses, detail: 'expense' },
+    { label: '९. खुद आम्दानी', val: netIncome, hl: true },
+    { label: '१०. अन्तिम मौज्दात', val: month.finalAssets },
+    { label: '११. उठेको सावा', val: month.principalCollected, detail: 'principal' },
+    { label: '१२. गरिएको लगानी', val: month.newLoansGiven, detail: 'loans' },
+    { label: '१३. उठ्न बाँकी लगानी', val: month.outstandingLoans, red: true },
+    { label: '१४. कोसमा नगद', val: month.cashInHand },
+    { label: '१५. सदस्य अग्रिम दायित्व (हटाएर)', val: month.totalAdvances || 0 },
+    { label: '१६. सदस्य शेयर कोस (खुद)', val: month.netShareAssets != null ? month.netShareAssets : month.finalAssets },
+    { label: '१७. जम्मा सदस्य', val: month.totalMembers },
+    { label: '१८. जम्मा कित्ता', val: month.totalKitta },
     { label: 'प्रति कित्ता मूल्य', val: perKitta, hl: true }
   ];
 
@@ -2473,9 +2489,16 @@ function showReportDetail(monthId, type) {
   let body = '<div class="table-wrap"><table><thead><tr><th>विवरण</th><th>रकम</th><th>कैफियत</th></tr></thead><tbody>';
   let total = 0;
 
-  if (type === 'saving' || type === 'interest' || type === 'principal') {
-    title = type === 'saving' ? 'प्राप्त बचत' : type === 'interest' ? 'प्राप्त ब्याज' : 'उठेको सावा';
-    const key = type === 'saving' ? 'saving' : type === 'interest' ? 'interest' : 'principal';
+  if (type === 'saving' || type === 'interest' || type === 'fine' || type === 'previousDue' || type === 'principal') {
+    const titleMap = {
+      saving: 'प्राप्त बचत',
+      interest: 'प्राप्त ब्याज',
+      fine: 'प्राप्त जरिवाना',
+      previousDue: 'अघिल्लो बाँकी असुली',
+      principal: 'उठेको सावा'
+    };
+    title = titleMap[type] || '';
+    const key = type;
     Object.keys(month.collections || {}).forEach(mid => {
       const c = month.collections[mid];
       const paid = c.totalPaid || 0;
@@ -2491,9 +2514,10 @@ function showReportDetail(monthId, type) {
       total += d.amount || 0;
       body += `<tr><td>${d.note || d.type || 'अन्य'}</td><td class="fw-bold">${Accounting.formatNum(d.amount)}</td><td>${d.type || ''}</td></tr>`;
     });
-    if ((month.advanceFromCash || 0) > 0) {
-      total += month.advanceFromCash;
-      body += `<tr><td>अतिरिक्त नगद (अग्रिम)</td><td class="fw-bold">${Accounting.formatNum(month.advanceFromCash)}</td><td>नगद बढी</td></tr>`;
+    const advCash = Object.values(month.collections || {}).reduce((s, c) => s + ((Number(c && c.totalPaid) > 0 && Number(c && c.advance) > 0) ? Number(c.advance) : 0), 0);
+    if (advCash > 0) {
+      total += advCash;
+      body += `<tr><td>अतिरिक्त नगद (नयाँ अग्रिम)</td><td class="fw-bold">${Accounting.formatNum(advCash)}</td><td>नगद बढी</td></tr>`;
     }
   } else if (type === 'expense') {
     title = 'खर्च';
@@ -2546,15 +2570,15 @@ function renderCollectionSummary() {
     <div class="print-meta" style="font-size:0.78rem;color:#666">
       कलेक्सन बन्द: ${fmtTimeOnly(month.collectionClosedAt)} &nbsp;·&nbsp; महिना बन्द: ${fmtTimeOnly(month.closedAt)}
     </div>
-    <div class="table-wrap"><table style="font-size:0.78rem">
+    <div class="table-wrap"><table style="font-size:0.75rem">
       <thead><tr>
-        <th>नाम / नगद</th><th>बचत</th><th>ब्याज</th><th>जरि.</th>
-        <th>सावा</th><th>ऋण</th><th>बाँकी</th><th>अग्रिम</th><th style="font-size:0.65rem">बुझिलिने</th>
+        <th>नाम / नगद</th><th>बचत</th><th>ब्याज</th><th>जरि.</th><th>अ.बाँकी</th>
+        <th>सावा</th><th>थप अग्रिम</th><th>ऋण</th><th>बाँकी</th><th>अग्रिम</th><th style="font-size:0.65rem">बुझिलिने</th>
       </tr></thead><tbody>`;
 
-  let tPaid = 0, tSav = 0, tInt = 0, tFine = 0, tPrin = 0, tTaken = 0, tLoan = 0, tAdv = 0;
-  data.members.filter(m => m.active).forEach(m => {
-    const c = month.collections[m.id] || {};
+  let tPaid = 0, tSav = 0, tInt = 0, tFine = 0, tPrevDue = 0, tPrin = 0, tNewAdv = 0, tTaken = 0, tLoan = 0, tAdv = 0;
+  data.members.filter(m => m.active || (month.collections && month.collections[m.id]) || (month.memberSnapshots && month.memberSnapshots[m.id])).forEach(m => {
+    const c = (month.collections && month.collections[m.id]) || {};
     const taken = (month.loansGiven || []).filter(l => l.memberId === m.id).reduce((s, l) => s + l.amount, 0);
     const snap = (month.memberSnapshots && month.memberSnapshots[m.id]) || {};
     const loanBal = snap.outstandingLoan !== undefined ? snap.outstandingLoan : Accounting.getEffectiveMemberLoan(data, m, month);
@@ -2562,10 +2586,10 @@ function renderCollectionSummary() {
 
     const fromAdv = (c.fromAdvance || 0) > 0 || c.coveredByAdvance;
     const noCash = (c.totalPaid || 0) <= 0;
-    let sav = c.saving || 0, int_ = c.interest || 0, fine = c.fine || 0, prin = c.principal || 0;
+    let sav = c.saving || 0, int_ = c.interest || 0, fine = c.fine || 0, prevDue = c.previousDue || 0, prin = c.principal || 0, newAdv = c.advance || 0;
     let note = '';
     if (fromAdv && noCash) {
-      sav = 0; int_ = 0; fine = 0; prin = 0;
+      sav = 0; int_ = 0; fine = 0; prevDue = 0; prin = 0; newAdv = 0;
       note = 'अग्रिमबाट';
     } else if (fromAdv && !noCash) {
       note = '+अग्रिम';
@@ -2574,7 +2598,7 @@ function renderCollectionSummary() {
     }
 
     const paid = c.totalPaid || 0;
-    tPaid += paid; tSav += sav; tInt += int_; tFine += fine; tPrin += prin;
+    tPaid += paid; tSav += sav; tInt += int_; tFine += fine; tPrevDue += prevDue; tPrin += prin; tNewAdv += newAdv;
     tTaken += taken; tLoan += loanBal; tAdv += adv;
 
     const loanStyle = loanBal > 0 ? 'color:#dc3545;font-weight:700' : '';
@@ -2588,7 +2612,9 @@ function renderCollectionSummary() {
       <td>${Accounting.formatNum(sav)}</td>
       <td>${Accounting.formatNum(int_)}</td>
       <td>${Accounting.formatNum(fine)}</td>
+      <td>${Accounting.formatNum(prevDue)}</td>
       <td>${Accounting.formatNum(prin)}</td>
+      <td>${Accounting.formatNum(newAdv)}</td>
       <td>${Accounting.formatNum(taken)}</td>
       <td style="${loanStyle}">${Accounting.formatNum(loanBal)}</td>
       <td style="${advStyle}">${Accounting.formatNum(adv)}</td>
@@ -2615,7 +2641,9 @@ function renderCollectionSummary() {
     <td>${Accounting.formatNum(tSav)}</td>
     <td>${Accounting.formatNum(tInt)}</td>
     <td>${Accounting.formatNum(tFine)}</td>
+    <td>${Accounting.formatNum(tPrevDue)}</td>
     <td>${Accounting.formatNum(tPrin)}</td>
+    <td>${Accounting.formatNum(tNewAdv)}</td>
     <td>${Accounting.formatNum(tTaken)}</td>
     <td style="color:#dc3545">${Accounting.formatNum(tLoan)}</td>
     <td style="color:#0d6efd">${Accounting.formatNum(tAdv)}</td>
@@ -2629,7 +2657,7 @@ function renderCollectionSummary() {
 
 function showYearlyReport() {
   const data = DB.load();
-  const closed = data.months.filter(m => m.status === 'closed');
+  const closed = Accounting.getClosedMonthsSorted(data);
   if (closed.length === 0) return UI.toast('बन्द महिना छैन', 'error');
 
   let html = `<div class="print-area" id="print-yearly"><h2>${data.group.name}</h2>
@@ -2644,8 +2672,16 @@ function showYearlyReport() {
         <th>उठ्न बाँकी ऋण</th>
         <th>कोसमा नगद</th>
       </tr></thead><tbody>`;
-  closed.forEach(m => {
+  let runningAssets = null;
+  let lastCalc = null;
+  closed.forEach((origM, i) => {
+    const m = Object.assign({}, origM);
+    if (i > 0 && runningAssets !== null) m.startAssets = runningAssets;
+    Accounting.recalcMonth(m, data);
+    runningAssets = Number(m.finalAssets) || 0;
+    lastCalc = m;
     const income = (Number(m.savingsCollected)||0) + (Number(m.interestCollected)||0) +
+      (Number(m.fineCollected)||0) + (Number(m.previousDueCollected)||0) +
       (Number(m.otherIncome)||0) + (Number(m.advanceFromCash)||0);
     const exp = Number(m.expenses) || 0;
     html += `<tr>
@@ -2658,7 +2694,7 @@ function showYearlyReport() {
       <td>${Accounting.formatNum(m.cashInHand)}</td>
     </tr>`;
   });
-  const lastClosed = closed[closed.length - 1];
+  const lastClosed = lastCalc || closed[closed.length - 1];
   const lastAdv = Number(lastClosed && lastClosed.totalAdvances) || 0;
   const lastNetShare = (lastClosed && lastClosed.netShareAssets != null) ? lastClosed.netShareAssets : Math.max(0, (Number(lastClosed.finalAssets) || 0) - lastAdv);
   html += '</tbody></table></div>';
@@ -3354,15 +3390,20 @@ function confirmExitMember(memberId) {
   const feePct = data.settings.exitFee || 3;
   const gross = member.kitta * perKitta;
   const fee = Math.round(gross * feePct / 100);
-  const net = gross - fee;
+  const shareNet = gross - fee;
+  const advRefund = Number(member.advance) || 0;
+  const dueDeduct = Math.min(shareNet + advRefund, Number(member.due) || 0);
+  const net = Math.max(0, shareNet + advRefund - dueDeduct);
 
   const html = `
     <p><strong>${member.name}</strong> लाई समूहबाट बाहिरिने?</p>
     <div class="report-card">
       <div class="report-row"><span class="label">कित्ता</span><span class="value">${member.kitta}</span></div>
-      <div class="report-row"><span class="label">कुल मूल्य</span><span class="value">${Accounting.formatNum(gross)}</span></div>
-      <div class="report-row"><span class="label">शुल्क (${feePct}%)</span><span class="value">${Accounting.formatNum(fee)}</span></div>
-      <div class="report-row highlight"><span class="label">फिर्ता रकम</span><span class="value">${Accounting.formatNum(net)}</span></div>
+      <div class="report-row"><span class="label">शेयर कुल मूल्य</span><span class="value">${Accounting.formatNum(gross)}</span></div>
+      <div class="report-row"><span class="label">बाहिरिने शुल्क (${feePct}%)</span><span class="value">− ${Accounting.formatNum(fee)}</span></div>
+      ${advRefund > 0 ? `<div class="report-row"><span class="label">बाँकी अग्रिम फिर्ता (+)</span><span class="value" style="color:#0d6efd">+ ${Accounting.formatNum(advRefund)}</span></div>` : ''}
+      ${dueDeduct > 0 ? `<div class="report-row"><span class="label">बाँकी दायित्व कट्टा (−)</span><span class="value" style="color:#dc3545">− ${Accounting.formatNum(dueDeduct)}</span></div>` : ''}
+      <div class="report-row highlight"><span class="label">जम्मा फिर्ता भुक्तानी</span><span class="value">${Accounting.formatNum(net)}</span></div>
     </div>
     <button class="btn btn-danger btn-block" onclick="doExitMember('${memberId}', ${net})">🚪 बाहिरिनुहोस्</button>
   `;
@@ -3375,12 +3416,19 @@ function doExitMember(memberId, net) {
     const data = DB.load();
     const month = Accounting.getCurrentMonth(data);
     const member = data.members.find(m => m.id === memberId);
+    const advVal = Number(member.advance) || 0;
+    const dueVal = Number(member.due) || 0;
+    const noteParts = [member.name + ' बाहिरिए'];
+    if (advVal > 0) noteParts.push('अग्रिम ' + Accounting.formatNum(advVal) + ' फिर्ता');
+    if (dueVal > 0) noteParts.push('बाँकी ' + Accounting.formatNum(dueVal) + ' कट्टा');
     month.expenseDetails.push({
       type: 'member_exit', memberId, amount: net,
-      note: member.name + ' बाहिरिए', time: new Date().toISOString()
+      note: noteParts.join(' · '), time: new Date().toISOString()
     });
     member.active = false;
     member.kitta = 0;
+    member.advance = 0;
+    member.due = 0;
     Accounting.recalcMonth(month, data);
     DB.save(data);
     if (Auth.isAccountsWriter()) {
@@ -3440,25 +3488,18 @@ async function doAddNewMember() {
   const data = DB.load();
   const month = Accounting.getCurrentMonth(data);
 
-  // Reuse inactive slot or create new
-  let member = data.members.find(m => !m.active);
-  if (!member) {
-    member = {
-      id: 'm' + (data.members.length + 1),
-      name, mobile, hasPin: false, kitta: 0, photo: null, active: true,
-      joinedMonthId: month.id, outstandingLoan: 0, advance: 0, due: 0,
-      assetHistory: [], loanHistory: []
-    };
-    data.members.push(member);
-  } else {
-    member.name = name;
-    member.mobile = mobile;
-    member.active = true;
-    member.joinedMonthId = month.id;
-    member.outstandingLoan = 0;
-    member.advance = 0;
-    member.due = 0;
-  }
+  // Always create a clean unique member ID so historical closed-month reports/passbooks of exited members are preserved
+  const maxNum = (data.members || []).reduce((mx, m) => {
+    const n = m && m.id && /^m(\d+)$/.test(String(m.id)) ? parseInt(RegExp.$1, 10) : 0;
+    return Math.max(mx, n);
+  }, (data.members || []).length);
+  const member = {
+    id: 'm' + (maxNum + 1),
+    name, mobile, hasPin: false, mustChangePin: false, kitta: 0, photo: null, active: true,
+    joinedMonthId: month.id, outstandingLoan: 0, advance: 0, due: 0,
+    assetHistory: [], loanHistory: []
+  };
+  data.members.push(member);
   member.kitta = kitta;
 
   month.otherIncomeDetails.push({
@@ -7263,54 +7304,74 @@ async function sendMeetingReminderPushNow() {
 
 function runAccountingAuditCheck() {
   const data = DB.load();
-  const snap = Accounting.getSnapshot(data);
+  const audit = Accounting.auditLedger(data);
+  const snap = audit.snap;
   const active = (data.members || []).filter((m) => m && m.active !== false);
-  let sumLoans = 0, sumAdvances = 0, sumMemberAssets = 0, negIssues = [];
-  const totalKitta = Accounting.totalKitta(data);
-  const perKitta = snap.perKitta;
+  const totalKitta = snap.kitta || Accounting.totalKitta(data);
+  const canWrite = !!(Auth.isAccountsWriter && Auth.isAccountsWriter());
 
-  active.forEach((m) => {
-    const loan = Accounting.getEffectiveMemberLoan(data, m);
-    const adv = Accounting.getEffectiveMemberAdvance(data, m);
-    sumLoans += loan;
-    sumAdvances += adv;
-    sumMemberAssets += (Number(m.kitta) || 0) * perKitta;
-    if (loan < 0 || adv < 0 || (Number(m.due) || 0) < 0) {
-      negIssues.push(m.name);
-    }
-  });
-
-  const loanDiff = Math.round((snap.loans - sumLoans) * 100) / 100;
-  const equationDiff = Math.round((snap.assets - (snap.cash + snap.loans)) * 100) / 100;
-  const equityDiff = Math.round(((snap.netShareAssets || 0) - Math.max(0, snap.assets - sumAdvances)) * 100) / 100;
-  const allOk = Math.abs(loanDiff) <= 1 && Math.abs(equationDiff) <= 1 && Math.abs(equityDiff) <= 1 && negIssues.length === 0;
+  const diffColor = (v) => Math.abs(v) <= 1 ? '#198754' : '#dc3545';
+  const monthIssueRows = (audit.monthDiffs || []).map(md =>
+    `<div style="font-size:0.78rem;color:#842029;padding:4px 0;border-bottom:1px dashed #f5c2c7">
+      • <strong>${escapeHtmlChat(md.monthName || md.monthId)}</strong>: सेभ मौज्दात रु. ${Accounting.formatNum(md.storedFinal)} vs वास्तविक रु. ${Accounting.formatNum(md.trueFinal)}
+      (फरक: <strong>${md.diff >= 0 ? '+' : ''}${Accounting.formatNum(md.diff)}</strong>${(md.fine || md.previousDue) ? ` · जरिवाना/अघिल्लो बाँकी: ${Accounting.formatNum((md.fine || 0) + (md.previousDue || 0))}` : ''})
+    </div>`
+  ).join('');
+  const chainIssueRows = (audit.chainingIssues || []).map(ci =>
+    `<div style="font-size:0.78rem;color:#842029;padding:4px 0;border-bottom:1px dashed #f5c2c7">
+      • <strong>${escapeHtmlChat(ci.monthName || ci.monthId)}</strong> सुरु मौज्दात क्रमबद्ध फरक: रु. ${Accounting.formatNum(ci.diff)}
+    </div>`
+  ).join('');
+  const allocIssueRows = (audit.allocIssues || []).map(ai =>
+    `<div style="font-size:0.78rem;color:#842029;padding:4px 0">
+      • ${escapeHtmlChat(ai.monthName)} (${escapeHtmlChat(ai.memberId)}): कुल तिरेको रु. ${Accounting.formatNum(ai.totalPaid)} vs भाग योग रु. ${Accounting.formatNum(ai.sumParts)}
+    </div>`
+  ).join('');
 
   const html = `
-    <div class="section-title">${allOk ? '✅ हिसाब १००% मिलेको छ' : '⚠️ फरक जाँच गर्नुहोस्'}</div>
+    <div class="section-title">${audit.ok ? '✅ हिसाब १००% मिलेको छ' : (audit.needsReconcile ? '⚠️ पुराना महिना मिलान आवश्यक छ' : '⚠️ हिसाबमा फरक देखियो')}</div>
     <div class="report-card mb-2">
       <div class="report-row"><span class="label">सक्रिय सदस्य / कुल कित्ता</span><span class="value">${active.length} जना · ${totalKitta} कित्ता</span></div>
-      <div class="report-row"><span class="label">कुल कोस (नगद + ऋण)</span><span class="value">रु. ${Accounting.formatNum(snap.assets)}</span></div>
-      <div class="report-row"><span class="label">कोसमा नगद + बाँकी ऋण</span><span class="value">रु. ${Accounting.formatNum(snap.cash + snap.loans)}</span></div>
-      <div class="report-row"><span class="label">सम्पत्ति vs (नगद+ऋण) फरक</span><span class="value" style="color:${Math.abs(equationDiff)<=1?'#198754':'#dc3545'}">${equationDiff}</span></div>
-      <div class="report-row"><span class="label">सदस्य बाँकी ऋण योग (लाइभ)</span><span class="value">रु. ${Accounting.formatNum(sumLoans)}</span></div>
-      <div class="report-row"><span class="label">ऋण मिलान फरक</span><span class="value" style="color:${Math.abs(loanDiff)<=1?'#198754':'#dc3545'}">${loanDiff}</span></div>
-      <div class="report-row"><span class="label">सदस्य कुल अग्रिम (दायित्व)</span><span class="value">रु. ${Accounting.formatNum(sumAdvances)}</span></div>
+      <div class="report-row"><span class="label">सिस्टम कुल कोस (सम्पत्ति)</span><span class="value">रु. ${Accounting.formatNum(snap.assets)}</span></div>
+      <div class="report-row"><span class="label">वास्तविक क्रमबद्ध कुल कोस</span><span class="value">रु. ${Accounting.formatNum(audit.runningTrueAssets)}</span></div>
+      <div class="report-row"><span class="label">नगद-प्रवाह (सुरु+असुली+अन्य−खर्च−ऋण)</span><span class="value">रु. ${Accounting.formatNum(audit.expectedCashTotal)}</span></div>
+      <div class="report-row"><span class="label">सिस्टम कोसमा नगद</span><span class="value">रु. ${Accounting.formatNum(snap.cash)}</span></div>
+      <div class="report-row"><span class="label">नगद-प्रवाह मिलान फरक</span><span class="value fw-bold" style="color:${diffColor(audit.cashFlowDiff)}">${audit.cashFlowDiff}</span></div>
+      <div class="report-row"><span class="label">सदस्य बाँकी ऋण योग (लाइभ)</span><span class="value">रु. ${Accounting.formatNum(audit.sumLoans)}</span></div>
+      <div class="report-row"><span class="label">ऋण मिलान फरक</span><span class="value" style="color:${diffColor(audit.loanDiff)}">${audit.loanDiff}</span></div>
+      <div class="report-row"><span class="label">सदस्य कुल अग्रिम (दायित्व)</span><span class="value">रु. ${Accounting.formatNum(audit.sumAdvances)}</span></div>
       <div class="report-row highlight"><span class="label">सदस्य खुद शेयर कोस (कोस − अग्रिम)</span><span class="value fw-bold">रु. ${Accounting.formatNum(snap.netShareAssets || 0)}</span></div>
+      <div class="report-row"><span class="label">सदस्य शेयर योग (Σ कित्ता × प्रति कित्ता)</span><span class="value">रु. ${Accounting.formatNum(audit.sumMemberAssets)}</span></div>
+      <div class="report-row"><span class="label">प्रति कित्ता राउन्डिङ अन्तर (पूर्णांक)</span><span class="value" style="color:#495057">${audit.kittaRoundingDiff >= 0 ? '+' : ''}${audit.kittaRoundingDiff}</span></div>
     </div>
-    ${negIssues.length ? `<div style="color:#dc3545;font-size:0.82rem">ऋणात्मक मान भेटियो: ${negIssues.join(', ')}</div>` : ''}
-    <p class="text-muted" style="font-size:0.78rem;margin-bottom:10px">अग्रिम रकम कोसमा नगद/लगानी भए पनि प्रति कित्ता शेयर मूल्य गणना गर्दा अग्रिम दायित्व अलग गरिएको छ।</p>
-    ${Auth.isAccountsWriter && Auth.isAccountsWriter() ? `<button type="button" class="btn btn-warning btn-block" onclick="runAdvanceSnapshotReconcile()">🛠️ पुराना स्न्यापसट र पासबुक मिलान (अग्रिम अलग)</button>` : ''}
+    ${(monthIssueRows || chainIssueRows || allocIssueRows) ? `
+      <div style="background:#f8d7da;border:1px solid #f5c2c7;border-radius:10px;padding:9px 11px;margin-bottom:10px">
+        <div style="font-weight:700;font-size:0.82rem;color:#842029;margin-bottom:4px">🔎 महिनावार भेटिएको अन्तर विवरण:</div>
+        ${monthIssueRows}${chainIssueRows}${allocIssueRows}
+      </div>
+    ` : ''}
+    ${audit.negIssues.length ? `<div style="color:#dc3545;font-size:0.82rem;margin-bottom:8px">ऋणात्मक मान भेटियो: ${audit.negIssues.join(', ')}</div>` : ''}
+    <p class="text-muted" style="font-size:0.78rem;margin-bottom:10px">
+      नोट: प्रति कित्ता मूल्य पूर्णांक (Round) गरिने हुँदा "खुद शेयर कोस" र "सदस्य शेयर योग" बीच ±रु. ${Math.floor(totalKitta / 2)} भित्र सानो राउन्डिङ अन्तर सामान्य हुन्छ।
+    </p>
+    ${canWrite ? `<button type="button" class="btn ${audit.needsReconcile ? 'btn-danger' : 'btn-warning'} btn-block" onclick="runAdvanceSnapshotReconcile()">🛠️ हिसाब मिलान, बन्द महिना र पासबुक स्न्यापसट सच्याउनुहोस्</button>` : ''}
   `;
   UI.showModal('🧮 हिसाब मिलान अडिट', html, '<button class="btn btn-outline" onclick="closeModal()">बन्द</button>');
 }
 
 function runAdvanceSnapshotReconcile() {
-  UI.showPinModal('पुराना बन्द महिनाका स्न्यापसट र पासबुक शेयर मूल्य (अग्रिम अलग) मिलान गर्न PIN दिनुहोस्', () => {
+  if (!(Auth.isAccountsWriter && Auth.isAccountsWriter())) {
+    return UI.toast('Read-only: हिसाब मिलान गर्ने अधिकार कोषाध्यक्षलाई मात्र छ', 'error');
+  }
+  UI.showPinModal('सबै बन्द महिनाका हिसाब, जरिवाना/बाँकी असुली, स्न्यापसट र पासबुक मिलान गरी क्लाउडमा सुरक्षित गर्न PIN दिनुहोस्', async () => {
     const data = DB.load();
     const n = Accounting.reconcileAdvanceSnapshots(data);
-    DB.save(data);
+    DB.save(data, { forceOverwrite: true });
+    if (navigator.onLine && typeof DB.flushPending === 'function') {
+      try { await DB.flushPending(); } catch (e) {}
+    }
     UI.updateHome(data);
-    UI.toast(`${n} बन्द महिनाका स्न्यापसट र पासबुक मिल्यो ✅`, 'success');
+    UI.toast(`${n} बन्द महिनाका स्न्यापसट र पासबुक १००% मिल्यो ✅`, 'success');
     runAccountingAuditCheck();
   });
 }

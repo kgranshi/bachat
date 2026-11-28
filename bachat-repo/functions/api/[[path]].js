@@ -736,12 +736,21 @@ function evaluateHealthErrorsFromState(st, stateBytes = 0, d1UsedBytes = 0) {
   const activeMembers = members.filter((m) => m && m.active !== false);
   const months = Array.isArray(st.months) ? st.months : [];
   const currentMonth = months.find((m) => m && m.id === st.currentMonthId) || null;
+  const closedSorted = months
+    .filter((m) => m && m.status === 'closed')
+    .sort((a, b) => {
+      if ((a.yearBS || 0) !== (b.yearBS || 0)) return (a.yearBS || 0) - (b.yearBS || 0);
+      if ((a.monthIndex || 0) !== (b.monthIndex || 0)) return (a.monthIndex || 0) - (b.monthIndex || 0);
+      return String(a.closedAt || a.id || '').localeCompare(String(b.closedAt || b.id || ''));
+    });
+  const lastClosed = closedSorted.length ? closedSorted[closedSorted.length - 1] : null;
 
   const sumMemberLoans = activeMembers.reduce((s, m) => s + (Number(m.outstandingLoan) || 0), 0);
-  const monthLoanTotal = currentMonth ? (Number(currentMonth.outstandingLoans) || 0) : sumMemberLoans;
-  const loanMismatch = currentMonth && currentMonth.status === 'closed'
-    ? Math.round((monthLoanTotal - sumMemberLoans) * 100) / 100
-    : 0;
+  const loanMismatch = (!currentMonth && lastClosed)
+    ? Math.round(((Number(lastClosed.outstandingLoans) || 0) - sumMemberLoans) * 100) / 100
+    : (currentMonth && currentMonth.status === 'closed'
+      ? Math.round(((Number(currentMonth.outstandingLoans) || 0) - sumMemberLoans) * 100) / 100
+      : 0);
   if (Math.abs(loanMismatch) > 1) {
     errors.push({
       code: 'loan_mismatch',
@@ -3217,11 +3226,34 @@ export async function onRequest(context) {
         return ver >= curTermsVer;
       });
       const currentMonth = months.find((m) => m && m.id === st.currentMonthId) || null;
-      const sumMemberLoans = activeMembers.reduce((s, m) => s + (Number(m.outstandingLoan) || 0), 0);
-      const monthLoanTotal = currentMonth ? (Number(currentMonth.outstandingLoans) || 0) : sumMemberLoans;
-      const loanMismatch = currentMonth && currentMonth.status === 'closed'
-        ? Math.round((monthLoanTotal - sumMemberLoans) * 100) / 100
-        : 0;
+      const orderedMonths = months.slice().sort((a, b) => {
+        if ((a.yearBS || 0) !== (b.yearBS || 0)) return (a.yearBS || 0) - (b.yearBS || 0);
+        if ((a.monthIndex || 0) !== (b.monthIndex || 0)) return (a.monthIndex || 0) - (b.monthIndex || 0);
+        return String(a.closedAt || a.id || '').localeCompare(String(b.closedAt || b.id || ''));
+      });
+      const migLoansH = Object.values((st.migration && st.migration.loans) || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+      const migCashH = Number((st.migration && st.migration.cash) || 0);
+      let runAssetsH = (st.migrationDone && (migCashH + migLoansH > 0))
+        ? (migCashH + migLoansH)
+        : (orderedMonths.length ? (Number(orderedMonths[0].startAssets) || 0) : 0);
+      let monthChainOrCashDiff = 0;
+      for (const mo of orderedMonths) {
+        let sav = 0, intr = 0, fine = 0, prevDue = 0, advC = 0;
+        for (const c of Object.values(mo.collections || {})) {
+          if (!c || (Number(c.totalPaid) || 0) <= 0) continue;
+          sav += Number(c.saving) || 0;
+          intr += Number(c.interest) || 0;
+          fine += Number(c.fine) || 0;
+          prevDue += Number(c.previousDue) || 0;
+          if ((Number(c.advance) || 0) > 0) advC += Number(c.advance) || 0;
+        }
+        const oth = (mo.otherIncomeDetails || []).reduce((s, d) => s + (Number(d && d.amount) || 0), 0);
+        const exp = (mo.expenseDetails || []).reduce((s, d) => s + (Number(d && d.amount) || 0), 0);
+        runAssetsH = runAssetsH + sav + intr + fine + prevDue + oth + advC - exp;
+        if (Math.abs((Number(mo.finalAssets) || 0) - runAssetsH) > 1) {
+          monthChainOrCashDiff = Math.round(runAssetsH - (Number(mo.finalAssets) || 0));
+        }
+      }
 
       const isBackgroundScan = url.searchParams.get('background') === '1';
       const criticalErrors = evaluateHealthErrorsFromState(st, Number((gsStats && gsStats.bytes) || 0), d1UsedBytes);
@@ -3232,6 +3264,15 @@ export async function onRequest(context) {
         solution: errItem.solution,
         action: errItem.action || ''
       }));
+      if (Math.abs(monthChainOrCashDiff) > 1) {
+        issues.push({
+          severity: 'warn',
+          title: 'महिना मौज्दात / जरिवाना-बाँकी मिलान आवश्यक (रु. ' + monthChainOrCashDiff + ')',
+          detail: 'बन्द वा चालू महिनाको बचत/जरिवाना/अघिल्लो बाँकी र मौज्दात क्रमबद्ध मिलान बाँकी छ।',
+          solution: 'कोषाध्यक्षबाट "हिसाब मिलान अडिट" खोली स्न्यापसट सच्याउनुहोस्।',
+          action: 'audit'
+        });
+      }
       if (openComplaints.length > 0) {
         issues.push({
           severity: 'warn',

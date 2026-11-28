@@ -336,46 +336,51 @@ const Accounting = {
    * Open month: outstandingLoans = live member loans.
    */
   recalcMonth(month, data) {
-    let savings = 0, interest = 0, other = 0, expenses = 0;
+    let savings = 0, interest = 0, fine = 0, previousDue = 0, other = 0, expenses = 0;
     let principal = 0, newLoans = 0, advanceFromCash = 0;
 
     Object.values(month.collections || {}).forEach(c => {
+      if (!c) return;
       const paid = Number(c.totalPaid) || 0;
-      if (paid <= 0) return; // advance-only: no income
-      savings += c.saving || 0;
-      interest += c.interest || 0;
-      principal += c.principal || 0;
-      if ((c.advance || 0) > 0) advanceFromCash += c.advance;
+      if (paid <= 0) return; // advance-only: no cash inflow
+      savings += Number(c.saving) || 0;
+      interest += Number(c.interest) || 0;
+      fine += Number(c.fine) || 0;
+      previousDue += Number(c.previousDue) || 0;
+      principal += Number(c.principal) || 0;
+      if ((Number(c.advance) || 0) > 0) advanceFromCash += Number(c.advance) || 0;
     });
 
-    other = (month.otherIncomeDetails || []).reduce((s, d) => s + (d.amount || 0), 0);
-    expenses = (month.expenseDetails || []).reduce((s, d) => s + (d.amount || 0), 0);
-    newLoans = (month.loansGiven || []).reduce((s, l) => s + (l.amount || 0), 0);
+    other = (month.otherIncomeDetails || []).reduce((s, d) => s + (Number(d && d.amount) || 0), 0);
+    expenses = (month.expenseDetails || []).reduce((s, d) => s + (Number(d && d.amount) || 0), 0);
+    newLoans = (month.loansGiven || []).reduce((s, l) => s + (Number(l && l.amount) || 0), 0);
 
     month.savingsCollected = savings;
     month.interestCollected = interest;
+    month.fineCollected = fine;
+    month.previousDueCollected = previousDue;
     month.otherIncome = other;
     month.expenses = expenses;
     month.principalCollected = principal;
     month.newLoansGiven = newLoans;
     month.advanceFromCash = advanceFromCash;
 
-    month.netIncome = savings + interest + other + advanceFromCash - expenses;
+    month.netIncome = savings + interest + fine + previousDue + other + advanceFromCash - expenses;
     month.finalAssets = (Number(month.startAssets) || 0) + month.netIncome;
 
     if (month.status === 'closed') {
       if (month.memberSnapshots && Object.keys(month.memberSnapshots).length) {
         month.outstandingLoans = Object.values(month.memberSnapshots)
-          .reduce((s, snap) => s + (Number(snap.outstandingLoan) || 0), 0);
+          .reduce((s, snap) => s + (Number(snap && snap.outstandingLoan) || 0), 0);
       }
       month.totalAdvances = this.totalAdvance(data, month);
     } else {
-      const liveOutstanding = (data.members || [])
-        .filter(m => m.active)
+      const activeList = (data.members || []).filter(m => m && m.active);
+      const liveOutstanding = activeList
         .reduce((s, m) => s + this.getEffectiveMemberLoan(data, m, month), 0);
       const prevOut = this.getStartOutstanding(data, month);
       const calcOutstanding = Math.max(0, prevOut - principal + newLoans);
-      month.outstandingLoans = liveOutstanding > 0 ? liveOutstanding : calcOutstanding;
+      month.outstandingLoans = activeList.length > 0 ? liveOutstanding : calcOutstanding;
       month.totalAdvances = this.totalAdvance(data, month);
     }
 
@@ -392,7 +397,7 @@ const Accounting = {
     const all = (data.months || []).slice().sort((a, b) => {
       if ((a.yearBS || 0) !== (b.yearBS || 0)) return (a.yearBS || 0) - (b.yearBS || 0);
       if ((a.monthIndex || 0) !== (b.monthIndex || 0)) return (a.monthIndex || 0) - (b.monthIndex || 0);
-      return String(a.id || '').localeCompare(String(b.id || ''));
+      return String(a.closedAt || a.id || '').localeCompare(String(b.closedAt || b.id || ''));
     });
     const idx = all.findIndex(m => m.id === month.id);
     if (idx > 0) {
@@ -465,7 +470,11 @@ const Accounting = {
     if (data.currentMonthId) {
       const month = data.months.find(m => m.id === data.currentMonthId);
       if (month) {
-        const hasActivity = Object.keys(month.collections || {}).length > 0 || (month.loansGiven || []).length > 0;
+        const hasActivity = Object.keys(month.collections || {}).length > 0 ||
+          (month.loansGiven || []).length > 0 ||
+          (month.expenseDetails || []).length > 0 ||
+          (month.otherIncomeDetails || []).length > 0 ||
+          month.status !== 'open';
         if (!hasActivity) {
           month.startAssets = assets;
           month.finalAssets = assets;
@@ -626,7 +635,7 @@ const Accounting = {
     const months = (data.months || []).slice().sort((a, b) => {
       if ((a.yearBS || 0) !== (b.yearBS || 0)) return (a.yearBS || 0) - (b.yearBS || 0);
       if ((a.monthIndex || 0) !== (b.monthIndex || 0)) return (a.monthIndex || 0) - (b.monthIndex || 0);
-      return String(a.id || '').localeCompare(String(b.id || ''));
+      return String(a.closedAt || a.id || '').localeCompare(String(b.closedAt || b.id || ''));
     });
     if (months.length === 0) return;
 
@@ -712,5 +721,139 @@ const Accounting = {
     });
 
     return closed.length;
+  },
+
+  /**
+   * Non-mutating comprehensive accounting audit:
+   * Checks cash-flow conservation, collection component conservation,
+   * month-to-month startAssets chaining, loan & advance totals, and perKitta rounding drift.
+   */
+  auditLedger(data) {
+    const months = (data && Array.isArray(data.months) ? data.months : []).slice().sort((a, b) => {
+      if ((a.yearBS || 0) !== (b.yearBS || 0)) return (a.yearBS || 0) - (b.yearBS || 0);
+      if ((a.monthIndex || 0) !== (b.monthIndex || 0)) return (a.monthIndex || 0) - (b.monthIndex || 0);
+      return String(a.closedAt || a.id || '').localeCompare(String(b.closedAt || b.id || ''));
+    });
+
+    const migLoans = Object.values((data && data.migration && data.migration.loans) || {})
+      .reduce((s, v) => s + (Number(v) || 0), 0);
+    const migCash = Number((data && data.migration && data.migration.cash) || 0);
+    const hasMig = !!(data && data.migrationDone && (migCash + migLoans > 0));
+    const openingCash = hasMig ? migCash : (months.length ? ((Number(months[0].startAssets) || 0) - migLoans) : 0);
+    const openingAssets = hasMig ? (migCash + migLoans) : (months.length ? (Number(months[0].startAssets) || 0) : 0);
+
+    let cumPaid = 0, cumOther = 0, cumExp = 0, cumNewLoans = 0, cumPrincipal = 0;
+    let runningTrueAssets = openingAssets;
+    const monthDiffs = [];
+    const allocIssues = [];
+    const chainingIssues = [];
+
+    months.forEach((m, idx) => {
+      let sav = 0, intr = 0, fine = 0, prevDue = 0, prin = 0, advCash = 0, paidTotal = 0;
+      Object.entries(m.collections || {}).forEach(([mid, c]) => {
+        if (!c) return;
+        const tp = Number(c.totalPaid) || 0;
+        if (tp <= 0) return;
+        const cSav = Number(c.saving) || 0;
+        const cInt = Number(c.interest) || 0;
+        const cFine = Number(c.fine) || 0;
+        const cDue = Number(c.previousDue) || 0;
+        const cPrin = Number(c.principal) || 0;
+        const cAdv = Number(c.advance) || 0;
+        const sumParts = cSav + cInt + cFine + cDue + cPrin + cAdv;
+        if (Math.abs(tp - sumParts) > 1) {
+          allocIssues.push({ monthId: m.id, monthName: m.name, memberId: mid, totalPaid: tp, sumParts, diff: tp - sumParts });
+        }
+        sav += cSav; intr += cInt; fine += cFine; prevDue += cDue; prin += cPrin; advCash += cAdv; paidTotal += tp;
+      });
+
+      const other = (m.otherIncomeDetails || []).reduce((s, d) => s + (Number(d && d.amount) || 0), 0);
+      const exp = (m.expenseDetails || []).reduce((s, d) => s + (Number(d && d.amount) || 0), 0);
+      const newLoans = (m.loansGiven || []).reduce((s, l) => s + (Number(l && l.amount) || 0), 0);
+
+      cumPaid += paidTotal;
+      cumOther += other;
+      cumExp += exp;
+      cumNewLoans += newLoans;
+      cumPrincipal += prin;
+
+      const expectedStart = idx === 0
+        ? (hasMig ? openingAssets : (Number(m.startAssets) || 0))
+        : runningTrueAssets;
+
+      if (Math.abs((Number(m.startAssets) || 0) - expectedStart) > 1) {
+        chainingIssues.push({
+          monthId: m.id,
+          monthName: m.name,
+          storedStart: Number(m.startAssets) || 0,
+          expectedStart,
+          diff: (Number(m.startAssets) || 0) - expectedStart
+        });
+      }
+
+      const trueNetIncome = sav + intr + fine + prevDue + other + advCash - exp;
+      const trueFinalAssets = expectedStart + trueNetIncome;
+      const storedFinal = Number(m.finalAssets) || 0;
+      if (Math.abs(storedFinal - trueFinalAssets) > 1) {
+        monthDiffs.push({
+          monthId: m.id,
+          monthName: m.name,
+          status: m.status,
+          storedFinal,
+          trueFinal: trueFinalAssets,
+          diff: trueFinalAssets - storedFinal,
+          fine,
+          previousDue: prevDue
+        });
+      }
+      runningTrueAssets = trueFinalAssets;
+    });
+
+    const snap = this.getSnapshot(data);
+    const active = (data && Array.isArray(data.members) ? data.members : []).filter(m => m && m.active !== false);
+    let sumLoans = 0, sumAdvances = 0, sumMemberAssets = 0;
+    const negIssues = [];
+    active.forEach(m => {
+      const loan = this.getEffectiveMemberLoan(data, m);
+      const adv = this.getEffectiveMemberAdvance(data, m);
+      sumLoans += loan;
+      sumAdvances += adv;
+      sumMemberAssets += (Number(m.kitta) || 0) * snap.perKitta;
+      if (loan < 0 || adv < 0 || (Number(m.due) || 0) < 0) {
+        negIssues.push(m.name);
+      }
+    });
+
+    const expectedCashTotal = openingCash + cumPaid + cumOther - cumExp - cumNewLoans;
+    const cashFlowDiff = Math.round((expectedCashTotal - snap.cash) * 100) / 100;
+    const assetsTrueDiff = Math.round((runningTrueAssets - snap.assets) * 100) / 100;
+    const loanDiff = Math.round((snap.loans - sumLoans) * 100) / 100;
+    const advDiff = Math.round(((snap.totalAdvance || 0) - sumAdvances) * 100) / 100;
+    const kittaRoundingDiff = Math.round(((snap.netShareAssets || 0) - sumMemberAssets) * 100) / 100;
+    const needsReconcile = monthDiffs.length > 0 || chainingIssues.length > 0 || Math.abs(assetsTrueDiff) > 1;
+    const ok = !needsReconcile && Math.abs(cashFlowDiff) <= 1 && Math.abs(loanDiff) <= 1 && Math.abs(advDiff) <= 1 && allocIssues.length === 0 && negIssues.length === 0;
+
+    return {
+      ok,
+      needsReconcile,
+      snap,
+      openingCash,
+      openingAssets,
+      expectedCashTotal,
+      cashFlowDiff,
+      runningTrueAssets,
+      assetsTrueDiff,
+      sumLoans,
+      loanDiff,
+      sumAdvances,
+      advDiff,
+      sumMemberAssets,
+      kittaRoundingDiff,
+      monthDiffs,
+      chainingIssues,
+      allocIssues,
+      negIssues,
+      totals: { cumPaid, cumOther, cumExp, cumNewLoans, cumPrincipal }
+    };
   }
 };
